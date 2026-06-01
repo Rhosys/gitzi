@@ -114,7 +114,22 @@ updated_at = "2026-06-01T00:00:00Z"
 
 ## Agent Runner (Pluggable)
 
-Each backend implements a common `AgentBackend` trait:
+**LLM / tool-call layer: [Rig](https://github.com/0xPlaygrounds/rig) (`rig-core` crate)**
+
+Rig provides the Rust-native LLM abstraction: provider clients, tool calling, streaming
+responses, and agent loops. gitzi owns the orchestration state machine (kanban, WIP,
+review gate); Rig handles the LLM I/O underneath each backend.
+
+```
+gitzi orchestrator
+    └── AgentBackend trait
+            ├── RigAgent  ←─ rig-core (Claude, Ollama, Bedrock, OpenAI, …)
+            ├── ClaudeCodeCli  ←─ subprocess, stream-json output
+            ├── KiroCli        ←─ subprocess
+            └── ChatLmUi       ←─ HTTP API
+```
+
+Each backend implements a common trait:
 
 ```rust
 trait AgentBackend {
@@ -124,13 +139,15 @@ trait AgentBackend {
 
 | Backend        | Invocation                                      | Notes                            |
 |----------------|-------------------------------------------------|----------------------------------|
-| `claude-code`  | `claude --print --output-format stream-json`    | Primary; rich diff output        |
+| `rig-agent`    | `rig-core` — direct API calls via Rig           | Primary; 20+ providers, tool use |
+| `claude-code`  | `claude --print --output-format stream-json`    | Rich agentic sessions, file edits|
 | `kiro`         | `kiro run <task-prompt>`                        | AWS IDE agent CLI                |
-| `ollama`       | HTTP to local Ollama API                        | Local/offline tasks              |
+| `ollama`       | Rig's Ollama provider (HTTP)                    | Local/offline tasks              |
 | `chatlm-ui`    | HTTP API or CLI wrapper                         | ChatLM agent sessions            |
 
 The backend for a task is set in the epic or task TOML, with a fallback to the
-`config.toml` default.
+`config.toml` default. Rig's provider abstraction means switching between Claude,
+Ollama, and Bedrock requires only a config change, not code changes.
 
 ---
 
@@ -173,26 +190,21 @@ Integrations are **sync targets**, not sources of truth. The harness pushes stat
 
 ---
 
-## Open Decision: AWS Strands SDK
+## Orchestration Layer Decision
 
-**Question:** Should AWS Strands SDK be the multi-agent coordination layer?
+**Decision: custom Rust orchestration using Rig (`rig-core`) as the LLM layer.**
 
-**Tradeoffs:**
+Evaluated options:
 
-| Factor          | AWS Strands                                          | Custom Rust orchestration              |
-|-----------------|------------------------------------------------------|----------------------------------------|
-| Language fit    | Python SDK — requires subprocess or FFI boundary     | Pure Rust, no boundary overhead        |
-| Vendor lock-in  | AWS-centric; adds IAM, Bedrock dependencies          | Zero external deps for coordination    |
-| Features        | Built-in memory, tool routing, agent handoff         | Must build these (simpler model)       |
-| Maturity        | New (2025); API may shift                            | Stable once built                      |
-| AWS services    | Great if using Bedrock, S3, Lambda as infrastructure | Not relevant unless using AWS infra    |
-| Effort          | Integration work to cross the language boundary      | More Rust code to write upfront        |
+| Option              | Verdict                                                                 |
+|---------------------|-------------------------------------------------------------------------|
+| **Rig** (`rig-core`)| ✅ **Chosen** — pure Rust, 20+ providers, tool calling, streaming, GA  |
+| AWS Strands SDK     | ❌ Python-only; requires subprocess/FFI boundary from Rust              |
+| Kong Agent Gateway  | Optional future layer for A2A routing/policy if multi-tenant needed    |
+| AutoAgents          | Alternative if actor-model multi-agent coordination is needed later     |
 
-**Recommendation:** Start with custom Rust orchestration. Strands adds value only if
-the harness runs agents on AWS Bedrock or needs Strands' built-in memory/tool routing —
-neither is required for the MVP. Strands can be added as a backend adapter later.
-
-**Decision:** _pending — revisit once MVP agent runner is working_
+Rig provides the LLM/tool abstraction; gitzi owns the kanban state machine, WIP limits,
+and review gate on top. Provider switching (Claude ↔ Ollama ↔ Bedrock) is config-only.
 
 ---
 
@@ -200,7 +212,10 @@ neither is required for the MVP. Strands can be added as a backend adapter later
 
 | Layer              | Choice                          |
 |--------------------|---------------------------------|
+| Layer              | Choice                          |
+|--------------------|---------------------------------|
 | Language           | Rust (2024 edition)             |
+| LLM / agent SDK    | `rig-core` (Rig)                |
 | Web framework      | Axum                            |
 | Frontend           | Leptos (SSR + CSR)              |
 | State storage      | TOML files in git               |
@@ -231,7 +246,7 @@ epic auto-splitting) is post-MVP.
 
 ## Open Questions
 
-- [ ] **AWS Strands** — use as orchestration layer or custom Rust? (see section above)
+- [x] **Orchestration layer** — custom Rust with `rig-core` as LLM/tool layer (AWS Strands rejected: Python-only)
 - [ ] **Epic auto-generation** — should the harness propose task breakdowns using an LLM, or is that always human-driven?
 - [ ] **Multi-agent parallelism** — can multiple tasks be In Progress simultaneously, or is it strictly one at a time to start?
 - [ ] **Branch strategy** — one branch per task, or one branch per epic?
