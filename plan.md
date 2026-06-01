@@ -42,6 +42,9 @@ Backlog → Prioritized → In Progress → Waiting for Review → In Testing �
 | **Done**            | Tests passed; work published/merged                                 | Harness            |
 
 WIP limits are configurable per stage (default: 1 In Progress, 3 Waiting for Review).
+The system is designed to run **parallel but heavily single** — multiple tasks can be
+In Progress simultaneously, but the default WIP limit of 1 keeps the review loop tight.
+Raise the limit deliberately when confidence is high.
 
 ---
 
@@ -95,6 +98,9 @@ auditable, diffable, and branchable.
   wip.toml             # current stage snapshot (auto-generated, not hand-edited)
 ```
 
+Each task gets its own branch: `gitzi/<task-id>-<slug>` (e.g. `gitzi/task-001-add-login`).
+Branches are created by the harness when the task enters In Progress and merged/deleted on Done.
+
 **Task file shape (sketch):**
 ```toml
 id = "task-001"
@@ -102,12 +108,18 @@ epic = "epic-001"
 title = "Add login endpoint"
 stage = "in-progress"
 agent = "claude-code"
+branch = "gitzi/task-001-add-login"
 wip_limit_blocked = false
 created_at = "2026-06-01T00:00:00Z"
 updated_at = "2026-06-01T00:00:00Z"
 
 [history]
 # append-only log of stage transitions
+```
+
+**`config.toml` test command (no adapter needed):**
+```toml
+test_command = "cargo test"   # or "npm test", "pytest", etc.
 ```
 
 ---
@@ -186,7 +198,14 @@ Integrations are **sync targets**, not sources of truth. The harness pushes stat
 | GitHub Issues  | Tasks ↔ issues; PRs created per task branch    | Bidirectional     |
 | Jira           | Tasks → Jira tickets (status updates)           | Push only (v1)    |
 | Linear         | Tasks → Linear issues (status updates)          | Push only (v1)    |
-| Slack          | Review notifications, approvals via reaction    | Push + inbound    |
+
+### Mobile / Notifications (Future)
+
+Slack is out of scope for now. Instead, a **mobile app** will connect directly to the
+git repo for review notifications and approvals. The protocol for this is TBD — likely
+a federated, git-native approach (e.g. reading `.gitzi/` state directly, or a lightweight
+push channel over a protocol to be defined). The mobile experience is a first-class goal
+(approve/reject diffs, view kanban) but deferred past MVP.
 
 ---
 
@@ -247,8 +266,9 @@ epic auto-splitting) is post-MVP.
 ## Open Questions
 
 - [x] **Orchestration layer** — custom Rust with `rig-core` as LLM/tool layer (AWS Strands rejected: Python-only)
+- [x] **Multi-agent parallelism** — parallel supported, default WIP limit 1 (raise deliberately)
+- [x] **Branch strategy** — one branch per task (`gitzi/<task-id>-<slug>`)
+- [x] **Slack** — dropped; mobile app via federated git-native protocol (TBD)
+- [x] **Test adapter** — not needed; `test_command` in `config.toml`
 - [ ] **Epic auto-generation** — should the harness propose task breakdowns using an LLM, or is that always human-driven?
-- [ ] **Multi-agent parallelism** — can multiple tasks be In Progress simultaneously, or is it strictly one at a time to start?
-- [ ] **Branch strategy** — one branch per task, or one branch per epic?
-- [ ] **Approval via Slack** — emoji reaction (`:white_check_mark:`) or slash command?
-- [ ] **Test adapter** — how does the harness know which test command to run for each project/task?
+- [ ] **Mobile protocol** — define the federated protocol for mobile ↔ git repo communication
