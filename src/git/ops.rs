@@ -19,19 +19,15 @@ pub struct TaskWorktree {
 }
 
 impl TaskWorktree {
-    /// Create a linked worktree at `<repo_root>/.gitzi/worktrees/<name>` on
-    /// `branch_name`, creating the branch off HEAD if it does not yet exist.
-    pub fn create(repo: &Repository, branch_name: &str) -> Result<Self> {
+    /// Create a linked worktree at `<repo_root>/.gitzi/tasks/<task_id>/worktree`
+    /// on `branch_name`, creating the branch off HEAD if it does not yet exist.
+    pub fn create(repo: &Repository, task_id: &str, branch_name: &str) -> Result<Self> {
         let repo_root = repo
             .workdir()
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
 
-        let wt_path = repo_root
-            .join(".gitzi")
-            .join("worktrees")
-            .join(worktree_name(branch_name));
-
+        let wt_path = crate::state::reader::task_worktree_path(&repo_root, task_id);
         std::fs::create_dir_all(&wt_path)?;
 
         // Ensure the branch exists before attaching a worktree to it.
@@ -49,14 +45,14 @@ impl TaskWorktree {
         Ok(Self { path: wt_path, name, repo_root })
     }
 
-    /// Open an existing worktree by branch name (e.g. after a restart).
-    pub fn open(repo: &Repository, branch_name: &str) -> Result<Self> {
+    /// Open an existing worktree by task ID (e.g. after a restart).
+    pub fn open(repo: &Repository, task_id: &str, branch_name: &str) -> Result<Self> {
         let repo_root = repo
             .workdir()
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
         let name = worktree_name(branch_name);
-        let path = repo_root.join(".gitzi").join("worktrees").join(&name);
+        let path = crate::state::reader::task_worktree_path(&repo_root, task_id);
         Ok(Self { path, name, repo_root })
     }
 
@@ -99,73 +95,6 @@ impl TaskWorktree {
 
 fn worktree_name(branch_name: &str) -> String {
     branch_name.replace('/', "-")
-}
-
-// ── Direct object commits (no working tree) ───────────────────────────────────
-//
-// Use this to commit .gitzi/ state files to the main branch without touching
-// the working tree index. Walks: content → blob OID → tree OID → commit OID.
-
-/// Commit a set of (repo-relative path, content) pairs directly to `branch`
-/// as git objects, without staging them in the working tree index.
-pub fn commit_files_to_branch(
-    repo: &Repository,
-    branch: &str,
-    files: &[(&str, &[u8])],
-    message: &str,
-) -> Result<git2::Oid> {
-    let sig = signature(repo)?;
-    let branch_ref = format!("refs/heads/{branch}");
-
-    let parent = repo
-        .find_reference(&branch_ref)
-        .ok()
-        .and_then(|r| r.peel_to_commit().ok());
-
-    let base_tree = parent.as_ref().and_then(|c| c.tree().ok());
-    let mut builder = repo.treebuilder(base_tree.as_ref())?;
-
-    for (path, content) in files {
-        let blob_oid = repo.blob(content)?;
-        insert_into_tree(repo, &mut builder, path, blob_oid)?;
-    }
-
-    let tree_oid = builder.write()?;
-    let tree = repo.find_tree(tree_oid)?;
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-
-    let oid = repo.commit(Some(&branch_ref), &sig, &sig, message, &tree, &parents)?;
-    Ok(oid)
-}
-
-/// Recursively insert a blob at a slash-separated path into a tree builder.
-fn insert_into_tree(
-    repo: &Repository,
-    builder: &mut git2::TreeBuilder<'_>,
-    path: &str,
-    blob_oid: git2::Oid,
-) -> Result<()> {
-    if let Some(slash) = path.find('/') {
-        let dir = &path[..slash];
-        let rest = &path[slash + 1..];
-
-        // Find or create the subtree for this directory component.
-        let existing = builder.get(dir)?.and_then(|e| {
-            if e.kind() == Some(git2::ObjectType::Tree) {
-                repo.find_tree(e.id()).ok()
-            } else {
-                None
-            }
-        });
-
-        let mut sub = repo.treebuilder(existing.as_ref())?;
-        insert_into_tree(repo, &mut sub, rest, blob_oid)?;
-        let sub_oid = sub.write()?;
-        builder.insert(dir, sub_oid, 0o040000)?;
-    } else {
-        builder.insert(path, blob_oid, 0o100644)?;
-    }
-    Ok(())
 }
 
 // ── Diff (pure object read — never touches working tree) ──────────────────────

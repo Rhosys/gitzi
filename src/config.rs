@@ -48,17 +48,12 @@ pub struct Config {
     pub test_command: String,
     #[serde(default = "default_dashboard_port")]
     pub dashboard_port: u16,
-    /// Branch where harness state (.gitzi/ TOML files) are committed.
-    /// User reviews this branch and opens a PR to merge into main.
-    #[serde(default = "default_state_branch")]
-    pub state_branch: String,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
 }
 
 fn default_test_command() -> String { "cargo test".to_string() }
 fn default_dashboard_port() -> u16 { 3000 }
-fn default_state_branch() -> String { "gitzi/state".to_string() }
 
 impl Default for Config {
     fn default() -> Self {
@@ -67,7 +62,6 @@ impl Default for Config {
             default_agent: DefaultAgent::default(),
             test_command: default_test_command(),
             dashboard_port: default_dashboard_port(),
-            state_branch: default_state_branch(),
             integrations: HashMap::new(),
         }
     }

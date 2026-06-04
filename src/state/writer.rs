@@ -1,25 +1,22 @@
 use std::collections::HashMap;
 use std::path::Path;
-use crate::config::{atomic_write, Config};
+use crate::config::atomic_write;
 use crate::error::Result;
 use crate::model::{Epic, Task, WipSnapshot};
+use crate::state::reader::task_dir;
 
-// ── Filesystem writes (for the harness to read back immediately) ──────────────
+// .gitzi/ is gitignored — state is local filesystem only, never committed to git.
 
 pub fn write_task(repo_root: &Path, task: &Task) -> Result<()> {
-    let path = repo_root
-        .join(".gitzi")
-        .join("tasks")
-        .join(format!("{}.toml", task.id));
-    atomic_write(&path, &toml::to_string_pretty(task)?)
+    let dir = task_dir(repo_root, &task.id);
+    std::fs::create_dir_all(&dir)?;
+    atomic_write(&dir.join("task.toml"), &toml::to_string_pretty(task)?)
 }
 
 pub fn write_epic(repo_root: &Path, epic: &Epic) -> Result<()> {
-    let path = repo_root
-        .join(".gitzi")
-        .join("epics")
-        .join(format!("{}.toml", epic.id));
-    atomic_write(&path, &toml::to_string_pretty(epic)?)
+    let dir = repo_root.join(".gitzi").join("epics");
+    std::fs::create_dir_all(&dir)?;
+    atomic_write(&dir.join(format!("{}.toml", epic.id)), &toml::to_string_pretty(epic)?)
 }
 
 pub fn write_wip(repo_root: &Path, tasks: &[Task]) -> Result<()> {
@@ -32,53 +29,11 @@ pub fn rebuild_wip(repo_root: &Path) -> Result<()> {
     write_wip(repo_root, &tasks)
 }
 
-// ── Git object commits → state branch ────────────────────────────────────────
-//
-// All .gitzi/ state changes are committed as git objects onto `config.state_branch`
-// (default: "gitzi/state") — never onto main. The user reviews and opens a PR
-// to merge that branch into main when satisfied.
-
-/// Commit a task file onto the state branch.
-pub fn commit_task(repo_root: &Path, config: &Config, task: &Task) -> Result<()> {
-    let content = toml::to_string_pretty(task)?;
-    commit_to_state_branch(
-        repo_root,
-        config,
-        &[(&format!(".gitzi/tasks/{}.toml", task.id), content.as_bytes())],
-        &format!("gitzi: update task {}", task.id),
-    )
-}
-
-/// Commit a wip snapshot onto the state branch.
-pub fn commit_wip_to_branch(repo_root: &Path, config: &Config, tasks: &[Task]) -> Result<()> {
-    let content = toml::to_string_pretty(&wip_snapshot(tasks))?;
-    commit_to_state_branch(
-        repo_root,
-        config,
-        &[(".gitzi/wip.toml", content.as_bytes())],
-        "gitzi: update wip",
-    )
-}
-
-/// Commit an epic file onto the state branch.
-pub fn commit_epic(repo_root: &Path, config: &Config, epic: &Epic) -> Result<()> {
-    let content = toml::to_string_pretty(epic)?;
-    commit_to_state_branch(
-        repo_root,
-        config,
-        &[(&format!(".gitzi/epics/{}.toml", epic.id), content.as_bytes())],
-        &format!("gitzi: update epic {}", epic.id),
-    )
-}
-
-fn commit_to_state_branch(
-    repo_root: &Path,
-    config: &Config,
-    files: &[(&str, &[u8])],
-    message: &str,
-) -> Result<()> {
-    let repo = crate::git::ops::open_repo(repo_root)?;
-    crate::git::ops::commit_files_to_branch(&repo, &config.state_branch, files, message)?;
+pub fn append_agent_log(repo_root: &Path, task_id: &str, output: &str) -> Result<()> {
+    use std::io::Write;
+    let path = crate::state::reader::task_log_path(repo_root, task_id);
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    writeln!(file, "{output}")?;
     Ok(())
 }
 
