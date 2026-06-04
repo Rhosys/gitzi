@@ -44,6 +44,10 @@ fn cmd_init(repo_root: &PathBuf) -> Result<()> {
     std::fs::create_dir_all(gitzi.join("plan").join("epics"))?;
     std::fs::create_dir_all(gitzi.join("plan").join("tasks"))?;
     std::fs::create_dir_all(gitzi.join("wip").join("tasks"))?;
+
+    // Committed alongside plan/ so the ignore rule travels with the repo.
+    gitzi::config::atomic_write(&gitzi.join(".gitignore"), "wip/\n")?;
+
     let config = Config::default();
     config.write(repo_root)?;
     writer::write_wip(repo_root, &[])?;
