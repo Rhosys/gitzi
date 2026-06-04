@@ -1,0 +1,33 @@
+[package]
+name = "gitzi"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["dashboard"]
+dashboard = ["dep:axum", "dep:minijinja", "dep:tokio-stream", "dep:tower-http"]
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rig = { package = "rig-core", version = "0.38", features = ["derive"] }
+git2 = { version = "0.21", default-features = false }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+notify = "6"
+serde_json = "1"
+
+axum = { version = "0.8", features = ["macros"], optional = true }
+minijinja = { version = "2", optional = true }
+tokio-stream = { version = "0.1", features = ["sync"], optional = true }
+tower-http = { version = "0.6", features = ["trace"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
