@@ -50,7 +50,54 @@
 
 ---
 
-## Backlog (post-MVP)
+## Context threading
+
+When a user says something mid-interaction ("also I want to track x, y, z"), the harness
+must not drop it and must not blindly fold it into the current work. Instead it classifies
+the input and handles each part in the right context.
+
+### Classification
+
+- [ ] As a developer, when I interject during an active task, the harness classifies my
+      message into: **(a)** relevant to the current thread — handle inline, or **(b)** a
+      new independent thread — split and handle separately
+- [ ] As a developer, the harness asks one clarifying question if the classification is
+      ambiguous before deciding
+- [ ] As a developer, inline additions (same thread) are folded into the current task's
+      context without interrupting execution
+
+### Thread splitting
+
+- [ ] As a developer, when a new thread is identified the harness forks the current
+      execution context: it saves the current thread state (task, stage, pending work),
+      opens a new context for the new thread, and works through it completely before
+      returning
+- [ ] As a developer, the forked context is a full copy of the relevant state — it knows
+      what was in flight when it was created so it can reason about dependencies
+- [ ] As a developer, new-thread work that produces tasks/epics follows the normal
+      pipeline (backlog → prioritized → ...) rather than bypassing it
+- [ ] As a developer, the new thread's completion is a hard gate — the original thread
+      does not resume until the new one reaches `done` or is explicitly deferred
+
+### Resumption
+
+- [ ] As a developer, after the new thread completes, the harness resumes the original
+      thread from exactly the point it was paused — no repeated questions, no lost context
+- [ ] As a developer, if the new thread produced changes that affect the original thread
+      (e.g. a shared file was modified), the harness surfaces that conflict as a single
+      question before resuming
+- [ ] As a developer, thread history is stored in `.gitzi/wip/` so a restart does not
+      lose a paused thread
+
+### Implementation notes
+
+Thread state is a stack entry in `.gitzi/wip/threads/<thread-id>/`:
+```
+  context.toml     frozen execution state (active task id, pending items, parent thread id)
+  inbox.toml       raw user inputs received while the thread was paused
+```
+The scheduler maintains a thread stack; the active thread is always the top of the stack.
+Completing a thread pops it and resumes its parent.
 
 - [ ] LLM proposes task breakdown for a new epic; I approve before tasks are created
 - [ ] Multiple tasks can be `in-progress` simultaneously (WIP limit raised deliberately)
