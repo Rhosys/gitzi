@@ -1,40 +1,75 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::error::{GitziError, Result};
 use crate::model::{Epic, Task, WipSnapshot};
 
+// ── Path helpers ──────────────────────────────────────────────────────────────
+
+pub fn plan_dir(repo_root: &Path) -> PathBuf {
+    repo_root.join(".gitzi").join("plan")
+}
+
+pub fn wip_dir(repo_root: &Path) -> PathBuf {
+    repo_root.join(".gitzi").join("wip")
+}
+
+pub fn task_file(repo_root: &Path, task_id: &str) -> PathBuf {
+    plan_dir(repo_root).join("tasks").join(format!("{task_id}.toml"))
+}
+
+pub fn epic_file(repo_root: &Path, epic_id: &str) -> PathBuf {
+    plan_dir(repo_root).join("epics").join(format!("{epic_id}.toml"))
+}
+
+pub fn wip_file(repo_root: &Path) -> PathBuf {
+    wip_dir(repo_root).join("wip.toml")
+}
+
+pub fn task_wip_dir(repo_root: &Path, task_id: &str) -> PathBuf {
+    wip_dir(repo_root).join("tasks").join(task_id)
+}
+
+pub fn task_worktree_path(repo_root: &Path, task_id: &str) -> PathBuf {
+    task_wip_dir(repo_root, task_id).join("worktree")
+}
+
+pub fn task_log_path(repo_root: &Path, task_id: &str) -> PathBuf {
+    task_wip_dir(repo_root, task_id).join("agent.log")
+}
+
+// ── Readers ───────────────────────────────────────────────────────────────────
+
 pub fn load_task(repo_root: &Path, id: &str) -> Result<Task> {
-    let path = task_dir(repo_root, id).join("task.toml");
+    let path = task_file(repo_root, id);
     let text = std::fs::read_to_string(&path)
         .map_err(|_| GitziError::TaskNotFound(id.to_string()))?;
     Ok(toml::from_str(&text)?)
 }
 
 pub fn load_all_tasks(repo_root: &Path) -> Result<Vec<Task>> {
-    let dir = repo_root.join(".gitzi").join("tasks");
+    let dir = plan_dir(repo_root).join("tasks");
     if !dir.exists() {
         return Ok(Vec::new());
     }
     let mut tasks = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
-        let task_file = entry.path().join("task.toml");
-        if task_file.exists() {
-            let text = std::fs::read_to_string(&task_file)?;
-            tasks.push(toml::from_str(&text)?);
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            tasks.push(toml::from_str(&std::fs::read_to_string(&path)?)?);
         }
     }
     Ok(tasks)
 }
 
 pub fn load_epic(repo_root: &Path, id: &str) -> Result<Epic> {
-    let path = repo_root.join(".gitzi").join("epics").join(format!("{id}.toml"));
+    let path = epic_file(repo_root, id);
     let text = std::fs::read_to_string(&path)
         .map_err(|_| GitziError::EpicNotFound(id.to_string()))?;
     Ok(toml::from_str(&text)?)
 }
 
 pub fn load_all_epics(repo_root: &Path) -> Result<Vec<Epic>> {
-    let dir = repo_root.join(".gitzi").join("epics");
+    let dir = plan_dir(repo_root).join("epics");
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -43,30 +78,16 @@ pub fn load_all_epics(repo_root: &Path) -> Result<Vec<Epic>> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
-            let text = std::fs::read_to_string(&path)?;
-            epics.push(toml::from_str(&text)?);
+            epics.push(toml::from_str(&std::fs::read_to_string(&path)?)?);
         }
     }
     Ok(epics)
 }
 
 pub fn load_wip(repo_root: &Path) -> Result<WipSnapshot> {
-    let path = repo_root.join(".gitzi").join("wip.toml");
+    let path = wip_file(repo_root);
     if !path.exists() {
         return Ok(WipSnapshot::default());
     }
-    let text = std::fs::read_to_string(&path)?;
-    Ok(toml::from_str(&text)?)
-}
-
-pub fn task_dir(repo_root: &Path, task_id: &str) -> std::path::PathBuf {
-    repo_root.join(".gitzi").join("tasks").join(task_id)
-}
-
-pub fn task_worktree_path(repo_root: &Path, task_id: &str) -> std::path::PathBuf {
-    task_dir(repo_root, task_id).join("worktree")
-}
-
-pub fn task_log_path(repo_root: &Path, task_id: &str) -> std::path::PathBuf {
-    task_dir(repo_root, task_id).join("agent.log")
+    Ok(toml::from_str(&std::fs::read_to_string(&path)?)?)
 }
