@@ -89,17 +89,34 @@ Raise the limit deliberately when confidence is high.
 
 ## State: Files in Git
 
-All pipeline state lives as TOML files committed to the repo. This makes the state
-auditable, diffable, and branchable.
+All pipeline state lives as TOML files. The harness uses **three distinct branch types**,
+none of which block or stomp on each other:
+
+| Branch | Purpose | Who merges |
+|--------|---------|------------|
+| `main` (or default) | Source of truth; production code | Human, via PR |
+| `gitzi/state` | All `.gitzi/` TOML state changes (tasks, epics, wip) | Human, via PR into main |
+| `gitzi/<task-id>-<slug>` | One per task; agent code changes in a worktree | Human, via PR into main |
+
+The harness **never commits to main directly**. Every write goes to a branch the human
+reviews first. `config.state_branch` (default: `"gitzi/state"`) is configurable.
+
+**Git mechanics:**
+- State commits use direct git object writes (blob → tree → commit onto the branch ref)
+  — the main working tree's index is never touched.
+- Task branches use linked git worktrees in `.gitzi/worktrees/<name>/` — the agent
+  subprocess runs there; the main workspace stays clean.
 
 ```
 .gitzi/
-  config.toml          # harness config (WIP limits, integrations, agent defaults)
+  config.toml          # harness config (WIP limits, state_branch, agent defaults)
   epics/
     <epic-id>.toml     # epic metadata + child task list
   tasks/
     <task-id>.toml     # task metadata, stage, assigned agent, history
-  wip.toml             # current stage snapshot (auto-generated, not hand-edited)
+  wip.toml             # current stage snapshot (auto-generated)
+  worktrees/
+    gitzi-<task-id>-<slug>/   # linked worktree per active task (temp)
 ```
 
 Each task gets its own branch: `gitzi/<task-id>-<slug>` (e.g. `gitzi/task-001-add-login`).

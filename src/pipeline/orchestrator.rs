@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use crate::config::Config;
@@ -20,7 +20,10 @@ impl Orchestrator {
     }
 
     pub fn pick_next_task<'a>(&self, tasks: &'a [Task]) -> Option<&'a Task> {
-        let in_progress_count = tasks.iter().filter(|t| t.stage == Stage::InProgress).count();
+        let in_progress_count = tasks
+            .iter()
+            .filter(|t| t.stage == Stage::InProgress)
+            .count();
         if in_progress_count >= self.config.wip_limits.in_progress as usize {
             return None;
         }
@@ -44,15 +47,26 @@ impl Orchestrator {
 
         if let Some(limit) = limit {
             let tasks = reader::load_all_tasks(&self.repo_root)?;
-            let count = tasks.iter().filter(|t| t.stage == to && t.id != task_id).count();
+            let count = tasks
+                .iter()
+                .filter(|t| t.stage == to && t.id != task_id)
+                .count();
             if count >= limit as usize {
                 return Err(GitziError::WipLimitExceeded { stage: stage_str, limit });
             }
         }
 
         task.transition_to(to, note);
+
+        // Write to disk for immediate reads, then commit to the state branch
+        // so the user can review all harness changes before merging into main.
         writer::write_task(&self.repo_root, &task)?;
+        writer::commit_task(&self.repo_root, &self.config, &task)?;
+
         writer::rebuild_wip(&self.repo_root)?;
+        let all_tasks = reader::load_all_tasks(&self.repo_root)?;
+        writer::commit_wip_to_branch(&self.repo_root, &self.config, &all_tasks)?;
+
         let _ = self.tx.send(StateEvent::TaskChanged(task_id.to_string()));
         Ok(())
     }
@@ -62,6 +76,7 @@ impl Orchestrator {
         task.branch = Some(branch.to_string());
         task.updated_at = chrono::Utc::now();
         writer::write_task(&self.repo_root, &task)?;
+        writer::commit_task(&self.repo_root, &self.config, &task)?;
         Ok(())
     }
 
@@ -69,6 +84,7 @@ impl Orchestrator {
         let mut task = reader::load_task(&self.repo_root, task_id)?;
         task.agent_feedback = Some(feedback.to_string());
         writer::write_task(&self.repo_root, &task)?;
+        writer::commit_task(&self.repo_root, &self.config, &task)?;
         self.advance_task(task_id, Stage::InProgress, Some(format!("rejected: {feedback}")))?;
         Ok(())
     }
