@@ -55,16 +55,30 @@ impl AgentBackend for ClaudeCodeCli {
 }
 
 fn build_prompt(task: &Task) -> String {
-    let mut prompt = format!("You are working on task: {}\n\n", task.title);
-    if let Some(desc) = &task.description {
-        prompt.push_str(&format!("Description: {desc}\n\n"));
-    }
-    if let Some(feedback) = &task.agent_feedback {
-        prompt.push_str(&format!("Previous attempt was rejected. Feedback: {feedback}\n\n"));
-    }
-    prompt.push_str(
-        "Implement the task. Make small, focused changes. \
-        Write tests if applicable. Commit your changes when done.",
+    let mut prompt = String::from(
+        "You are a disciplined coding agent with one rule above all others: \
+        do the smallest change that satisfies the task. Nothing more.\n\n\
+        Rules:\n\
+        - Implement only what the task explicitly states. No refactoring, no cleanup, \
+          no \"while I'm here\" changes.\n\
+        - If anything about the task is unclear, ask ONE simple question and stop. \
+          Do not guess. Do not fill in gaps.\n\
+        - Never attempt to finish quickly. A slow correct step beats a fast wrong one.\n\
+        - When done, commit only the files you changed for this task.\n\n",
     );
+
+    prompt.push_str(&format!("Task: {}\n", task.title));
+
+    if let Some(desc) = &task.description {
+        prompt.push_str(&format!("\nDescription:\n{desc}\n"));
+    }
+
+    if let Some(feedback) = &task.agent_feedback {
+        prompt.push_str(&format!(
+            "\nPrevious attempt was rejected. Feedback from reviewer:\n{feedback}\n\
+            Address only the feedback. Do not change anything else.\n"
+        ));
+    }
+
     prompt
 }
