@@ -9,7 +9,7 @@ use gitzi::config::Config;
 use gitzi::model::{Epic, Stage, Task};
 use gitzi::model::task::{new_id, slug};
 use gitzi::pipeline::{Orchestrator, Scheduler};
-use gitzi::state::{reader::{self, load_all_tasks}, writer};
+use gitzi::state::{reader, writer};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -116,38 +116,28 @@ fn cmd_task_create(
     priority: u32,
     description: Option<String>,
 ) -> Result<()> {
-    let config = Config::load(repo_root)?;
     let id = new_id();
     let mut task = Task::new(&id, epic_id, title);
     task.priority = priority;
     task.description = description;
     writer::write_task(repo_root, &task)?;
-    writer::commit_task(repo_root, &config, &task)?;
 
     if let Ok(mut epic) = reader::load_epic(repo_root, epic_id) {
         epic.tasks.push(id.clone());
         writer::write_epic(repo_root, &epic)?;
-        writer::commit_epic(repo_root, &config, &epic)?;
     }
 
     writer::rebuild_wip(repo_root)?;
-    let all_tasks = reader::load_all_tasks(repo_root)?;
-    writer::commit_wip_to_branch(repo_root, &config, &all_tasks)?;
-
     println!("Created task {id}: {title}");
-    println!("State committed to branch '{}'", config.state_branch);
     Ok(())
 }
 
 fn cmd_epic_create(repo_root: &PathBuf, title: &str, description: Option<String>) -> Result<()> {
-    let config = Config::load(repo_root)?;
     let id = new_id();
     let mut epic = Epic::new(&id, title);
     epic.description = description;
     writer::write_epic(repo_root, &epic)?;
-    writer::commit_epic(repo_root, &config, &epic)?;
     println!("Created epic {id}: {title}");
-    println!("State committed to branch '{}'", config.state_branch);
     Ok(())
 }
 
