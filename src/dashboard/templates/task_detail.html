@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>gitzi — {{ task.title }}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 16px; max-width: 960px; margin: 0 auto; }
+    a { color: #58a6ff; }
+    h1 { color: #58a6ff; margin: 12px 0 4px; }
+    .meta { color: #8b949e; font-size: 0.8rem; margin-bottom: 16px; }
+    .diff { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; overflow-x: auto; white-space: pre; font-size: 0.8rem; line-height: 1.5; margin-bottom: 16px; }
+    .diff .add { color: #3fb950; }
+    .diff .del { color: #f85149; }
+    .actions { display: flex; gap: 12px; align-items: flex-start; }
+    button { font-family: monospace; padding: 8px 16px; border-radius: 4px; border: none; cursor: pointer; font-size: 0.9rem; }
+    .approve { background: #238636; color: #fff; }
+    .approve:hover { background: #2ea043; }
+    textarea { font-family: monospace; background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; padding: 8px; width: 320px; height: 80px; font-size: 0.8rem; }
+    .reject-form { display: flex; flex-direction: column; gap: 6px; }
+    .reject { background: #b62324; color: #fff; }
+    .reject:hover { background: #da3633; }
+    .no-diff { color: #8b949e; font-style: italic; margin-bottom: 16px; }
+    .stage-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; background: #21262d; color: #8b949e; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <a href="/">← board</a>
+  <h1>{{ task.title }}</h1>
+  <div class="meta">
+    <span class="stage-badge">{{ task.stage }}</span>
+    &nbsp;id: {{ task.id }}
+    &nbsp;·&nbsp;priority: {{ task.priority }}
+    {% if task.branch %}&nbsp;·&nbsp;branch: {{ task.branch }}{% endif %}
+  </div>
+
+  {% if task.description %}
+  <p style="margin-bottom:12px">{{ task.description }}</p>
+  {% endif %}
+
+  {% if diff %}
+  <div class="diff">{% for line in diff.splitlines() %}{% if line.startswith("+") %}<span class="add">{{ line }}</span>{% elif line.startswith("-") %}<span class="del">{{ line }}</span>{% else %}{{ line }}{% endif %}
+{% endfor %}</div>
+  {% else %}
+  <div class="no-diff">No diff available yet.</div>
+  {% endif %}
+
+  {% if task.stage == "waiting-for-review" %}
+  <div class="actions">
+    <form method="post" action="/tasks/{{ task.id }}/approve">
+      <button class="approve" type="submit">Approve →</button>
+    </form>
+    <form method="post" action="/tasks/{{ task.id }}/reject" class="reject-form">
+      <textarea name="feedback" placeholder="Rejection feedback for the agent…"></textarea>
+      <button class="reject" type="submit">Reject with feedback</button>
+    </form>
+  </div>
+  {% endif %}
+</body>
+</html>
