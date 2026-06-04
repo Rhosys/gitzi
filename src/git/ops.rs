@@ -1,47 +1,193 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use git2::{Repository, Signature};
-use crate::error::Result;
+use crate::error::{GitziError, Result};
 
 pub fn open_repo(path: &Path) -> Result<Repository> {
     Ok(Repository::discover(path)?)
 }
 
-pub fn create_branch(repo: &Repository, branch_name: &str) -> Result<()> {
-    let head = repo.head()?;
-    let commit = head.peel_to_commit()?;
-    repo.branch(branch_name, &commit, false)?;
-    Ok(())
+// ── Worktrees ─────────────────────────────────────────────────────────────────
+//
+// Each task branch is worked on inside a git worktree — a separate directory
+// that shares the object store with the main repo but has its own checked-out
+// tree and HEAD. The main workspace is never touched.
+
+pub struct TaskWorktree {
+    pub path: PathBuf,
+    name: String,
+    repo_root: PathBuf,
 }
 
-pub fn checkout_branch(repo: &Repository, branch_name: &str) -> Result<()> {
-    let (object, reference) = repo.revparse_ext(branch_name)?;
-    repo.checkout_tree(&object, None)?;
-    if let Some(r) = reference {
-        repo.set_head(r.name().unwrap_or(branch_name))?;
+impl TaskWorktree {
+    /// Create a linked worktree at `<repo_root>/.gitzi/worktrees/<name>` on
+    /// `branch_name`, creating the branch off HEAD if it does not yet exist.
+    pub fn create(repo: &Repository, branch_name: &str) -> Result<Self> {
+        let repo_root = repo
+            .workdir()
+            .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
+            .to_path_buf();
+
+        let wt_path = repo_root
+            .join(".gitzi")
+            .join("worktrees")
+            .join(worktree_name(branch_name));
+
+        std::fs::create_dir_all(&wt_path)?;
+
+        // Ensure the branch exists before attaching a worktree to it.
+        if repo.find_branch(branch_name, git2::BranchType::Local).is_err() {
+            let head_commit = repo.head()?.peel_to_commit()?;
+            repo.branch(branch_name, &head_commit, false)?;
+        }
+
+        let name = worktree_name(branch_name);
+        let mut opts = git2::WorktreeAddOptions::new();
+        let reference = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
+        opts.reference(Some(&reference));
+        repo.worktree(&name, &wt_path, Some(&opts))?;
+
+        Ok(Self { path: wt_path, name, repo_root })
+    }
+
+    /// Open an existing worktree by branch name (e.g. after a restart).
+    pub fn open(repo: &Repository, branch_name: &str) -> Result<Self> {
+        let repo_root = repo
+            .workdir()
+            .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
+            .to_path_buf();
+        let name = worktree_name(branch_name);
+        let path = repo_root.join(".gitzi").join("worktrees").join(&name);
+        Ok(Self { path, name, repo_root })
+    }
+
+    /// Commit everything staged in the worktree using direct object writes —
+    /// no index manipulation on the main repo.
+    pub fn commit_all(&self, message: &str) -> Result<git2::Oid> {
+        // Open the worktree as its own repository so we can manipulate its
+        // index and object store without touching the main repo's index.
+        let wt_repo = Repository::open(&self.path)?;
+        let sig = signature(&wt_repo)?;
+
+        let mut index = wt_repo.index()?;
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+
+        let tree_oid = index.write_tree()?;
+        let tree = wt_repo.find_tree(tree_oid)?;
+
+        let parent = wt_repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let parents: Vec<&git2::Commit> = parent.iter().collect();
+
+        let oid = wt_repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
+        Ok(oid)
+    }
+
+    /// Remove the worktree directory and its registration in the main repo.
+    pub fn remove(self) -> Result<()> {
+        let main_repo = Repository::discover(&self.repo_root)?;
+        if let Ok(wt) = main_repo.find_worktree(&self.name) {
+            let mut prune_opts = git2::WorktreePruneOptions::new();
+            prune_opts.valid(true);
+            let _ = wt.prune(Some(&mut prune_opts));
+        }
+        if self.path.exists() {
+            std::fs::remove_dir_all(&self.path)?;
+        }
+        Ok(())
+    }
+}
+
+fn worktree_name(branch_name: &str) -> String {
+    branch_name.replace('/', "-")
+}
+
+// ── Direct object commits (no working tree) ───────────────────────────────────
+//
+// Use this to commit .gitzi/ state files to the main branch without touching
+// the working tree index. Walks: content → blob OID → tree OID → commit OID.
+
+/// Commit a set of (repo-relative path, content) pairs directly to `branch`
+/// as git objects, without staging them in the working tree index.
+pub fn commit_files_to_branch(
+    repo: &Repository,
+    branch: &str,
+    files: &[(&str, &[u8])],
+    message: &str,
+) -> Result<git2::Oid> {
+    let sig = signature(repo)?;
+    let branch_ref = format!("refs/heads/{branch}");
+
+    let parent = repo
+        .find_reference(&branch_ref)
+        .ok()
+        .and_then(|r| r.peel_to_commit().ok());
+
+    let base_tree = parent.as_ref().and_then(|c| c.tree().ok());
+    let mut builder = repo.treebuilder(base_tree.as_ref())?;
+
+    for (path, content) in files {
+        let blob_oid = repo.blob(content)?;
+        insert_into_tree(repo, &mut builder, path, blob_oid)?;
+    }
+
+    let tree_oid = builder.write()?;
+    let tree = repo.find_tree(tree_oid)?;
+    let parents: Vec<&git2::Commit> = parent.iter().collect();
+
+    let oid = repo.commit(Some(&branch_ref), &sig, &sig, message, &tree, &parents)?;
+    Ok(oid)
+}
+
+/// Recursively insert a blob at a slash-separated path into a tree builder.
+fn insert_into_tree(
+    repo: &Repository,
+    builder: &mut git2::TreeBuilder<'_>,
+    path: &str,
+    blob_oid: git2::Oid,
+) -> Result<()> {
+    if let Some(slash) = path.find('/') {
+        let dir = &path[..slash];
+        let rest = &path[slash + 1..];
+
+        // Find or create the subtree for this directory component.
+        let existing = builder.get(dir)?.and_then(|e| {
+            if e.kind() == Some(git2::ObjectType::Tree) {
+                repo.find_tree(e.id()).ok()
+            } else {
+                None
+            }
+        });
+
+        let mut sub = repo.treebuilder(existing.as_ref())?;
+        insert_into_tree(repo, &mut sub, rest, blob_oid)?;
+        let sub_oid = sub.write()?;
+        builder.insert(dir, sub_oid, 0o040000)?;
+    } else {
+        builder.insert(path, blob_oid, 0o100644)?;
     }
     Ok(())
 }
 
+// ── Diff (pure object read — never touches working tree) ──────────────────────
+
 pub fn get_diff(repo: &Repository, branch_name: &str) -> Result<String> {
     let branch_ref = format!("refs/heads/{branch_name}");
-    let branch_obj = repo.revparse_single(&branch_ref)?;
-    let branch_commit = branch_obj.peel_to_commit()?;
+    let branch_commit = repo
+        .find_reference(&branch_ref)?
+        .peel_to_commit()?;
 
-    let merge_base = find_merge_base(repo, branch_name)?;
-    let base_commit = repo.find_commit(merge_base)?;
-
-    let base_tree = base_commit.tree()?;
+    let merge_base_oid = find_merge_base(repo, branch_name)?;
+    let base_tree = repo.find_commit(merge_base_oid)?.tree()?;
     let branch_tree = branch_commit.tree()?;
 
     let diff = repo.diff_tree_to_tree(Some(&base_tree), Some(&branch_tree), None)?;
 
     let mut output = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
-        use git2::DiffLineType::*;
         match line.origin_value() {
-            Addition => output.push('+'),
-            Deletion => output.push('-'),
-            Context => output.push(' '),
+            git2::DiffLineType::Addition => output.push('+'),
+            git2::DiffLineType::Deletion => output.push('-'),
+            git2::DiffLineType::Context => output.push(' '),
             _ => {}
         }
         if let Ok(s) = std::str::from_utf8(line.content()) {
@@ -60,25 +206,7 @@ fn find_merge_base(repo: &Repository, branch_name: &str) -> Result<git2::Oid> {
     Ok(repo.merge_base(head, branch_oid)?)
 }
 
-pub fn stage_and_commit(repo: &Repository, paths: &[&Path], message: &str) -> Result<()> {
-    let mut index = repo.index()?;
-    for path in paths {
-        let relative = path
-            .strip_prefix(repo.workdir().unwrap_or(path))
-            .unwrap_or(path);
-        index.add_path(relative)?;
-    }
-    index.write()?;
-
-    let tree_id = index.write_tree()?;
-    let tree = repo.find_tree(tree_id)?;
-    let sig = signature(repo)?;
-    let parent = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-    let parents: Vec<&git2::Commit> = parent.iter().collect();
-
-    repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
-    Ok(())
-}
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn signature(repo: &Repository) -> Result<Signature<'static>> {
     let config = repo.config()?;
