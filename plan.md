@@ -3,25 +3,29 @@
 ## Overview
 
 **gitzi** is a Rust-based Kanban pipeline harness that orchestrates AI coding agents
-across a software development lifecycle. It tracks epics and tasks, assigns work to
-agents, enforces WIP limits, and optimizes every interaction with the human reviewer
+across a software development lifecycle. It is **LLM-driven with human in the loop**:
+the LLM proposes, the human approves. The harness tracks epics and tasks, assigns work
+to agents, enforces WIP limits, and optimizes every interaction with the human reviewer
 by surfacing small, reviewable diffs and driving test-first development.
 
 ---
 
 ## Goals
 
-1. **Pipeline orchestration** — move work through Kanban stages automatically by
+1. **LLM-driven, human-in-the-loop** — the LLM proposes everything (epic breakdown,
+   task splits, prioritization, implementation); the human approves at each gate.
+   Nothing moves forward without human sign-off.
+2. **Pipeline orchestration** — move work through Kanban stages automatically by
    dispatching agents and reacting to outcomes.
-2. **Epic & task management** — first-class breakdown of epics into tasks; splitting,
-   prioritizing, and allocating work without requiring an external tracker.
-3. **WIP tracking** — enforce limits at each stage; surface bottlenecks; prevent
+3. **Epic & task management** — LLM breaks epics into tasks, suggests sizing and order;
+   human refines and approves before work begins.
+4. **WIP tracking** — enforce limits at each stage; surface bottlenecks; prevent
    runaway parallel work.
-4. **User-optimized review loop** — every agent output is a small, testable diff that
+5. **User-optimized review loop** — every agent output is a small, testable diff that
    the human can approve or reject before the pipeline continues.
-5. **Pluggable agent backends** — Claude Code CLI, AWS Kiro CLI, Ollama, ChatLM UI,
+6. **Pluggable agent backends** — Claude Code CLI, AWS Kiro CLI, Ollama, ChatLM UI,
    and others can be swapped in per task without changing the harness.
-6. **Optional external sync** — GitHub Issues, Jira, and Linear are sync targets, not
+7. **Optional external sync** — GitHub Issues, Jira, and Linear are sync targets, not
    the source of truth.
 
 ---
@@ -270,5 +274,5 @@ epic auto-splitting) is post-MVP.
 - [x] **Branch strategy** — one branch per task (`gitzi/<task-id>-<slug>`)
 - [x] **Slack** — dropped; mobile app via federated git-native protocol (TBD)
 - [x] **Test adapter** — not needed; `test_command` in `config.toml`
-- [ ] **Epic auto-generation** — should the harness propose task breakdowns using an LLM, or is that always human-driven?
+- [x] **Epic auto-generation** — LLM proposes epic breakdowns, task splits, and prioritization; human approves each step
 - [ ] **Mobile protocol** — define the federated protocol for mobile ↔ git repo communication
