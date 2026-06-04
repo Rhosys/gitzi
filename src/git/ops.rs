@@ -28,6 +28,7 @@ impl TaskWorktree {
             .to_path_buf();
 
         let wt_path = crate::state::reader::task_worktree_path(&repo_root, task_id);
+        // parent dir (.gitzi/wip/tasks/<id>/) must exist before git creates the worktree
         std::fs::create_dir_all(&wt_path)?;
 
         // Ensure the branch exists before attaching a worktree to it.

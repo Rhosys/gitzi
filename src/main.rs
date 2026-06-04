@@ -41,12 +41,15 @@ async fn main() -> Result<()> {
 
 fn cmd_init(repo_root: &PathBuf) -> Result<()> {
     let gitzi = repo_root.join(".gitzi");
-    std::fs::create_dir_all(gitzi.join("epics"))?;
-    std::fs::create_dir_all(gitzi.join("tasks"))?;
+    std::fs::create_dir_all(gitzi.join("plan").join("epics"))?;
+    std::fs::create_dir_all(gitzi.join("plan").join("tasks"))?;
+    std::fs::create_dir_all(gitzi.join("wip").join("tasks"))?;
     let config = Config::default();
     config.write(repo_root)?;
     writer::write_wip(repo_root, &[])?;
     println!("Initialized .gitzi/ in {}", repo_root.display());
+    println!("  .gitzi/plan/   ← commit this (epics, tasks)");
+    println!("  .gitzi/wip/    ← gitignored (worktrees, logs, wip snapshot)");
     Ok(())
 }
 

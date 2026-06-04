@@ -3,24 +3,26 @@ use std::path::Path;
 use crate::config::atomic_write;
 use crate::error::Result;
 use crate::model::{Epic, Task, WipSnapshot};
-use crate::state::reader::task_dir;
+use crate::state::reader::{epic_file, plan_dir, task_file, task_log_path, task_wip_dir, wip_file};
 
-// .gitzi/ is gitignored — state is local filesystem only, never committed to git.
+// plan/ → committable project state (epics, tasks)
+// wip/  → gitignored runtime state (wip snapshot, worktrees, logs)
 
 pub fn write_task(repo_root: &Path, task: &Task) -> Result<()> {
-    let dir = task_dir(repo_root, &task.id);
+    let dir = plan_dir(repo_root).join("tasks");
     std::fs::create_dir_all(&dir)?;
-    atomic_write(&dir.join("task.toml"), &toml::to_string_pretty(task)?)
+    atomic_write(&task_file(repo_root, &task.id), &toml::to_string_pretty(task)?)
 }
 
 pub fn write_epic(repo_root: &Path, epic: &Epic) -> Result<()> {
-    let dir = repo_root.join(".gitzi").join("epics");
+    let dir = plan_dir(repo_root).join("epics");
     std::fs::create_dir_all(&dir)?;
-    atomic_write(&dir.join(format!("{}.toml", epic.id)), &toml::to_string_pretty(epic)?)
+    atomic_write(&epic_file(repo_root, &epic.id), &toml::to_string_pretty(epic)?)
 }
 
 pub fn write_wip(repo_root: &Path, tasks: &[Task]) -> Result<()> {
-    let path = repo_root.join(".gitzi").join("wip.toml");
+    let path = wip_file(repo_root);
+    std::fs::create_dir_all(path.parent().unwrap())?;
     atomic_write(&path, &toml::to_string_pretty(&wip_snapshot(tasks))?)
 }
 
@@ -31,8 +33,12 @@ pub fn rebuild_wip(repo_root: &Path) -> Result<()> {
 
 pub fn append_agent_log(repo_root: &Path, task_id: &str, output: &str) -> Result<()> {
     use std::io::Write;
-    let path = crate::state::reader::task_log_path(repo_root, task_id);
-    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    let dir = task_wip_dir(repo_root, task_id);
+    std::fs::create_dir_all(&dir)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(task_log_path(repo_root, task_id))?;
     writeln!(file, "{output}")?;
     Ok(())
 }
@@ -40,10 +46,7 @@ pub fn append_agent_log(repo_root: &Path, task_id: &str, output: &str) -> Result
 fn wip_snapshot(tasks: &[Task]) -> WipSnapshot {
     let mut stages: HashMap<String, Vec<String>> = HashMap::new();
     for task in tasks {
-        stages
-            .entry(task.stage.to_string())
-            .or_default()
-            .push(task.id.clone());
+        stages.entry(task.stage.to_string()).or_default().push(task.id.clone());
     }
     WipSnapshot { stages }
 }
