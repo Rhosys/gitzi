@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use tracing::{info, warn, error};
-use crate::agent::{AgentBackend, ClaudeCodeCli, RunContext};
+use crate::agent::{AgentBackend, RunContext, build_agent};
 use crate::config::Config;
 use crate::error::Result;
 use crate::git::ops::{self as git, TaskWorktree};
@@ -64,7 +64,7 @@ impl Scheduler {
             self.orchestrator.set_task_branch(&task_id, &branch)?;
             self.orchestrator.advance_task(&task_id, Stage::InProgress, None)?;
 
-            let agent = ClaudeCodeCli;
+            let agent = build_agent(&self.config)?;
             let ctx = RunContext { repo_root: worktree.path.clone(), branch: branch.clone() };
 
             match agent.run(&task, &ctx).await {
