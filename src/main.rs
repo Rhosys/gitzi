@@ -7,7 +7,7 @@ use tracing::info;
 use gitzi::cli::{Cli, Commands, EpicCommands, TaskCommands};
 use gitzi::config::Config;
 use gitzi::model::{Epic, Stage, Task};
-use gitzi::model::task::{new_id, slug};
+use gitzi::model::task::new_id;
 use gitzi::pipeline::{Orchestrator, Scheduler};
 use gitzi::state::{reader, writer};
 

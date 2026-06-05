@@ -1,6 +1,5 @@
 use std::path::Path;
-use std::sync::Arc;
-use notify::{RecommendedWatcher, RecursiveMode, Watcher, Config};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone)]

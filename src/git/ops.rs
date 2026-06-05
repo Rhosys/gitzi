@@ -21,6 +21,7 @@ pub struct TaskWorktree {
 impl TaskWorktree {
     /// Create a linked worktree at `<repo_root>/.gitzi/tasks/<task_id>/worktree`
     /// on `branch_name`, creating the branch off HEAD if it does not yet exist.
+    /// Idempotent: if the worktree is already registered, returns it as-is.
     pub fn create(repo: &Repository, task_id: &str, branch_name: &str) -> Result<Self> {
         let repo_root = repo
             .workdir()
@@ -28,8 +29,17 @@ impl TaskWorktree {
             .to_path_buf();
 
         let wt_path = crate::state::reader::task_worktree_path(&repo_root, task_id);
-        // parent dir (.gitzi/wip/tasks/<id>/) must exist before git creates the worktree
-        std::fs::create_dir_all(&wt_path)?;
+        let name = worktree_name(branch_name);
+
+        // Idempotent: if already registered (e.g. after restart or partial failure), reuse it.
+        if repo.find_worktree(&name).is_ok() {
+            return Ok(Self { path: wt_path, name, repo_root });
+        }
+
+        // Create the parent dir only — git2 requires the worktree target dir to not yet exist.
+        if let Some(parent) = wt_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
 
         // Ensure the branch exists before attaching a worktree to it.
         if repo.find_branch(branch_name, git2::BranchType::Local).is_err() {
@@ -37,7 +47,6 @@ impl TaskWorktree {
             repo.branch(branch_name, &head_commit, false)?;
         }
 
-        let name = worktree_name(branch_name);
         let mut opts = git2::WorktreeAddOptions::new();
         let reference = repo.find_reference(&format!("refs/heads/{branch_name}"))?;
         opts.reference(Some(&reference));
