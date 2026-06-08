@@ -46,9 +46,18 @@ fn run_event_loop(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                use app::Screen;
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Tab => app.toggle_focus(),
+                    KeyCode::Char('q') => break,
+                    KeyCode::Esc | KeyCode::Backspace
+                        if app.screen == Screen::Kanban =>
+                    {
+                        app.exit_kanban();
+                    }
+                    KeyCode::Esc if app.screen == Screen::Epics => break,
+                    KeyCode::Enter if app.screen == Screen::Epics => {
+                        app.enter_kanban();
+                    }
                     KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                     KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                     KeyCode::Left | KeyCode::Char('h') => app.move_left(),

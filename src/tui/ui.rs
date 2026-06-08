@@ -6,131 +6,125 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use crate::model::Stage;
-use super::app::{App, Focus, STAGES};
+use super::app::{App, Screen, STAGES};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let area = frame.area();
+    match app.screen {
+        Screen::Epics => draw_epics_screen(frame, app),
+        Screen::Kanban => draw_kanban_screen(frame, app),
+    }
+}
 
-    // Vertical layout: header | body | footer
+// ── Epics screen ──────────────────────────────────────────────────────────────
+
+fn draw_epics_screen(frame: &mut Frame, app: &App) {
+    let area = frame.area();
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
-    ])
-    .areas(area);
+    ]).areas(area);
 
-    // Header
-    let header = Paragraph::new(Line::from(vec![Span::styled(
-        " gitzi",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )]));
-    frame.render_widget(header, header_area);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" gitzi", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("  —  Epics", Style::default().fg(Color::DarkGray)),
+        ])),
+        header_area,
+    );
 
-    // Body: epics (30%) + kanban (70%)
-    let [epics_area, kanban_area] = Layout::vertical([
-        Constraint::Percentage(30),
-        Constraint::Percentage(70),
-    ])
-    .areas(body_area);
+    draw_epics_list(frame, app, body_area);
 
-    draw_epics(frame, app, epics_area);
-    draw_kanban(frame, app, kanban_area);
-
-    // Footer
-    let hints = if app.focus == Focus::Epics {
-        " Tab: switch panel  ↑↓/jk: navigate  r: reload  q/Esc: quit"
-    } else {
-        " Tab: switch panel  ↑↓/jk: navigate  ←→/hl: switch column  r: reload  q/Esc: quit"
-    };
-    let footer = Paragraph::new(Line::from(vec![Span::styled(
-        hints,
-        Style::default().fg(Color::DarkGray),
-    )]));
-    frame.render_widget(footer, footer_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            " ↑↓/jk: navigate  Enter: open kanban  r: reload  q: quit",
+            Style::default().fg(Color::DarkGray),
+        )),
+        footer_area,
+    );
 }
 
-fn draw_epics(frame: &mut Frame, app: &App, area: Rect) {
-    let border_style = if app.focus == Focus::Epics {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-
+fn draw_epics_list(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Epics ")
-        .border_style(border_style);
+        .border_style(Style::default().fg(Color::Yellow));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     if app.epics.is_empty() {
-        let empty = Paragraph::new("No epics found.");
-        frame.render_widget(empty, inner);
+        frame.render_widget(
+            Paragraph::new("  No epics. Run: gitzi epic create --title \"My Epic\""),
+            inner,
+        );
         return;
     }
 
-    // Build list items
-    let items: Vec<ListItem> = app
-        .epics
-        .iter()
-        .enumerate()
-        .map(|(i, epic)| {
-            let (done, total) = app.epic_task_counts(&epic.id);
-            let selected = i == app.epic_idx;
-            let prefix = if selected { "▸ " } else { "  " };
-            let counts = format!("{done}/{total}");
-
-            // Compute available width for title
-            let available = inner.width as usize;
-            let counts_len = counts.len();
-            let prefix_len = prefix.len();
-            // "prefix + title + spaces + counts" should fit in available width
-            let title_max = available.saturating_sub(prefix_len + counts_len + 1);
-            let title = truncate(&epic.title, title_max);
-            let padding = available
-                .saturating_sub(prefix_len + title.chars().count() + counts_len);
-            let row_text = format!("{prefix}{title}{:padding$}{counts}", "", padding = padding);
-
-            let style = if selected {
+    let items: Vec<ListItem> = app.epics.iter().enumerate().map(|(i, epic)| {
+        let (done, total) = app.epic_task_counts(&epic.id);
+        let selected = i == app.epic_idx;
+        let prefix = if selected { "▸ " } else { "  " };
+        let counts = format!("{done}/{total}");
+        let avail = inner.width as usize;
+        let title_max = avail.saturating_sub(prefix.len() + counts.len() + 1);
+        let title = truncate(&epic.title, title_max);
+        let pad = avail.saturating_sub(prefix.len() + title.chars().count() + counts.len());
+        let line = Line::from(Span::styled(
+            format!("{prefix}{title}{:pad$}{counts}", "", pad = pad),
+            if selected {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-            };
+            },
+        ));
+        ListItem::new(line)
+    }).collect();
 
-            ListItem::new(Line::from(Span::styled(row_text, style)))
-        })
-        .collect();
-
-    let list = List::new(items);
-    frame.render_widget(list, inner);
+    frame.render_widget(List::new(items), inner);
 }
 
-fn draw_kanban(frame: &mut Frame, app: &App, area: Rect) {
-    let outer_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Kanban ")
-        .border_style(Style::default().fg(Color::DarkGray));
+// ── Kanban screen ─────────────────────────────────────────────────────────────
 
-    let inner = outer_block.inner(area);
-    frame.render_widget(outer_block, area);
+fn draw_kanban_screen(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    let [header_area, body_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ]).areas(area);
 
-    // 6 equal columns
+    let scope = app.kanban_epic_title().unwrap_or("All tasks");
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" gitzi", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("  —  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(scope, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ])),
+        header_area,
+    );
+
+    draw_kanban_columns(frame, app, body_area);
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            " ↑↓/jk: navigate  ←→/hl: column  r: reload  Esc/Backspace: back  q: quit",
+            Style::default().fg(Color::DarkGray),
+        )),
+        footer_area,
+    );
+}
+
+fn draw_kanban_columns(frame: &mut Frame, app: &App, area: Rect) {
     let col_constraints: Vec<Constraint> = (0..STAGES.len())
         .map(|_| Constraint::Ratio(1, STAGES.len() as u32))
         .collect();
-
-    let col_areas = Layout::horizontal(col_constraints).split(inner);
+    let col_areas = Layout::horizontal(col_constraints).split(area);
 
     for (i, stage) in STAGES.iter().enumerate() {
         let tasks = app.tasks_in_stage(stage);
-        let count = tasks.len();
-        let col_title = format!(" {} ({}) ", stage_label(stage), count);
-
-        let is_active_col = app.focus == Focus::Kanban && i == app.col_idx;
-        let col_border_style = if is_active_col {
+        let active = i == app.col_idx;
+        let border_style = if active {
             Style::default().fg(Color::Green)
         } else {
             Style::default().fg(Color::DarkGray)
@@ -138,40 +132,33 @@ fn draw_kanban(frame: &mut Frame, app: &App, area: Rect) {
 
         let col_block = Block::default()
             .borders(Borders::ALL)
-            .title(col_title.as_str())
-            .border_style(col_border_style);
+            .title(format!(" {} ({}) ", stage_label(stage), tasks.len()))
+            .border_style(border_style);
 
         let col_inner = col_block.inner(col_areas[i]);
         frame.render_widget(col_block, col_areas[i]);
 
-        if tasks.is_empty() {
-            continue;
-        }
+        if tasks.is_empty() { continue; }
 
-        let items: Vec<ListItem> = tasks
-            .iter()
-            .enumerate()
-            .map(|(j, task)| {
-                let selected = is_active_col && j == app.task_idx;
-                let prefix = if selected { "▸ " } else { "  " };
-                let max_chars = col_inner.width as usize;
-                let title_max = max_chars.saturating_sub(prefix.len());
-                let title = truncate(&task.title, title_max);
-                let text = format!("{prefix}{title}");
-
-                let style = if selected {
-                    Style::default().add_modifier(Modifier::BOLD)
+        let items: Vec<ListItem> = tasks.iter().enumerate().map(|(j, task)| {
+            let selected = active && j == app.task_idx;
+            let prefix = if selected { "▸ " } else { "  " };
+            let title = truncate(&task.title, col_inner.width as usize);
+            ListItem::new(Line::from(Span::styled(
+                format!("{prefix}{title}"),
+                if selected {
+                    Style::default().add_modifier(Modifier::BOLD).fg(Color::Green)
                 } else {
                     Style::default()
-                };
-                ListItem::new(Line::from(Span::styled(text, style)))
-            })
-            .collect();
+                },
+            )))
+        }).collect();
 
-        let list = List::new(items);
-        frame.render_widget(list, col_inner);
+        frame.render_widget(List::new(items), col_inner);
     }
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn stage_label(stage: &Stage) -> &'static str {
     match stage {
@@ -185,16 +172,14 @@ fn stage_label(stage: &Stage) -> &'static str {
 }
 
 fn truncate(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    let char_count = s.chars().count();
-    if char_count <= max_chars {
+    if max_chars == 0 { return String::new(); }
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
         s.to_string()
     } else if max_chars <= 1 {
         "…".to_string()
     } else {
-        let truncated: String = s.chars().take(max_chars - 1).collect();
-        format!("{truncated}…")
+        let t: String = chars[..max_chars - 1].iter().collect();
+        format!("{t}…")
     }
 }
