@@ -13,19 +13,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            archive: gitzi-linux-x86_64.tar.gz
+            binary: gitzi-linux-x86_64
 
           - os: macos-13
             target: x86_64-apple-darwin
-            archive: gitzi-macos-x86_64.tar.gz
+            binary: gitzi-macos-x86_64
 
           - os: macos-latest
             target: aarch64-apple-darwin
-            archive: gitzi-macos-aarch64.tar.gz
+            binary: gitzi-macos-aarch64
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: gitzi-windows-x86_64.zip
+            binary: gitzi-windows-x86_64.exe
 
     runs-on: ${{ matrix.os }}
 
@@ -51,25 +51,19 @@ jobs:
       - name: Build
         run: cargo build --release --features dashboard --target ${{ matrix.target }}
 
-      - name: Archive (Unix)
+      - name: Stage binary (Unix)
         if: runner.os != 'Windows'
-        run: |
-          cp target/${{ matrix.target }}/release/gitzi gitzi
-          tar czf ${{ matrix.archive }} gitzi
-          rm gitzi
+        run: cp target/${{ matrix.target }}/release/gitzi ${{ matrix.binary }}
 
-      - name: Archive (Windows)
+      - name: Stage binary (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: |
-          Copy-Item "target\${{ matrix.target }}\release\gitzi.exe" "gitzi.exe"
-          Compress-Archive -Path gitzi.exe -DestinationPath ${{ matrix.archive }}
-          Remove-Item gitzi.exe
+        run: Copy-Item "target\${{ matrix.target }}\release\gitzi.exe" "${{ matrix.binary }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }}
-          path: ${{ matrix.archive }}
+          name: ${{ matrix.binary }}
+          path: ${{ matrix.binary }}
 
   release:
     needs: build
@@ -84,8 +78,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            gitzi-linux-x86_64.tar.gz
-            gitzi-macos-x86_64.tar.gz
-            gitzi-macos-aarch64.tar.gz
-            gitzi-windows-x86_64.zip
+            gitzi-linux-x86_64
+            gitzi-macos-x86_64
+            gitzi-macos-aarch64
+            gitzi-windows-x86_64.exe
           generate_release_notes: true
