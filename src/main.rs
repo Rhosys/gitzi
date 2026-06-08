@@ -34,6 +34,10 @@ async fn main() -> Result<()> {
         Commands::Epic { command: EpicCommands::Create { title, description } } => {
             cmd_epic_create(&repo_root, &title, description)?;
         }
+        #[cfg(feature = "tui")]
+        Commands::Tui => {
+            gitzi::tui::run(repo_root)?;
+        }
     }
 
     Ok(())
