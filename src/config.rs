@@ -27,32 +27,30 @@ fn default_wip_in_progress() -> u32 { 1 }
 fn default_wip_waiting() -> u32 { 3 }
 fn default_wip_testing() -> u32 { 3 }
 
-/// A named agent. Define as many as you like under `[[agents]]`.
+/// An agent definition. Define as many as you like under `[[agents]]`.
+/// The role is the identifier — reference it via `default_agent` or per-task.
 ///
 /// ```toml
 /// [[agents]]
-/// name = "coder"
-/// model = "claude-sonnet-4-6"
 /// role = "developer"
+/// model = "claude-sonnet-4-6"
 /// system_prompt = """
 /// You are a disciplined coding agent. Make the smallest possible change.
+/// No refactoring, no extras.
 /// """
 ///
 /// [[agents]]
-/// name = "planner"
-/// model = "claude-opus-4-8"
 /// role = "planner"
-/// system_prompt = "Break down the epic into precise, minimal tasks."
+/// model = "claude-opus-4-8"
+/// system_prompt = """
+/// Break the epic into precise, minimal, independently shippable tasks.
+/// """
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDef {
-    pub name: String,
+    pub role: String,
     #[serde(default = "default_model")]
     pub model: String,
-    /// What this agent is for — used by the scheduler for role-based routing.
-    /// Free-form string: e.g. "developer", "planner", "reviewer".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub role: Option<String>,
     /// System prompt sent before every task. Falls back to a sensible built-in default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -61,9 +59,8 @@ pub struct AgentDef {
 impl Default for AgentDef {
     fn default() -> Self {
         Self {
-            name: "default".to_string(),
+            role: "developer".to_string(),
             model: default_model(),
-            role: None,
             system_prompt: None,
         }
     }
@@ -93,7 +90,7 @@ pub struct Config {
     pub integrations: HashMap<String, toml::Value>,
 }
 
-fn default_agent_name() -> String { "default".to_string() }
+fn default_agent_name() -> String { "developer".to_string() }
 
 fn default_agents() -> Vec<AgentDef> {
     vec![AgentDef::default()]
@@ -135,9 +132,9 @@ impl Config {
         atomic_write(&path, &text)
     }
 
-    /// Find an agent by name. Returns the first match or a built-in default.
-    pub fn resolve_agent(&self, name: &str) -> &AgentDef {
-        self.agents.iter().find(|a| a.name == name)
+    /// Find an agent by role. Returns the first match or the first agent in the list.
+    pub fn resolve_agent(&self, role: &str) -> &AgentDef {
+        self.agents.iter().find(|a| a.role == role)
             .or_else(|| self.agents.first())
             .unwrap_or_else(|| {
                 // Safety: only reachable if agents is empty AND first() returned None.
