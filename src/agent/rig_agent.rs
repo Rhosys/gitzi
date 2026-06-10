@@ -5,12 +5,14 @@ use crate::error::{GitziError, Result};
 use crate::model::Task;
 use super::backend::{AgentBackend, AgentResult, RunContext};
 
+#[allow(dead_code)]
 pub struct RigAgent {
     api_key: String,
     model: String,
     system_prompt: Option<String>,
 }
 
+#[allow(dead_code)]
 impl RigAgent {
     pub fn new(api_key: impl Into<String>) -> Self {
         Self {
