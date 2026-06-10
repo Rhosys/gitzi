@@ -38,7 +38,7 @@ impl Scheduler {
     }
 
     async fn tick(&self) -> Result<()> {
-        let tasks = reader::load_all_tasks(&self.repo_root)?;
+        let tasks = reader::load_all_tasks()?;
 
         if let Some(task) = self.orchestrator.pick_next_task(&tasks) {
             let task = task.clone();
@@ -46,8 +46,6 @@ impl Scheduler {
             let task_id = task.id.clone();
             info!("Dispatching task {task_id} (branch: {branch})");
 
-            // Each task gets its own worktree at .gitzi/tasks/<id>/worktree/
-            // The main workspace is never touched.
             let (root, tid, br) = (self.repo_root.clone(), task_id.clone(), branch.clone());
             tokio::task::spawn_blocking(move || {
                 let repo = git::open_repo(&root)?;
@@ -64,13 +62,14 @@ impl Scheduler {
             self.orchestrator.set_task_branch(&task_id, &branch)?;
             self.orchestrator.advance_task(&task_id, Stage::InProgress, None)?;
 
-            let agent = build_agent(&self.config)?;
+            let agent_name = task.agent.as_deref().unwrap_or(&self.config.default_agent);
+            let agent = build_agent(self.config.resolve_agent(agent_name));
             let ctx = RunContext { repo_root: worktree.path.clone(), branch: branch.clone() };
 
             match agent.run(&task, &ctx).await {
                 Ok(result) if result.success => {
                     info!("Agent completed task {task_id}");
-                    let _ = writer::append_agent_log(&self.repo_root, &task_id, &result.output);
+                    let _ = writer::append_agent_log(&task_id, &result.output);
 
                     let commit_msg = format!("gitzi: agent output for task {task_id}");
                     tokio::task::spawn_blocking(move || worktree.commit_all(&commit_msg))
@@ -83,14 +82,14 @@ impl Scheduler {
                 }
                 Ok(result) => {
                     warn!("Agent failed on task {task_id}: {}", result.output);
-                    let _ = writer::append_agent_log(&self.repo_root, &task_id, &result.output);
+                    let _ = writer::append_agent_log(&task_id, &result.output);
                 }
                 Err(e) => error!("Agent error on task {task_id}: {e}"),
             }
         }
 
-        // Run tests for tasks awaiting verification — inside the task's own worktree.
-        let tasks = reader::load_all_tasks(&self.repo_root)?;
+        // Run tests for tasks in testing
+        let tasks = reader::load_all_tasks()?;
         for task in tasks.iter().filter(|t| t.stage == Stage::InTesting) {
             let test_root = task.branch.as_deref()
                 .and_then(|_| {
@@ -120,3 +119,4 @@ impl Scheduler {
         Ok(())
     }
 }
+
