@@ -27,29 +27,76 @@ fn default_wip_in_progress() -> u32 { 1 }
 fn default_wip_waiting() -> u32 { 3 }
 fn default_wip_testing() -> u32 { 3 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Which runtime backs an agent definition.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
-pub enum DefaultAgent {
+pub enum AgentBackendKind {
+    /// Spawn the `claude` CLI subprocess (default).
+    #[default]
     ClaudeCode,
+    /// Call the Anthropic API directly via rig-core.
     Rig,
 }
 
-impl Default for DefaultAgent {
-    fn default() -> Self { DefaultAgent::ClaudeCode }
+/// A named agent definition stored under `[agents.<name>]` in config.toml.
+///
+/// Example:
+/// ```toml
+/// [agents.coder]
+/// backend = "claude-code"
+/// system_prompt = "You are a disciplined coding agent..."
+///
+/// [agents.planner]
+/// backend = "rig"
+/// model = "claude-opus-4-8"
+/// system_prompt = "You are a software planning agent..."
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentDef {
+    /// Which backend runs this agent.
+    #[serde(default)]
+    pub backend: AgentBackendKind,
+
+    /// Model override. If omitted, each backend uses its own default.
+    /// For `rig`: any Anthropic model ID (e.g. `"claude-opus-4-8"`).
+    /// For `claude-code`: passed via `--model` to the `claude` CLI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+
+    /// System prompt / preamble. Replaces the built-in default when set.
+    /// The task description and any rejection feedback are always appended after.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub wip_limits: WipLimits,
-    #[serde(default)]
-    pub default_agent: DefaultAgent,
+
+    /// Name of the agent used when a task does not specify one.
+    #[serde(default = "default_agent_name")]
+    pub default_agent: String,
+
+    /// Named agent definitions. Add as many as you like; refer to them by
+    /// name via `default_agent` or on a task with `agent = "<name>"`.
+    #[serde(default = "default_agents")]
+    pub agents: HashMap<String, AgentDef>,
+
     #[serde(default = "default_test_command")]
     pub test_command: String,
     #[serde(default = "default_dashboard_port")]
     pub dashboard_port: u16,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
+}
+
+fn default_agent_name() -> String { "default".to_string() }
+
+fn default_agents() -> HashMap<String, AgentDef> {
+    let mut m = HashMap::new();
+    m.insert("default".to_string(), AgentDef::default());
+    m
 }
 
 fn default_test_command() -> String { "cargo test".to_string() }
@@ -59,7 +106,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             wip_limits: WipLimits::default(),
-            default_agent: DefaultAgent::default(),
+            default_agent: default_agent_name(),
+            agents: default_agents(),
             test_command: default_test_command(),
             dashboard_port: default_dashboard_port(),
             integrations: HashMap::new(),
@@ -85,6 +133,16 @@ impl Config {
         }
         let text = toml::to_string_pretty(self)?;
         atomic_write(&path, &text)
+    }
+
+    /// Look up an agent by name, falling back to `AgentDef::default()` if not found.
+    pub fn resolve_agent(&self, name: &str) -> AgentDef {
+        self.agents.get(name).cloned().unwrap_or_default()
+    }
+
+    /// Resolve the session-wide default agent.
+    pub fn default_agent_def(&self) -> AgentDef {
+        self.resolve_agent(&self.default_agent)
     }
 }
 

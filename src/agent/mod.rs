@@ -6,7 +6,7 @@ pub use backend::{AgentBackend, AgentResult, RunContext};
 pub use claude_code::ClaudeCodeCli;
 pub use rig_agent::RigAgent;
 
-use crate::config::{Config, DefaultAgent};
+use crate::config::{AgentBackendKind, AgentDef};
 use crate::error::{GitziError, Result};
 use crate::model::Task;
 
@@ -30,13 +30,24 @@ impl AgentBackend for AnyAgent {
     }
 }
 
-pub fn build_agent(config: &Config) -> Result<AnyAgent> {
-    match config.default_agent {
-        DefaultAgent::ClaudeCode => Ok(AnyAgent::ClaudeCode(ClaudeCodeCli)),
-        DefaultAgent::Rig => {
+/// Build a runnable agent from an `AgentDef`.
+pub fn build_agent(def: &AgentDef) -> Result<AnyAgent> {
+    match def.backend {
+        AgentBackendKind::ClaudeCode => Ok(AnyAgent::ClaudeCode(ClaudeCodeCli::new(
+            def.model.clone(),
+            def.system_prompt.clone(),
+        ))),
+        AgentBackendKind::Rig => {
             let key = std::env::var("ANTHROPIC_API_KEY")
                 .map_err(|_| GitziError::Config("ANTHROPIC_API_KEY not set".into()))?;
-            Ok(AnyAgent::Rig(RigAgent::new(key)))
+            let mut agent = RigAgent::new(key);
+            if let Some(model) = &def.model {
+                agent = agent.with_model(model.clone());
+            }
+            if let Some(prompt) = &def.system_prompt {
+                agent = agent.with_system_prompt(prompt.clone());
+            }
+            Ok(AnyAgent::Rig(agent))
         }
     }
 }
