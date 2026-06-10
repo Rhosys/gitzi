@@ -183,13 +183,8 @@ impl App {
         if self.focus != Focus::Panel {
             return;
         }
-        match &self.panel {
-            RightPanel::Board => {
-                if self.board_task > 0 {
-                    self.board_task -= 1;
-                }
-            }
-            _ => {}
+        if let RightPanel::Board = &self.panel && self.board_task > 0 {
+            self.board_task -= 1;
         }
     }
 
@@ -197,14 +192,11 @@ impl App {
         if self.focus != Focus::Panel {
             return;
         }
-        match &self.panel {
-            RightPanel::Board => {
-                let n = self.tasks_in_stage(&STAGES[self.board_col]).len();
-                if n > 0 && self.board_task < n - 1 {
-                    self.board_task += 1;
-                }
+        if let RightPanel::Board = &self.panel {
+            let n = self.tasks_in_stage(&STAGES[self.board_col]).len();
+            if n > 0 && self.board_task < n - 1 {
+                self.board_task += 1;
             }
-            _ => {}
         }
     }
 
@@ -212,11 +204,9 @@ impl App {
         if self.focus != Focus::Panel {
             return;
         }
-        if let RightPanel::Board = &self.panel {
-            if self.board_col > 0 {
-                self.board_col -= 1;
-                self.board_task = 0;
-            }
+        if let RightPanel::Board = &self.panel && self.board_col > 0 {
+            self.board_col -= 1;
+            self.board_task = 0;
         }
     }
 
@@ -224,11 +214,9 @@ impl App {
         if self.focus != Focus::Panel {
             return;
         }
-        if let RightPanel::Board = &self.panel {
-            if self.board_col < STAGES.len() - 1 {
-                self.board_col += 1;
-                self.board_task = 0;
-            }
+        if let RightPanel::Board = &self.panel && self.board_col < STAGES.len() - 1 {
+            self.board_col += 1;
+            self.board_task = 0;
         }
     }
 
