@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use crate::model::{Epic, Stage, Task};
 use crate::state::reader;
 use crate::error::Result;
@@ -27,14 +26,13 @@ pub struct App {
     pub epic_idx: usize,
     pub col_idx: usize,
     pub task_idx: usize,
-    repo_root: PathBuf,
 }
 
 impl App {
-    pub fn load(repo_root: PathBuf) -> Result<Self> {
-        let mut epics = reader::load_all_epics(&repo_root)?;
+    pub fn load() -> Result<Self> {
+        let mut epics = reader::load_all_epics()?;
         epics.sort_by(|a, b| a.title.cmp(&b.title));
-        let tasks = reader::load_all_tasks(&repo_root)?;
+        let tasks = reader::load_all_tasks()?;
         Ok(Self {
             epics,
             tasks,
@@ -43,14 +41,13 @@ impl App {
             epic_idx: 0,
             col_idx: 0,
             task_idx: 0,
-            repo_root,
         })
     }
 
     pub fn reload(&mut self) -> Result<()> {
-        let mut epics = reader::load_all_epics(&self.repo_root)?;
+        let mut epics = reader::load_all_epics()?;
         epics.sort_by(|a, b| a.title.cmp(&b.title));
-        self.tasks = reader::load_all_tasks(&self.repo_root)?;
+        self.tasks = reader::load_all_tasks()?;
         self.epics = epics;
         if !self.epics.is_empty() {
             self.epic_idx = self.epic_idx.min(self.epics.len() - 1);

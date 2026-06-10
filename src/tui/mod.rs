@@ -34,9 +34,9 @@ pub fn run(repo_root: PathBuf) -> Result<()> {
 
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    repo_root: PathBuf,
+    _repo_root: PathBuf,
 ) -> Result<()> {
-    let mut app = App::load(repo_root)?;
+    let mut app = App::load()?;
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
