@@ -5,14 +5,14 @@ use std::io::{self, stdout};
 use std::path::PathBuf;
 use std::time::Duration;
 use ratatui::crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     cursor::Show,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
 use crate::error::Result;
-use app::App;
+use app::{App, Focus};
 
 pub fn run(repo_root: PathBuf) -> Result<()> {
     enable_raw_mode()?;
@@ -46,26 +46,36 @@ fn run_event_loop(
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                use app::Screen;
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Esc | KeyCode::Backspace
-                        if app.screen == Screen::Kanban =>
-                    {
-                        app.exit_kanban();
-                    }
-                    KeyCode::Esc if app.screen == Screen::Epics => break,
-                    KeyCode::Enter if app.screen == Screen::Epics => {
-                        app.enter_kanban();
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                    KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                    KeyCode::Left | KeyCode::Char('h') => app.move_left(),
-                    KeyCode::Right | KeyCode::Char('l') => app.move_right(),
-                    KeyCode::Char('r') => {
-                        let _ = app.reload();
-                    }
-                    _ => {}
+
+                // Ctrl+Q always quits
+                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+                    break;
+                }
+
+                match app.focus {
+                    Focus::Chat => match key.code {
+                        KeyCode::Enter => { let _ = app.process_input(); }
+                        KeyCode::Backspace => { app.input.pop(); }
+                        KeyCode::Tab => app.focus = Focus::Panel,
+                        KeyCode::Up => app.scroll_chat_up(),
+                        KeyCode::Down => app.scroll_chat_down(),
+                        KeyCode::Char(c)
+                            if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                        {
+                            app.input.push(c);
+                        }
+                        _ => {}
+                    },
+                    Focus::Panel => match key.code {
+                        KeyCode::Tab | KeyCode::Esc => app.focus = Focus::Chat,
+                        KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                        KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                        KeyCode::Left | KeyCode::Char('h') => app.move_left(),
+                        KeyCode::Right | KeyCode::Char('l') => app.move_right(),
+                        KeyCode::Char('r') => { let _ = app.reload(); }
+                        _ => {}
+                    },
                 }
             }
         }

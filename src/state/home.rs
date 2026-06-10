@@ -52,3 +52,7 @@ pub fn new_session() -> Result<String> {
     std::fs::write(&path, &id)?;
     Ok(id)
 }
+
+pub fn chat_file() -> Result<PathBuf> {
+    Ok(session_dir()?.join("chat.jsonl"))
+}
