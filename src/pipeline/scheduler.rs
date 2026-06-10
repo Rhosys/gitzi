@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::time;
 use tracing::{info, warn, error};
 use crate::agent::{AgentBackend, RunContext, build_agent};
-use crate::config::{AgentDef, Config};
+use crate::config::Config;
 use crate::error::Result;
 use crate::git::ops::{self as git, TaskWorktree};
 use crate::model::Stage;
@@ -62,8 +62,8 @@ impl Scheduler {
             self.orchestrator.set_task_branch(&task_id, &branch)?;
             self.orchestrator.advance_task(&task_id, Stage::InProgress, None)?;
 
-            let agent_def = resolve_agent_for_task(&task, &self.config);
-            let agent = build_agent(&agent_def)?;
+            let agent_name = task.agent.as_deref().unwrap_or(&self.config.default_agent);
+            let agent = build_agent(self.config.resolve_agent(agent_name));
             let ctx = RunContext { repo_root: worktree.path.clone(), branch: branch.clone() };
 
             match agent.run(&task, &ctx).await {
@@ -120,8 +120,3 @@ impl Scheduler {
     }
 }
 
-/// Pick the agent definition for a task: use `task.agent` if set, else the config default.
-fn resolve_agent_for_task(task: &crate::model::Task, config: &Config) -> AgentDef {
-    let name = task.agent.as_deref().unwrap_or(&config.default_agent);
-    config.resolve_agent(name)
-}
