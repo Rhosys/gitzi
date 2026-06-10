@@ -28,7 +28,7 @@ impl TaskWorktree {
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
 
-        let wt_path = crate::state::reader::task_worktree_path(&repo_root, task_id);
+        let wt_path = crate::state::reader::task_worktree_path(task_id)?;
         let name = worktree_name(branch_name);
 
         // Idempotent: if already registered (e.g. after restart or partial failure), reuse it.
@@ -62,7 +62,7 @@ impl TaskWorktree {
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
         let name = worktree_name(branch_name);
-        let path = crate::state::reader::task_worktree_path(&repo_root, task_id);
+        let path = crate::state::reader::task_worktree_path(task_id)?;
         Ok(Self { path, name, repo_root })
     }
 

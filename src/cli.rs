@@ -41,6 +41,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: EpicCommands,
     },
+
+    /// Open the terminal UI
+    #[cfg(feature = "tui")]
+    Tui,
 }
 
 #[derive(Subcommand)]

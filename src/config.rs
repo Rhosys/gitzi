@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
@@ -27,29 +27,73 @@ fn default_wip_in_progress() -> u32 { 1 }
 fn default_wip_waiting() -> u32 { 3 }
 fn default_wip_testing() -> u32 { 3 }
 
+/// An agent definition. Define as many as you like under `[[agents]]`.
+/// The role is the identifier — reference it via `default_agent` or per-task.
+///
+/// ```toml
+/// [[agents]]
+/// role = "developer"
+/// model = "claude-sonnet-4-6"
+/// system_prompt = """
+/// You are a disciplined coding agent. Make the smallest possible change.
+/// No refactoring, no extras.
+/// """
+///
+/// [[agents]]
+/// role = "planner"
+/// model = "claude-opus-4-8"
+/// system_prompt = """
+/// Break the epic into precise, minimal, independently shippable tasks.
+/// """
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum DefaultAgent {
-    ClaudeCode,
-    Rig,
+pub struct AgentDef {
+    pub role: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    /// System prompt sent before every task. Falls back to a sensible built-in default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
 }
 
-impl Default for DefaultAgent {
-    fn default() -> Self { DefaultAgent::ClaudeCode }
+impl Default for AgentDef {
+    fn default() -> Self {
+        Self {
+            role: "developer".to_string(),
+            model: default_model(),
+            system_prompt: None,
+        }
+    }
 }
+
+fn default_model() -> String { "claude-sonnet-4-6".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub wip_limits: WipLimits,
-    #[serde(default)]
-    pub default_agent: DefaultAgent,
+
+    /// Name of the agent used when a task does not specify one.
+    #[serde(default = "default_agent_name")]
+    pub default_agent: String,
+
+    /// All agent definitions. Referenced by name via `default_agent`
+    /// or per-task via the `agent` field on a task.
+    #[serde(default = "default_agents")]
+    pub agents: Vec<AgentDef>,
+
     #[serde(default = "default_test_command")]
     pub test_command: String,
     #[serde(default = "default_dashboard_port")]
     pub dashboard_port: u16,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
+}
+
+fn default_agent_name() -> String { "developer".to_string() }
+
+fn default_agents() -> Vec<AgentDef> {
+    vec![AgentDef::default()]
 }
 
 fn default_test_command() -> String { "cargo test".to_string() }
@@ -59,7 +103,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             wip_limits: WipLimits::default(),
-            default_agent: DefaultAgent::default(),
+            default_agent: default_agent_name(),
+            agents: default_agents(),
             test_command: default_test_command(),
             dashboard_port: default_dashboard_port(),
             integrations: HashMap::new(),
@@ -68,8 +113,9 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(repo_root: &Path) -> Result<Self> {
-        let path = repo_root.join(".gitzi").join("config.toml");
+    /// Load from `~/.gitzi/config.toml`. Falls back to defaults if missing.
+    pub fn load(_repo_root: &Path) -> Result<Self> {
+        let path = crate::state::home::global_config_file();
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -77,10 +123,25 @@ impl Config {
         Ok(toml::from_str(&text)?)
     }
 
-    pub fn write(&self, repo_root: &Path) -> Result<()> {
-        let path = repo_root.join(".gitzi").join("config.toml");
+    pub fn write(&self, _repo_root: &Path) -> Result<()> {
+        let path = crate::state::home::global_config_file();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let text = toml::to_string_pretty(self)?;
         atomic_write(&path, &text)
+    }
+
+    /// Find an agent by role. Returns the first match or the first agent in the list.
+    pub fn resolve_agent(&self, role: &str) -> &AgentDef {
+        self.agents.iter().find(|a| a.role == role)
+            .or_else(|| self.agents.first())
+            .unwrap_or_else(|| {
+                // Safety: only reachable if agents is empty AND first() returned None.
+                // Return a static default; the scheduler will fall back to built-in behaviour.
+                static FALLBACK: std::sync::OnceLock<AgentDef> = std::sync::OnceLock::new();
+                FALLBACK.get_or_init(AgentDef::default)
+            })
     }
 }
 
@@ -89,8 +150,4 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
-}
-
-pub fn gitzi_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".gitzi")
 }
