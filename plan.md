@@ -284,6 +284,63 @@ epic auto-splitting) is post-MVP.
 
 ---
 
+## User Interaction Model
+
+### Chat is the primary interface
+
+The chat is an intelligent AI-driven interface — not a command language. Natural language
+is the norm. The system understands the project context and reasons about it.
+
+### Session opening — what the chat surfaces first
+
+When a session starts, the chat proactively surfaces what needs the user's attention:
+
+- **Current epic** — what is in flight right now
+- **Open work** — tasks being implemented, their status
+- **Waiting for human input** — anything blocked on the user (approvals, questions, decisions)
+- **Open questions** — questions raised by agents or the harness that the user hasn't answered
+- **Followups from past conversations** — unresolved threads from previous sessions
+
+The chat IS the status view. It is not just an input box — it is the primary information surface.
+
+### What the chat does
+
+A single persistent chat thread influences the creation and unblocking of:
+- Epics
+- Tasks
+- Work items within tasks
+- Tests (unit, component, integration, e2e)
+- Open questions / clarifications for subagents
+
+The user never leaves the chat to "go create a task" — the chat creates it, proposes it,
+and the user confirms or redirects inline.
+
+### Artifact hierarchy
+
+```
+Epic
+  └── Task
+        ├── Work items (sub-steps within the task)
+        ├── TDD spec / tests (written first, before implementation)
+        ├── Clarifications for subagents (inline context, implementation notes)
+        └── Open questions (raised by agent; require human answer before proceeding)
+```
+
+Tests are **first-class artifacts**, not afterthoughts:
+- Unit, component, integration, and end-to-end tests are all tracked
+- TDD: the agent writes failing tests first; the tests are part of the task definition
+- Passing tests are the gate to Done — they are the artifact that proves the task is complete
+
+Code is primary documentation. Human-readable markdown docs are generated rarely and only
+when they add something code cannot convey.
+
+### Review gate location
+
+Diff review happens in the **TUI right panel** — not in a browser, not in chat.
+The right panel shows the diff; approve/reject controls are there.
+
+---
+
 ## Open Questions
 
 - [x] **Orchestration layer** — custom Rust with `rig-core` as LLM/tool layer (AWS Strands rejected: Python-only)
