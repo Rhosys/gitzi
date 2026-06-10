@@ -366,6 +366,28 @@ just a transient message.
 Diff review happens in the **TUI right panel** — not in a browser, not in chat.
 The right panel shows the diff; approve/reject controls are there.
 
+### Architecture Decision Records (ADRs)
+
+ADRs are a first-class artifact type, stored separately from tasks and epics.
+
+Every resolved clarification item produces an ADR. ADRs can also be created directly
+from chat when a significant design decision is made outside of a task context.
+
+**Storage:** `~/.gitzi/<session>/adrs/<uuid>.toml`
+
+**Contents:**
+- UUID
+- Title / decision summary
+- Context (what problem was being solved)
+- Options considered with pros/cons (sourced from the clarification item if agent-raised)
+- Decision made and rationale
+- Consequences / follow-on implications
+- Linked task(s) and epic(s) that triggered or reference this decision
+- Timestamp raised / resolved
+
+**Linking:** Tasks and epics carry an `adrs = ["<uuid>", ...]` field.
+The chat surfaces relevant ADRs when working on related tasks.
+
 ---
 
 ## Open Questions
