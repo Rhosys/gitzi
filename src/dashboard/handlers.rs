@@ -14,8 +14,8 @@ pub mod imp {
     use super::super::sse::imp::to_sse_stream;
 
     pub async fn board(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-        let tasks = reader::load_all_tasks(&state.repo_root).unwrap_or_default();
-        let epics = reader::load_all_epics(&state.repo_root).unwrap_or_default();
+        let tasks = reader::load_all_tasks().unwrap_or_default();
+        let epics = reader::load_all_epics().unwrap_or_default();
         let html = state.env.get_template("board.html").unwrap()
             .render(minijinja::context! {
                 tasks => minijinja::Value::from_serialize(&tasks),
@@ -29,7 +29,7 @@ pub mod imp {
         Path(id): Path<String>,
         State(state): State<Arc<AppState>>,
     ) -> impl IntoResponse {
-        let task = match reader::load_task(&state.repo_root, &id) {
+        let task = match reader::load_task(&id) {
             Ok(t) => t,
             Err(_) => return Html(format!("<h1>Task {id} not found</h1>")),
         };
