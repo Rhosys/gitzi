@@ -6,18 +6,10 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 use crate::model::Stage;
-use super::app::{App, Screen, STAGES};
+use crate::state::chat::Role;
+use super::app::{App, Focus, RightPanel, STAGES};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    match app.screen {
-        Screen::Epics => draw_epics_screen(frame, app),
-        Screen::Kanban => draw_kanban_screen(frame, app),
-    }
-}
-
-// ── Epics screen ──────────────────────────────────────────────────────────────
-
-fn draw_epics_screen(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
@@ -25,123 +17,187 @@ fn draw_epics_screen(frame: &mut Frame, app: &App) {
         Constraint::Length(1),
     ]).areas(area);
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" gitzi", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled("  —  Epics", Style::default().fg(Color::DarkGray)),
-        ])),
-        header_area,
-    );
+    // ── Header ────────────────────────────────────────────────────────────────
+    let panel_title = match &app.panel {
+        RightPanel::Board => "Board".to_string(),
+        RightPanel::EpicDetail(id) => {
+            let title = app.epics.iter().find(|e| &e.id == id)
+                .map(|e| e.title.as_str())
+                .unwrap_or("?");
+            format!("Epic: {title}")
+        }
+        RightPanel::TaskDetail(id) => {
+            let title = app.tasks.iter().find(|t| &t.id == id)
+                .map(|t| t.title.as_str())
+                .unwrap_or("?");
+            format!("Task: {title}")
+        }
+    };
 
-    draw_epics_list(frame, app, body_area);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            " ↑↓/jk: navigate  Enter: open kanban  r: reload  q: quit",
-            Style::default().fg(Color::DarkGray),
-        )),
-        footer_area,
-    );
-}
-
-fn draw_epics_list(frame: &mut Frame, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Epics ")
-        .border_style(Style::default().fg(Color::Yellow));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if app.epics.is_empty() {
-        frame.render_widget(
-            Paragraph::new("  No epics. Run: gitzi epic create --title \"My Epic\""),
-            inner,
-        );
-        return;
-    }
-
-    let items: Vec<ListItem> = app.epics.iter().enumerate().map(|(i, epic)| {
-        let (done, total) = app.epic_task_counts(&epic.id);
-        let selected = i == app.epic_idx;
-        let prefix = if selected { "▸ " } else { "  " };
-        let counts = format!("{done}/{total}");
-        let avail = inner.width as usize;
-        let title_max = avail.saturating_sub(prefix.len() + counts.len() + 1);
-        let title = truncate(&epic.title, title_max);
-        let pad = avail.saturating_sub(prefix.len() + title.chars().count() + counts.len());
-        let line = Line::from(Span::styled(
-            format!("{prefix}{title}{:pad$}{counts}", "", pad = pad),
-            if selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            },
-        ));
-        ListItem::new(line)
-    }).collect();
-
-    frame.render_widget(List::new(items), inner);
-}
-
-// ── Kanban screen ─────────────────────────────────────────────────────────────
-
-fn draw_kanban_screen(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-    let [header_area, body_area, footer_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Fill(1),
-        Constraint::Length(1),
-    ]).areas(area);
-
-    let scope = app.kanban_epic_title().unwrap_or("All tasks");
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" gitzi", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled("  —  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(scope, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(panel_title, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         ])),
         header_area,
     );
 
-    draw_kanban_columns(frame, app, body_area);
+    // ── Body: horizontal split 35% / 65% ─────────────────────────────────────
+    let [left_area, right_area] = Layout::horizontal([
+        Constraint::Ratio(35, 100),
+        Constraint::Fill(1),
+    ]).areas(body_area);
 
+    draw_left_pane(frame, app, left_area);
+    draw_right_pane(frame, app, right_area);
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    let footer_text = match app.focus {
+        Focus::Chat => " [ctrl+q] quit  [tab] panel  [↑↓] scroll  [enter] send",
+        Focus::Panel => " [ctrl+q] quit  [tab] chat  [↑↓↔] navigate  [r] reload",
+    };
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            " ↑↓/jk: navigate  ←→/hl: column  r: reload  Esc/Backspace: back  q: quit",
-            Style::default().fg(Color::DarkGray),
-        )),
+        Paragraph::new(Span::styled(footer_text, Style::default().fg(Color::DarkGray))),
         footer_area,
     );
 }
 
-fn draw_kanban_columns(frame: &mut Frame, app: &App, area: Rect) {
+// ── Left pane ─────────────────────────────────────────────────────────────────
+
+fn draw_left_pane(frame: &mut Frame, app: &App, area: Rect) {
+    let [chat_area, input_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(3),
+    ]).areas(area);
+
+    draw_chat_history(frame, app, chat_area);
+    draw_input_box(frame, app, input_area);
+}
+
+fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
+    let chat_focused = app.focus == Focus::Chat;
+    let border_color = if chat_focused { Color::Yellow } else { Color::DarkGray };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Chat ")
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let inner_height = inner.height as usize;
+    let inner_width = inner.width as usize;
+
+    if inner_height == 0 || inner_width == 0 {
+        return;
+    }
+
+    // Build all lines from messages
+    let all_lines: Vec<Line> = app.messages.iter().map(|msg| {
+        match msg.role {
+            Role::User => {
+                let text = format!("> {}", truncate(&msg.content, inner_width.saturating_sub(2)));
+                Line::from(Span::styled(text, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)))
+            }
+            Role::System => {
+                let text = format!("  {}", truncate(&msg.content, inner_width.saturating_sub(2)));
+                Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)))
+            }
+            Role::Agent => {
+                let text = format!("  {}", truncate(&msg.content, inner_width.saturating_sub(2)));
+                Line::from(Span::styled(text, Style::default().fg(Color::Green)))
+            }
+        }
+    }).collect();
+
+    let total = all_lines.len();
+
+    // Compute which lines to show, accounting for scroll offset
+    // chat_scroll = 0 means newest visible (show last N lines)
+    // chat_scroll = k means scroll up k lines from bottom
+    let scroll = app.chat_scroll.min(total.saturating_sub(1));
+    let end = total.saturating_sub(scroll);
+    let start = end.saturating_sub(inner_height);
+    let visible: Vec<Line> = all_lines[start..end].to_vec();
+
+    frame.render_widget(
+        Paragraph::new(visible),
+        inner,
+    );
+}
+
+fn draw_input_box(frame: &mut Frame, app: &App, area: Rect) {
+    let chat_focused = app.focus == Focus::Chat;
+    let border_color = if chat_focused { Color::Yellow } else { Color::DarkGray };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let cursor_text = if app.input.is_empty() {
+        "> ▌".to_string()
+    } else {
+        format!("> {}▌", app.input)
+    };
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(cursor_text, Style::default().fg(Color::White))),
+        inner,
+    );
+}
+
+// ── Right pane ────────────────────────────────────────────────────────────────
+
+fn draw_right_pane(frame: &mut Frame, app: &App, area: Rect) {
+    match &app.panel {
+        RightPanel::Board => draw_board(frame, app, area),
+        RightPanel::EpicDetail(id) => draw_epic_detail(frame, app, area, id.clone()),
+        RightPanel::TaskDetail(id) => draw_task_detail(frame, app, area, id.clone()),
+    }
+}
+
+fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
+    let panel_focused = app.focus == Focus::Panel;
+    let outer_border_color = if panel_focused { Color::Green } else { Color::DarkGray };
+
+    let outer_block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Board ")
+        .border_style(Style::default().fg(outer_border_color));
+
+    let inner = outer_block.inner(area);
+    frame.render_widget(outer_block, area);
+
+    // 6 equal columns
     let col_constraints: Vec<Constraint> = (0..STAGES.len())
         .map(|_| Constraint::Ratio(1, STAGES.len() as u32))
         .collect();
-    let col_areas = Layout::horizontal(col_constraints).split(area);
+    let col_areas = Layout::horizontal(col_constraints).split(inner);
 
     for (i, stage) in STAGES.iter().enumerate() {
         let tasks = app.tasks_in_stage(stage);
-        let active = i == app.col_idx;
-        let border_style = if active {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
+        let active = panel_focused && i == app.board_col;
+        let border_color = if active { Color::Green } else { Color::DarkGray };
 
         let col_block = Block::default()
             .borders(Borders::ALL)
             .title(format!(" {} ({}) ", stage_label(stage), tasks.len()))
-            .border_style(border_style);
+            .border_style(Style::default().fg(border_color));
 
         let col_inner = col_block.inner(col_areas[i]);
         frame.render_widget(col_block, col_areas[i]);
 
-        if tasks.is_empty() { continue; }
+        if tasks.is_empty() {
+            continue;
+        }
 
         let items: Vec<ListItem> = tasks.iter().enumerate().map(|(j, task)| {
-            let selected = active && j == app.task_idx;
+            let selected = active && j == app.board_task;
             let prefix = if selected { "▸ " } else { "  " };
             let title = truncate(&task.title, col_inner.width as usize);
             ListItem::new(Line::from(Span::styled(
@@ -158,6 +214,141 @@ fn draw_kanban_columns(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn draw_epic_detail(frame: &mut Frame, app: &App, area: Rect, id: String) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Epic ")
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let epic = match app.epics.iter().find(|e| e.id == id) {
+        Some(e) => e,
+        None => {
+            frame.render_widget(Paragraph::new("Epic not found"), inner);
+            return;
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Title
+    lines.push(Line::from(Span::styled(
+        epic.title.clone(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+
+    // Description
+    if let Some(desc) = &epic.description {
+        lines.push(Line::from(Span::styled(
+            desc.clone(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(""));
+
+    // Tasks grouped by stage
+    for stage in STAGES.iter() {
+        let stage_tasks: Vec<_> = app.tasks.iter()
+            .filter(|t| &t.stage == stage && t.epic == id)
+            .collect();
+        if stage_tasks.is_empty() {
+            continue;
+        }
+
+        lines.push(Line::from(Span::styled(
+            format!("── {} ──", stage_label(stage)),
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        for task in stage_tasks {
+            lines.push(Line::from(Span::styled(
+                format!("  {} (p{})", task.title, task.priority),
+                Style::default(),
+            )));
+        }
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_task_detail(frame: &mut Frame, app: &App, area: Rect, id: String) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Task ")
+        .border_style(Style::default().fg(Color::DarkGray));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let task = match app.tasks.iter().find(|t| t.id == id) {
+        Some(t) => t,
+        None => {
+            frame.render_widget(Paragraph::new("Task not found"), inner);
+            return;
+        }
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Title
+    lines.push(Line::from(Span::styled(
+        task.title.clone(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+
+    // Stage
+    lines.push(Line::from(vec![
+        Span::styled("Stage: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            stage_label(&task.stage).to_string(),
+            Style::default().fg(stage_color(&task.stage)),
+        ),
+    ]));
+
+    // Priority
+    lines.push(Line::from(Span::styled(
+        format!("Priority: {}", task.priority),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Epic
+    lines.push(Line::from(Span::styled(
+        format!("Epic: {}", task.epic),
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    // Description
+    if let Some(desc) = &task.description {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            desc.clone(),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(""));
+
+    // History: last 5 transitions
+    let history_start = task.history.len().saturating_sub(5);
+    for transition in &task.history[history_start..] {
+        let ts = transition.at.format("%Y-%m-%d %H:%M").to_string();
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {} → {}  at {}",
+                stage_label(&transition.from),
+                stage_label(&transition.to),
+                ts
+            ),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn stage_label(stage: &Stage) -> &'static str {
@@ -171,8 +362,21 @@ fn stage_label(stage: &Stage) -> &'static str {
     }
 }
 
+fn stage_color(stage: &Stage) -> Color {
+    match stage {
+        Stage::Backlog => Color::DarkGray,
+        Stage::Prioritized => Color::Blue,
+        Stage::InProgress => Color::Yellow,
+        Stage::WaitingForReview => Color::Magenta,
+        Stage::InTesting => Color::Cyan,
+        Stage::Done => Color::Green,
+    }
+}
+
 fn truncate(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 { return String::new(); }
+    if max_chars == 0 {
+        return String::new();
+    }
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= max_chars {
         s.to_string()
