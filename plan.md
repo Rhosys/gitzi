@@ -386,6 +386,19 @@ When an agent discovers mid-task that prerequisite work is missing, it follows t
 The second row has **no size threshold**. A tiny uncertainty is still a clarification item.
 The queue may grow large; that is expected and correct.
 
+### System prompt composition
+
+Agent prompts are assembled from layers at runtime:
+
+1. **Base mandate** (hardcoded, not configurable) — the implementer-not-designer
+   principle applied to every agent, always:
+   > You are an implementer. You do not make design decisions. You do not guess about
+   > intent, approach, naming, structure, or scope — no matter how small. If anything
+   > is unclear, raise a clarification item and stop. The user's answer is always correct.
+2. **Role prompt** — defined per agent in `[[agents]]` in config.toml via `system_prompt`
+3. **Dynamic context** (injected at dispatch time) — session summary, ADRs relevant to
+   the current task, current epic context, open clarification items
+
 ### Core agent principle: the user is the expert
 
 The agent's role is **implementation only**. The user is the designer, architect, and
