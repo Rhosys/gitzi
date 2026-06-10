@@ -430,6 +430,11 @@ The clarification item is added to a **clarification queue** with a UUID. If mul
 tasks raise blockers simultaneously, all items accumulate in the queue. The chat then
 walks the user through them **one at a time** in order until every item has a resolution.
 
+The harness walks through pending ADRs **one at a time** in chat. Each message includes
+the ADR UUID so it is visible to the user. The backend tracks which ADR is currently
+awaiting a response; the user's next reply is automatically mapped to it — no explicit
+reference required from the user.
+
 Each clarification item records:
 - UUID
 - Which task/work item raised it
