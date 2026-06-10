@@ -396,8 +396,11 @@ Agent prompts are assembled from layers at runtime:
    > intent, approach, naming, structure, or scope — no matter how small. If anything
    > is unclear, raise a clarification item and stop. The user's answer is always correct.
 2. **Role prompt** — defined per agent in `[[agents]]` in config.toml via `system_prompt`
-3. **Dynamic context** (injected at dispatch time) — session summary, ADRs relevant to
-   the current task, current epic context, open clarification items
+3. **Dynamic context** (injected at dispatch time):
+   - Session summary
+   - All ADRs linked to the current task and its parent epic (both `pending` and `resolved`)
+   - Current epic context
+   - Open clarification items for this task
 
 ### Core agent principle: the user is the expert
 
@@ -466,6 +469,26 @@ from chat when a significant design decision is made outside of a task context.
 
 **Linking:** Tasks and epics carry an `adrs = ["<uuid>", ...]` field.
 The chat surfaces relevant ADRs when working on related tasks.
+
+**ADRs are created immediately when a clarification item is raised — before the user
+answers.** The ADR starts in `pending` status with the question, context, and candidate
+options filled in. When the user answers, the ADR is updated to `resolved` with the
+decision and rationale. The clarification item and the ADR are the same thing at
+different points in their lifecycle.
+
+**ADR lifecycle:**
+```
+raised by agent → pending (question + options captured) → user answers → resolved (decision captured)
+```
+
+**ADRs are always injected into agent context.** When any agent picks up a task, the
+harness fetches all ADRs linked to that task (and its parent epic) and includes them in
+the system prompt:
+- `resolved` ADRs tell the agent what has been decided — implement accordingly
+- `pending` ADRs tell the agent what is still open — do not proceed on those areas
+
+This ensures agents never re-ask a question that has already been answered, and never
+act on an area where a decision is still pending.
 
 **Every ADR also produces a test.** When a clarification item is resolved, the agent
 generates a unit test that:
