@@ -388,6 +388,15 @@ from chat when a significant design decision is made outside of a task context.
 **Linking:** Tasks and epics carry an `adrs = ["<uuid>", ...]` field.
 The chat surfaces relevant ADRs when working on related tasks.
 
+**Every ADR also produces a test.** When a clarification item is resolved, the agent
+generates a unit test that:
+- Validates that the chosen solution is correctly implemented
+- Carries the problem statement and chosen solution in its doc comment
+- Links to the originating task/issue and the ADR by UUID
+
+This test is the living proof that the decision holds. If the implementation drifts, the
+test fails and the ADR UUID in the failure points directly back to why the decision was made.
+
 ---
 
 ## Open Questions
