@@ -34,47 +34,35 @@ impl RigAgent {
 }
 
 impl AgentBackend for RigAgent {
-    fn run<'a>(
-        &'a self,
-        task: &'a Task,
-        _ctx: &'a RunContext,
-    ) -> impl std::future::Future<Output = Result<AgentResult>> + Send + 'a {
-        async move {
-            let client = anthropic::Client::new(&self.api_key)
-                .map_err(|e| GitziError::AgentFailed(e.to_string()))?;
+    async fn run(&self, task: &Task, _ctx: &RunContext) -> Result<AgentResult> {
+        let client = anthropic::Client::new(&self.api_key)
+            .map_err(|e| GitziError::AgentFailed(e.to_string()))?;
 
-            let preamble = self.system_prompt.as_deref().unwrap_or(
-                "You are a software planning agent. You break down tasks, \
-                 analyze requirements, and produce structured output.",
-            );
+        let preamble = self.system_prompt.as_deref().unwrap_or(
+            "You are a software planning agent. You break down tasks, \
+             analyze requirements, and produce structured output.",
+        );
 
-            let agent = client
-                .agent(&self.model)
-                .preamble(preamble)
-                .build();
+        let agent = client
+            .agent(&self.model)
+            .preamble(preamble)
+            .build();
 
-            let mut prompt = format!(
-                "Task: {}\n",
-                task.title,
-            );
-            if let Some(desc) = &task.description {
-                prompt.push_str(&format!("\nDescription:\n{desc}\n"));
-            }
-            if let Some(feedback) = &task.agent_feedback {
-                prompt.push_str(&format!(
-                    "\nPrevious attempt was rejected. Feedback:\n{feedback}\n"
-                ));
-            }
-
-            let response: String = agent
-                .prompt(prompt.as_str())
-                .await
-                .map_err(|e| GitziError::AgentFailed(e.to_string()))?;
-
-            Ok(AgentResult {
-                success: true,
-                output: response,
-            })
+        let mut prompt = format!("Task: {}\n", task.title);
+        if let Some(desc) = &task.description {
+            prompt.push_str(&format!("\nDescription:\n{desc}\n"));
         }
+        if let Some(feedback) = &task.agent_feedback {
+            prompt.push_str(&format!(
+                "\nPrevious attempt was rejected. Feedback:\n{feedback}\n"
+            ));
+        }
+
+        let response: String = agent
+            .prompt(prompt.as_str())
+            .await
+            .map_err(|e| GitziError::AgentFailed(e.to_string()))?;
+
+        Ok(AgentResult { success: true, output: response })
     }
 }

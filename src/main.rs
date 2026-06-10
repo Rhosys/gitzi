@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn cmd_init(repo_root: &PathBuf) -> Result<()> {
+fn cmd_init(repo_root: &std::path::Path) -> Result<()> {
     use gitzi::state::home;
 
     let gitzi_home = home::gitzi_home();
@@ -76,23 +76,23 @@ fn cmd_init(repo_root: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_run(repo_root: &PathBuf, port: u16) -> Result<()> {
+async fn cmd_run(repo_root: &std::path::Path, port: u16) -> Result<()> {
     let config = Arc::new(Config::load(repo_root).context("Failed to load config")?);
     let (tx, _rx) = broadcast::channel::<gitzi::state::watcher::StateEvent>(64);
 
     let orchestrator = Arc::new(Orchestrator::new(
-        repo_root.clone(),
+        repo_root.to_path_buf(),
         config.clone(),
         tx.clone(),
     ));
 
-    let scheduler = Scheduler::new(orchestrator.clone(), config.clone(), repo_root.clone());
+    let scheduler = Scheduler::new(orchestrator.clone(), config.clone(), repo_root.to_path_buf());
 
     #[cfg(feature = "dashboard")]
     {
         let env = gitzi::dashboard::build_env();
         let state = Arc::new(gitzi::dashboard::AppState {
-            repo_root: repo_root.clone(),
+            repo_root: repo_root.to_path_buf(),
             orchestrator: orchestrator.clone(),
             tx: tx.clone(),
             env,
@@ -125,11 +125,11 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-fn cmd_advance(repo_root: &PathBuf, task_id: &str, stage_str: &str, note: Option<String>) -> Result<()> {
+fn cmd_advance(repo_root: &std::path::Path, task_id: &str, stage_str: &str, note: Option<String>) -> Result<()> {
     let stage = parse_stage(stage_str)?;
     let config = Arc::new(Config::load(repo_root)?);
     let (tx, _) = broadcast::channel(8);
-    let orch = Orchestrator::new(repo_root.clone(), config, tx);
+    let orch = Orchestrator::new(repo_root.to_path_buf(), config, tx);
     orch.advance_task(task_id, stage, note)?;
     println!("Task {task_id} advanced to {stage_str}");
     Ok(())

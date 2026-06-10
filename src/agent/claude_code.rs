@@ -33,38 +33,32 @@ struct ClaudeResult {
 }
 
 impl AgentBackend for ClaudeCodeCli {
-    fn run<'a>(
-        &'a self,
-        task: &'a Task,
-        ctx: &'a RunContext,
-    ) -> impl std::future::Future<Output = Result<AgentResult>> + Send + 'a {
-        async move {
-            let prompt = build_prompt(task, self.system_prompt.as_deref());
-            let mut cmd = Command::new("claude");
-            cmd.args(["-p", "--output-format", "json", "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep"]);
-            if let Some(model) = &self.model {
-                cmd.args(["--model", model]);
-            }
-            cmd.arg(&prompt)
-                .current_dir(&ctx.repo_root)
-                .env("GIT_BRANCH", &ctx.branch);
+    async fn run(&self, task: &Task, ctx: &RunContext) -> Result<AgentResult> {
+        let prompt = build_prompt(task, self.system_prompt.as_deref());
+        let mut cmd = Command::new("claude");
+        cmd.args(["-p", "--output-format", "json", "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep"]);
+        if let Some(model) = &self.model {
+            cmd.args(["--model", model]);
+        }
+        cmd.arg(&prompt)
+            .current_dir(&ctx.repo_root)
+            .env("GIT_BRANCH", &ctx.branch);
 
-            let output = cmd.output().await
-                .map_err(|e| GitziError::AgentFailed(format!("failed to spawn claude: {e}")))?;
+        let output = cmd.output().await
+            .map_err(|e| GitziError::AgentFailed(format!("failed to spawn claude: {e}")))?;
 
-            let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = String::from_utf8_lossy(&output.stdout);
 
-            if let Ok(result) = serde_json::from_str::<ClaudeResult>(stdout.trim()) {
-                Ok(AgentResult {
-                    success: !result.is_error,
-                    output: result.result.unwrap_or_default(),
-                })
-            } else {
-                Ok(AgentResult {
-                    success: output.status.success(),
-                    output: stdout.to_string(),
-                })
-            }
+        if let Ok(result) = serde_json::from_str::<ClaudeResult>(stdout.trim()) {
+            Ok(AgentResult {
+                success: !result.is_error,
+                output: result.result.unwrap_or_default(),
+            })
+        } else {
+            Ok(AgentResult {
+                success: output.status.success(),
+                output: stdout.to_string(),
+            })
         }
     }
 }

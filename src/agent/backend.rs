@@ -15,9 +15,6 @@ pub struct AgentResult {
 }
 
 pub trait AgentBackend: Send + Sync {
-    fn run<'a>(
-        &'a self,
-        task: &'a Task,
-        ctx: &'a RunContext,
-    ) -> impl std::future::Future<Output = Result<AgentResult>> + Send + 'a;
+    fn run(&self, task: &Task, ctx: &RunContext)
+        -> impl std::future::Future<Output = Result<AgentResult>> + Send;
 }
