@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use serde::{Deserialize, Serialize};
 use crate::error::Result;
 
@@ -68,8 +68,9 @@ impl Default for Config {
 }
 
 impl Config {
-    pub fn load(repo_root: &Path) -> Result<Self> {
-        let path = repo_root.join(".gitzi").join("config.toml");
+    /// Load from `~/.gitzi/config.toml`. Falls back to defaults if missing.
+    pub fn load(_repo_root: &Path) -> Result<Self> {
+        let path = crate::state::home::global_config_file();
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -77,8 +78,11 @@ impl Config {
         Ok(toml::from_str(&text)?)
     }
 
-    pub fn write(&self, repo_root: &Path) -> Result<()> {
-        let path = repo_root.join(".gitzi").join("config.toml");
+    pub fn write(&self, _repo_root: &Path) -> Result<()> {
+        let path = crate::state::home::global_config_file();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let text = toml::to_string_pretty(self)?;
         atomic_write(&path, &text)
     }
@@ -89,8 +93,4 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     std::fs::write(&tmp, content)?;
     std::fs::rename(&tmp, path)?;
     Ok(())
-}
-
-pub fn gitzi_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".gitzi")
 }

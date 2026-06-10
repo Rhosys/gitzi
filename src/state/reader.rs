@@ -1,15 +1,19 @@
 use std::path::{Path, PathBuf};
 use crate::error::{GitziError, Result};
 use crate::model::{Epic, Task, WipSnapshot};
+use crate::state::home;
 
 // ── Path helpers ──────────────────────────────────────────────────────────────
+//
+// All state lives in ~/.gitzi/projects/<id>/ — never inside the project repo.
+// `repo_root` is used only to derive the project ID via a path hash.
 
 pub fn plan_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".gitzi").join("plan")
+    home::project_dir(repo_root).join("plan")
 }
 
 pub fn wip_dir(repo_root: &Path) -> PathBuf {
-    repo_root.join(".gitzi").join("wip")
+    home::project_dir(repo_root).join("wip")
 }
 
 pub fn task_file(repo_root: &Path, task_id: &str) -> PathBuf {
