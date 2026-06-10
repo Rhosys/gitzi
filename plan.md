@@ -315,6 +315,10 @@ A single persistent chat thread influences the creation and unblocking of:
 The user never leaves the chat to "go create a task" — the chat creates it, proposes it,
 and the user confirms or redirects inline.
 
+### Terminology
+
+"Issue" and "task" are the same thing. The canonical term throughout gitzi is **task**.
+
 ### Artifact hierarchy
 
 ```
