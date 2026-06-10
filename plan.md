@@ -334,7 +334,34 @@ Tests are **first-class artifacts**, not afterthoughts:
 Code is primary documentation. Human-readable markdown docs are generated rarely and only
 when they add something code cannot convey.
 
-### Review gate location
+### Clarification queue
+
+When an agent hits ambiguity it cannot resolve on its own, it stops and raises a
+**clarification item** — it does not guess and proceed.
+
+Before surfacing the question the agent:
+1. Researches the problem (web search, codebase analysis)
+2. Identifies multiple solution paths
+3. Compiles pros and cons for each path
+
+The clarification item is added to a **clarification queue** with a UUID. If multiple
+tasks raise blockers simultaneously, all items accumulate in the queue. The chat then
+walks the user through them **one at a time** in order until every item has a resolution.
+
+Each clarification item records:
+- UUID
+- Which task/work item raised it
+- The question / decision needed
+- Research context the agent gathered
+- The candidate solution paths with pros/cons
+- The user's decision (filled in on resolution)
+- Timestamp raised / timestamp resolved
+
+Once resolved, the answer is fed back to the agent so it can continue. The resolution
+is also stored permanently as part of the task record — it is a decision artifact, not
+just a transient message.
+
+
 
 Diff review happens in the **TUI right panel** — not in a browser, not in chat.
 The right panel shows the diff; approve/reject controls are there.
