@@ -361,6 +361,31 @@ Tests are **first-class artifacts**, not afterthoughts:
 Code is primary documentation. Human-readable markdown docs are generated rarely and only
 when they add something code cannot convey.
 
+### Agent dependency discovery (auto-park and resume)
+
+When an agent discovers mid-task that prerequisite work is missing, it follows this flow
+**without blocking on the user first**:
+
+1. **Park** — commit the current partial work to the task's branch and record its state.
+2. **Create dependency** — generate a new task (with TDD, work items, and a proposed
+   implementation) for the missing prerequisite work.
+3. **Notify** — explain to the user in chat: what it was working on, what it discovered,
+   what new task it created, and what it proposes to do. Ask the user to confirm the
+   proposed implementation is correct.
+4. **Resume** — once the dependency task is Done (either via the agent's proposed
+   implementation or a version the user edited), automatically pull in the new work,
+   rebase / rework the parked branch, and continue the original task.
+
+**Heuristic — when to auto-create vs when to raise a clarification item:**
+
+| Situation | Action |
+|-----------|--------|
+| Agent knows *what* is needed, it just doesn't exist yet | Auto-create dependency, park, notify, resume |
+| Agent is uncertain about *what* to do or *which direction* to take | Raise clarification item; stop until user decides |
+
+This keeps the agent productive and autonomous for prerequisite work while still surfacing
+genuine uncertainty to the user for a decision.
+
 ### Clarification queue
 
 When an agent hits ambiguity it cannot resolve on its own, it stops and raises a
