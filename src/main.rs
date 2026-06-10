@@ -44,20 +44,34 @@ async fn main() -> Result<()> {
 }
 
 fn cmd_init(repo_root: &PathBuf) -> Result<()> {
-    let gitzi = repo_root.join(".gitzi");
-    std::fs::create_dir_all(gitzi.join("plan").join("epics"))?;
-    std::fs::create_dir_all(gitzi.join("plan").join("tasks"))?;
-    std::fs::create_dir_all(gitzi.join("wip").join("tasks"))?;
+    use gitzi::state::home;
 
-    // Committed alongside plan/ so the ignore rule travels with the repo.
-    gitzi::config::atomic_write(&gitzi.join(".gitignore"), "wip/\n")?;
+    let gitzi_home = home::gitzi_home();
+    let project_dir = home::project_dir(repo_root);
 
-    let config = Config::default();
-    config.write(repo_root)?;
+    // Ensure ~/.gitzi/ exists and is a git repo
+    std::fs::create_dir_all(&gitzi_home)?;
+    if !gitzi_home.join(".git").exists() {
+        git2::Repository::init(&gitzi_home)
+            .map_err(|e| anyhow::anyhow!("Failed to init ~/.gitzi repo: {e}"))?;
+    }
+
+    // Create project state directories
+    std::fs::create_dir_all(project_dir.join("plan").join("epics"))?;
+    std::fs::create_dir_all(project_dir.join("plan").join("tasks"))?;
+    std::fs::create_dir_all(project_dir.join("wip").join("tasks"))?;
+
+    // Write global config if not already present
+    let config_path = home::global_config_file();
+    if !config_path.exists() {
+        Config::default().write(repo_root)?;
+    }
+
     writer::write_wip(repo_root, &[])?;
-    println!("Initialized .gitzi/ in {}", repo_root.display());
-    println!("  .gitzi/plan/   ← commit this (epics, tasks)");
-    println!("  .gitzi/wip/    ← gitignored (worktrees, logs, wip snapshot)");
+
+    println!("Initialized gitzi");
+    println!("  home:    {}", gitzi_home.display());
+    println!("  project: {}", project_dir.display());
     Ok(())
 }
 
