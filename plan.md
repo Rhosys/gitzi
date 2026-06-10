@@ -376,15 +376,29 @@ When an agent discovers mid-task that prerequisite work is missing, it follows t
    implementation or a version the user edited), automatically pull in the new work,
    rebase / rework the parked branch, and continue the original task.
 
-**Heuristic — when to auto-create vs when to raise a clarification item:**
+**When to auto-create a dependency vs raise a clarification item:**
 
 | Situation | Action |
 |-----------|--------|
-| Agent knows *what* is needed, it just doesn't exist yet | Auto-create dependency, park, notify, resume |
-| Agent is uncertain about *what* to do or *which direction* to take | Raise clarification item; stop until user decides |
+| A prerequisite simply doesn't exist yet and what it needs to be is unambiguous | Auto-create dependency task, park, notify, resume |
+| Anything about intent, approach, scope, or implementation is uncertain — no matter how small | Raise clarification item; stop until user decides |
 
-This keeps the agent productive and autonomous for prerequisite work while still surfacing
-genuine uncertainty to the user for a decision.
+The second row has **no size threshold**. A tiny uncertainty is still a clarification item.
+The queue may grow large; that is expected and correct.
+
+### Core agent principle: the user is the expert
+
+The agent's role is **implementation only**. The user is the designer, architect, and
+domain expert. The agent has no opinions about what to build or how.
+
+This is encoded in every agent's system prompt:
+
+> You are an implementer. You do not make design decisions. You do not guess about intent,
+> approach, naming, structure, or scope — no matter how small the question seems. If
+> anything is unclear, raise a clarification item and stop. The user's answer is always
+> the correct answer. Your job is to execute what has been explicitly decided, nothing more.
+
+There is no threshold for "small enough to guess." Every uncertainty surfaces.
 
 ### Clarification queue
 
