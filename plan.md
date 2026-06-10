@@ -315,6 +315,29 @@ A single persistent chat thread influences the creation and unblocking of:
 The user never leaves the chat to "go create a task" — the chat creates it, proposes it,
 and the user confirms or redirects inline.
 
+### Chat session lifecycle
+
+From the user's perspective the chat is **one infinite thread** — there are no visible
+session boundaries.
+
+Under the hood the harness manages sessions transparently:
+
+1. Each session maintains a **rolling summary** — updated continuously as the conversation
+   progresses (see Conversation Summarization in todo.md).
+2. When `shouldStartNewSession()` returns true, the harness:
+   - Finalises the current session's summary
+   - Opens a new session
+   - Seeds the new session with the previous summary as its first context message
+3. The user sees the conversation continue without interruption.
+
+**`shouldStartNewSession()` fires when a conversation feels complete**, for example:
+- The clarification queue is empty and no agents are active
+- An epic has just reached Done
+- A natural pause in work (all open tasks are either Done or waiting on the user)
+- The AI detects the conversation has reached a resolution point
+
+The session boundary is an implementation detail the user never needs to know about.
+
 ### Terminology
 
 "Issue" and "task" are the same thing. The canonical term throughout gitzi is **task**.
