@@ -358,6 +358,8 @@ The LLM reasons about the user's message, calls whatever tools are needed, and r
 with what it did. "Let's build user authentication" → LLM creates the epic, breaks it
 into tasks, responds with a summary and asks for confirmation. All in one turn.
 
+Responses are **never streamed** — the full response is displayed at once when complete.
+
 **Two contexts, overlapping tool sets:**
 
 | Tool | Chat LLM | Coding agent |
