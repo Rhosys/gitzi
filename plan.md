@@ -315,7 +315,38 @@ A single persistent chat thread influences the creation and unblocking of:
 The user never leaves the chat to "go create a task" — the chat creates it, proposes it,
 and the user confirms or redirects inline.
 
-### Chat session lifecycle
+### Chat is an agentic tool-use loop
+
+When the user sends a message, it goes to the configured LLM (from `[[agents]]`) along
+with the full chat history and current project state. The LLM has a set of **gitzi
+management tools** it can call directly in the same turn:
+
+| Tool | What it does |
+|------|-------------|
+| `create_epic` | Create a new epic |
+| `create_task` | Create a task under an epic |
+| `create_adr` | Raise a clarification item / pending ADR |
+| `resolve_adr` | Record a decision on a pending ADR |
+| `update_task` | Edit task title, description, work items |
+| `prioritize_task` | Set task priority / order |
+| `park_task` | Park a task and record its state |
+| `list_epics` / `list_tasks` | Read project state |
+| `get_adr` | Fetch ADR details |
+
+The LLM reasons about the user's message, calls whatever tools are needed, and responds
+with what it did. "Let's build user authentication" → LLM creates the epic, breaks it
+into tasks, responds with a summary and asks for confirmation. All in one turn.
+
+**Two distinct tool sets — chat vs coding agents:**
+
+| Context | LLM | Tools |
+|---------|-----|-------|
+| Chat harness | Configured chat agent | Gitzi management tools (above) |
+| Coding agent (task execution) | Configured coding agent | File tools: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` |
+
+Same underlying model family potentially; completely different capabilities per context.
+
+
 
 From the user's perspective the chat is **one infinite thread** — there are no visible
 session boundaries.
