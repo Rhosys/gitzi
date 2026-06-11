@@ -10,6 +10,21 @@ by surfacing small, reviewable diffs and driving test-first development.
 
 ---
 
+## Core principle: one thing at a time
+
+The user is never presented with more than one thing requiring their attention at once.
+This applies everywhere without exception:
+
+- Clarification queue → one ADR surfaced at a time
+- Attention queue → one background agent request surfaced at a time
+- Diff review → one task reviewed at a time
+- Opening status → surfaces the single most important thing first
+
+Queues may be long. The user works through them sequentially. The harness never
+front-loads, never batches, never summarises-and-picks. One thing. Then the next.
+
+---
+
 ## Goals
 
 1. **LLM-driven, human-in-the-loop** — the LLM proposes everything (epic breakdown,
@@ -281,6 +296,381 @@ The MVP proves the core loop end-to-end:
 
 Everything else (Jira/Linear sync, multi-agent parallelism, Kiro/Ollama backends,
 epic auto-splitting) is post-MVP.
+
+---
+
+## User Interaction Model
+
+### Chat is the primary interface
+
+The chat is an intelligent AI-driven interface — not a command language. Natural language
+is the norm. The system understands the project context and reasons about it.
+
+### Session opening — what the chat surfaces first
+
+When a session starts, the chat proactively surfaces what needs the user's attention:
+
+- **Current epic** — what is in flight right now
+- **Open work** — tasks being implemented, their status
+- **Waiting for human input** — anything blocked on the user (approvals, questions, decisions)
+- **Open questions** — questions raised by agents or the harness that the user hasn't answered
+- **Followups from past conversations** — unresolved threads from previous sessions
+
+The chat IS the status view. It is not just an input box — it is the primary information surface.
+
+### What the chat does
+
+A single persistent chat thread influences the creation and unblocking of:
+- Epics
+- Tasks
+- Work items within tasks
+- Tests (unit, component, integration, e2e)
+- Open questions / clarifications for subagents
+
+The user never leaves the chat to "go create a task" — the chat creates it, proposes it,
+and the user confirms or redirects inline.
+
+The `role = "main"` agent powers the chat harness. It is defined in `[[agents]]` like
+any other agent and gets the full gitzi management tool set. Its system prompt is focused
+on project coordination — understanding user intent, creating and refining epics/tasks,
+walking through the clarification queue, and surfacing status — not implementation.
+
+```toml
+[[agents]]
+role = "main"
+model = "claude-opus-4-8"
+system_prompt = """
+You are a project coordination agent. You help the user manage their software project
+by creating epics, tasks, and ADRs from natural conversation. You never write code
+directly. You surface what needs the user's attention and keep work moving.
+"""
+```
+
+### Chat is an agentic tool-use loop
+
+Every user message — without exception — goes to the `role = "main"` agent. There is no
+command parser and no shortcut path. Even inputs that look like navigation ("show the
+board") go through the model, because the user rarely intends a bare command and when
+they do there is usually a conversation to be had about it.
+
+When the user sends a message, it goes to the configured LLM along with the full chat
+history and current project state. The LLM has a set of **gitzi management tools** it
+can call directly in the same turn:
+
+| Tool | What it does |
+|------|-------------|
+| `gitzi_create_epic` | Create a new epic |
+| `gitzi_create_task` | Create a task under an epic |
+| `gitzi_create_adr` | Raise a clarification item / pending ADR |
+| `gitzi_resolve_adr` | Record a decision on a pending ADR |
+| `gitzi_update_task` | Edit task title, description, work items |
+| `gitzi_prioritize_task` | Set task priority / order |
+| `gitzi_park_task` | Park a task and record its state |
+| `gitzi_list_epics` / `list_tasks` | Read project state |
+| `gitzi_get_adr` | Fetch ADR details |
+
+The LLM reasons about the user's message, calls whatever tools are needed, and responds
+with what it did. "Let's build user authentication" → LLM creates the epic, breaks it
+into tasks, responds with a summary and asks for confirmation. All in one turn.
+
+Responses are **never streamed** — the full response is displayed at once when complete.
+
+**Tool call visibility:**
+
+| Agent | Tool calls visible in chat? | Panel updates? |
+|-------|-----------------------------|----------------|
+| `role = "main"` | Yes — the user sees what was created/changed | Yes — panel switches to reflect the action |
+| Coding agents (background) | No — run silently | No — status panel updates only when a task stage changes |
+
+Background agents are workers. The user sees their outcomes (task moves to Waiting for
+Review, a notification appears in the status panel) but not their intermediate actions.
+
+**Two contexts, overlapping tool sets:**
+
+| Tool | Chat LLM | Coding agent |
+|------|----------|--------------|
+| `gitzi_create_epic` | ✓ | — |
+| `gitzi_create_task` | ✓ | ✓ (dependency discovery) |
+| `gitzi_create_adr` | ✓ | ✓ (raise clarification items) |
+| `gitzi_resolve_adr` | ✓ | — |
+| `gitzi_update_task` | ✓ | ✓ (own task only) |
+| `gitzi_park_task` | ✓ | ✓ (own task only) |
+| `gitzi_prioritize_task` | ✓ | — |
+| `gitzi_list_epics` / `list_tasks` | ✓ | ✓ (read project context) |
+| `gitzi_get_adr` | ✓ | ✓ (read decisions) |
+| `gitzi_switch_panel` | ✓ | — |
+| `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` | — | ✓ |
+
+Coding agents have enough gitzi access to manage their own work autonomously — creating
+dependencies, surfacing uncertainty as ADRs, parking and resuming — without going back
+through the chat harness for every action.
+
+### Idle state — proactive planning mode
+
+When all queues are empty and no agents are active, the main agent does not go silent.
+It shifts into proactive planning:
+
+1. **First:** check if any background agents created new tasks or epics via the async
+   queue — if so, propose those first (they represent work already identified and queued)
+2. **Otherwise:** review recently completed work and the backlog, find improvement
+   opportunities, and produce one recommendation for what to work on next with reasoning
+
+In both cases the main agent surfaces **one item** to the user and switches the right
+panel to show the proposed artifact — Task detail if a task, Epic detail if a new epic.
+
+The user can accept, redirect, defer, or start a new conversation. One recommendation
+at a time — never a ranked list.
+
+### Async queue — needs detailed design
+
+
+
+From the user's perspective the chat is **one infinite thread** — there are no visible
+session boundaries.
+
+Under the hood the harness manages sessions transparently:
+
+1. Each session maintains a **rolling summary** — updated continuously as the conversation
+   progresses (see Conversation Summarization in todo.md).
+2. When `shouldStartNewSession()` returns true, the harness:
+   - Finalises the current session's summary
+   - Opens a new session
+   - Seeds the new session with the previous summary as its first context message
+3. The user sees the conversation continue without interruption.
+
+**`shouldStartNewSession()` fires when a conversation feels complete**, for example:
+- The clarification queue is empty and no agents are active
+- An epic has just reached Done
+- A natural pause in work (all open tasks are either Done or waiting on the user)
+- The AI detects the conversation has reached a resolution point
+
+The session boundary is an implementation detail the user never needs to know about.
+
+### Terminology
+
+"Issue" and "task" are the same thing. The canonical term throughout gitzi is **task**.
+
+### Artifact hierarchy
+
+```
+Epic
+  └── Task
+        ├── Work items (sub-steps within the task)
+        ├── TDD spec / tests (written first, before implementation)
+        ├── Clarifications for subagents (inline context, implementation notes)
+        └── Open questions (raised by agent; require human answer before proceeding)
+```
+
+Tests are **first-class artifacts**, not afterthoughts:
+- Unit, component, integration, and end-to-end tests are all tracked
+- TDD: the agent writes failing tests first; the tests are part of the task definition
+- Passing tests are the gate to Done — they are the artifact that proves the task is complete
+
+Code is primary documentation. Human-readable markdown docs are generated rarely and only
+when they add something code cannot convey.
+
+### Agent dependency discovery (auto-park and resume)
+
+When an agent discovers mid-task that prerequisite work is missing, it follows this flow
+**without blocking on the user first**:
+
+1. **Park** — commit the current partial work to the task's branch and record its state.
+2. **Create dependency** — generate a new task (with TDD, work items, and a proposed
+   implementation) for the missing prerequisite work.
+3. **Notify** — explain to the user in chat: what it was working on, what it discovered,
+   what new task it created, and what it proposes to do. Ask the user to confirm the
+   proposed implementation is correct.
+4. **Resume** — once the dependency task is Done (either via the agent's proposed
+   implementation or a version the user edited), automatically pull in the new work,
+   rebase / rework the parked branch, and continue the original task.
+
+**When to auto-create a dependency vs raise a clarification item:**
+
+| Situation | Action |
+|-----------|--------|
+| A prerequisite simply doesn't exist yet and what it needs to be is unambiguous | Auto-create dependency task, park, notify, resume |
+| Anything about intent, approach, scope, or implementation is uncertain — no matter how small | Raise clarification item; stop until user decides |
+
+The second row has **no size threshold**. A tiny uncertainty is still a clarification item.
+The queue may grow large; that is expected and correct.
+
+### System prompt composition
+
+Agent prompts are assembled from layers at runtime:
+
+1. **Base mandate** (hardcoded, not configurable) — the implementer-not-designer
+   principle applied to every agent, always:
+   > You are an implementer. You do not make design decisions. You do not guess about
+   > intent, approach, naming, structure, or scope — no matter how small. If anything
+   > is unclear, raise a clarification item and stop. The user's answer is always correct.
+2. **Role prompt** — defined per agent in `[[agents]]` in config.toml via `system_prompt`
+3. **Dynamic context** (injected at dispatch time):
+   - Session summary
+   - All ADRs linked to the current task and its parent epic (both `pending` and `resolved`)
+   - Current epic context
+   - Open clarification items for this task
+
+### Core agent principle: the user is the expert
+
+The agent's role is **implementation only**. The user is the designer, architect, and
+domain expert. The agent has no opinions about what to build or how.
+
+This is encoded in every agent's system prompt:
+
+> You are an implementer. You do not make design decisions. You do not guess about intent,
+> approach, naming, structure, or scope — no matter how small the question seems. If
+> anything is unclear, raise a clarification item and stop. The user's answer is always
+> the correct answer. Your job is to execute what has been explicitly decided, nothing more.
+
+There is no threshold for "small enough to guess." Every uncertainty surfaces.
+
+### Clarification queue
+
+When an agent hits ambiguity it cannot resolve on its own, it stops and raises a
+**clarification item** — it does not guess and proceed.
+
+Before surfacing the question the agent:
+1. Researches the problem (web search, codebase analysis)
+2. Identifies multiple solution paths
+3. Compiles pros and cons for each path
+
+The clarification item is added to a **clarification queue** with a UUID. If multiple
+tasks raise blockers simultaneously, all items accumulate in the queue. The chat then
+walks the user through them **one at a time** in order until every item has a resolution.
+
+The harness walks through pending ADRs **one at a time** in chat. Each message includes
+the ADR UUID so it is visible to the user. The backend tracks which ADR is currently
+awaiting a response; the user's next reply is automatically mapped to it — no explicit
+reference required from the user.
+
+Each clarification item records:
+- UUID
+- Which task/work item raised it
+- The question / decision needed
+- Research context the agent gathered
+- The candidate solution paths with pros/cons
+- The user's decision (filled in on resolution)
+- Timestamp raised / timestamp resolved
+
+Once resolved, the answer is fed back to the agent so it can continue. The resolution
+is also stored permanently as part of the task record — it is a decision artifact, not
+just a transient message.
+
+
+
+### TUI layout
+
+Two-pane split: **35% chat left / 65% right panel.**
+
+The right panel switches between views based on context:
+
+| View | When shown |
+|------|-----------|
+| **Status** (default on open) | Structured harness-rendered opening card |
+| **Board** | Kanban board across all stages |
+| **Task detail** | Selected task — description, work items, diff, approve/reject |
+| **ADR detail** | Selected ADR — question, options, decision |
+| **Clarification queue** | Pending ADRs awaiting user answers |
+
+### Opening status panel
+
+When gitzi opens, the right panel renders a structured **status card** assembled directly
+from harness state — not an AI-generated message:
+
+- **Current epic** — title, progress (tasks done / total)
+- **In progress** — tasks currently being worked on by agents
+- **Waiting for you** — tasks in Waiting for Review (need approval/rejection)
+- **Clarification queue** — count of pending ADRs awaiting your answer
+- **Followups** — unresolved items carried forward from the previous session summary
+
+The chat pane starts empty and ready for input. The panel is what the user reads first;
+the chat is where they act on it.
+
+### Diff review
+
+Diff review happens in the **Task detail** view of the right panel.
+The right panel shows the diff; approve/reject controls are there.
+
+### Architecture Decision Records (ADRs)
+
+ADRs are a first-class artifact type, stored separately from tasks and epics.
+
+Every resolved clarification item produces an ADR. ADRs can also be created directly
+from chat when a significant design decision is made outside of a task context.
+
+**Storage:** `~/.gitzi/<session>/adrs/<uuid>.toml`
+
+**Contents:**
+- UUID
+- Title / decision summary
+- Context (what problem was being solved)
+- Options considered with pros/cons
+- Decision made and rationale
+- Consequences / follow-on implications
+- Linked task(s) and epic(s) that triggered or reference this decision
+- Resolution type: `human` | `agent-self-resolved`
+- Author (human or agent) + timestamp raised / timestamp resolved
+
+**Linking:** Tasks and epics carry an `adrs = ["<uuid>", ...]` field.
+The chat surfaces relevant ADRs when working on related tasks.
+
+**ADRs are created immediately when a clarification item is raised — before the user
+answers.** The ADR starts in `pending` status with the question, context, and candidate
+options filled in. When the user answers, the ADR is updated to `resolved` with the
+decision and rationale. The clarification item and the ADR are the same thing at
+different points in their lifecycle.
+
+**ADR lifecycle — two resolution paths:**
+
+```
+Human-resolved (agent needs user input):
+  background agent hits uncertainty
+    → creates pending ADR
+    → enqueues in attention queue
+    → agent parks and waits
+  main agent becomes idle
+    → harness pulls next item from attention queue
+    → surfaces ADR to user through chat
+  user answers
+    → ADR resolved
+    → background agent resumes
+
+Agent self-resolved (agent decides autonomously):
+  background agent makes a structural decision (dependency task, park, etc.)
+    → creates ADR with its own reasoning as the answer
+    → marked agent-resolved
+    → proceeds immediately
+    → ADR visible in status panel for user to review / override at their own pace
+```
+
+**Key principles:**
+- Background agents never interrupt an active user conversation
+- The main agent is the single point of contact between the user and all background work
+- Items are surfaced **one at a time** — always (see Core principle above)
+
+**Attention queue** — stored in harness state, contains:
+- ADR UUID
+- Which task raised it
+- Priority / order raised
+- Status: `waiting` | `surfaced` | `resolved`
+
+**ADRs are always injected into agent context.** When any agent picks up a task, the
+harness fetches all ADRs linked to that task (and its parent epic) and includes them in
+the system prompt:
+- `resolved` ADRs tell the agent what has been decided — implement accordingly
+- `pending` ADRs tell the agent what is still open — do not proceed on those areas
+
+This ensures agents never re-ask a question that has already been answered, and never
+act on an area where a decision is still pending.
+
+**Every ADR also produces a test.** When a clarification item is resolved, the agent
+generates a unit test that:
+- Validates that the chosen solution is correctly implemented
+- Carries the problem statement and chosen solution in its doc comment
+- Links to the originating task/issue and the ADR by UUID
+
+This test is the living proof that the decision holds. If the implementation drifts, the
+test fails and the ADR UUID in the failure points directly back to why the decision was made.
 
 ---
 
