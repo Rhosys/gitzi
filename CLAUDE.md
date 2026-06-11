@@ -1,5 +1,11 @@
 # gitzi — Project Guidelines for Claude
 
+## Core principle: one thing at a time
+
+The user is never shown more than one thing requiring their attention at once.
+Queues exist; they are worked through one item at a time, sequentially.
+This is non-negotiable and applies to every queue in the system.
+
 ## Tool naming convention
 
 All tools that gitzi exposes to agents — whether for managing project state, navigating
