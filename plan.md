@@ -450,7 +450,37 @@ just a transient message.
 
 
 
-Diff review happens in the **TUI right panel** — not in a browser, not in chat.
+### TUI layout
+
+Two-pane split: **35% chat left / 65% right panel.**
+
+The right panel switches between views based on context:
+
+| View | When shown |
+|------|-----------|
+| **Status** (default on open) | Structured harness-rendered opening card |
+| **Board** | Kanban board across all stages |
+| **Task detail** | Selected task — description, work items, diff, approve/reject |
+| **ADR detail** | Selected ADR — question, options, decision |
+| **Clarification queue** | Pending ADRs awaiting user answers |
+
+### Opening status panel
+
+When gitzi opens, the right panel renders a structured **status card** assembled directly
+from harness state — not an AI-generated message:
+
+- **Current epic** — title, progress (tasks done / total)
+- **In progress** — tasks currently being worked on by agents
+- **Waiting for you** — tasks in Waiting for Review (need approval/rejection)
+- **Clarification queue** — count of pending ADRs awaiting your answer
+- **Followups** — unresolved items carried forward from the previous session summary
+
+The chat pane starts empty and ready for input. The panel is what the user reads first;
+the chat is where they act on it.
+
+### Diff review
+
+Diff review happens in the **Task detail** view of the right panel.
 The right panel shows the diff; approve/reject controls are there.
 
 ### Architecture Decision Records (ADRs)
