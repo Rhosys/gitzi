@@ -405,6 +405,21 @@ Coding agents have enough gitzi access to manage their own work autonomously —
 dependencies, surfacing uncertainty as ADRs, parking and resuming — without going back
 through the chat harness for every action.
 
+### Idle state — proactive planning mode
+
+When all queues are empty and no agents are active, the main agent does not go silent.
+It shifts into proactive planning:
+
+1. Reviews recently completed work (tasks that reached Done)
+2. Reviews the backlog (tasks not yet started or prioritized)
+3. Looks for improvement opportunities — gaps, patterns from ADRs, incomplete areas,
+   things raised but deferred
+4. Produces **one recommendation** for what to work on next, with reasoning
+5. Surfaces it to the user and waits
+
+The user can accept, redirect, defer, or start a new conversation. One recommendation
+at a time — never a ranked list.
+
 
 
 From the user's perspective the chat is **one infinite thread** — there are no visible
