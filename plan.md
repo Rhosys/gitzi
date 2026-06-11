@@ -337,14 +337,24 @@ The LLM reasons about the user's message, calls whatever tools are needed, and r
 with what it did. "Let's build user authentication" → LLM creates the epic, breaks it
 into tasks, responds with a summary and asks for confirmation. All in one turn.
 
-**Two distinct tool sets — chat vs coding agents:**
+**Two contexts, overlapping tool sets:**
 
-| Context | LLM | Tools |
-|---------|-----|-------|
-| Chat harness | Configured chat agent | Gitzi management tools (above) |
-| Coding agent (task execution) | Configured coding agent | File tools: `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` |
+| Tool | Chat LLM | Coding agent |
+|------|----------|--------------|
+| `create_epic` | ✓ | — |
+| `create_task` | ✓ | ✓ (dependency discovery) |
+| `create_adr` | ✓ | ✓ (raise clarification items) |
+| `resolve_adr` | ✓ | — |
+| `update_task` | ✓ | ✓ (own task only) |
+| `park_task` | ✓ | ✓ (own task only) |
+| `prioritize_task` | ✓ | — |
+| `list_epics` / `list_tasks` | ✓ | ✓ (read project context) |
+| `get_adr` | ✓ | ✓ (read decisions) |
+| `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` | — | ✓ |
 
-Same underlying model family potentially; completely different capabilities per context.
+Coding agents have enough gitzi access to manage their own work autonomously — creating
+dependencies, surfacing uncertainty as ADRs, parking and resuming — without going back
+through the chat harness for every action.
 
 
 
