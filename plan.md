@@ -344,15 +344,15 @@ can call directly in the same turn:
 
 | Tool | What it does |
 |------|-------------|
-| `create_epic` | Create a new epic |
-| `create_task` | Create a task under an epic |
-| `create_adr` | Raise a clarification item / pending ADR |
-| `resolve_adr` | Record a decision on a pending ADR |
-| `update_task` | Edit task title, description, work items |
-| `prioritize_task` | Set task priority / order |
-| `park_task` | Park a task and record its state |
-| `list_epics` / `list_tasks` | Read project state |
-| `get_adr` | Fetch ADR details |
+| `gitzi_create_epic` | Create a new epic |
+| `gitzi_create_task` | Create a task under an epic |
+| `gitzi_create_adr` | Raise a clarification item / pending ADR |
+| `gitzi_resolve_adr` | Record a decision on a pending ADR |
+| `gitzi_update_task` | Edit task title, description, work items |
+| `gitzi_prioritize_task` | Set task priority / order |
+| `gitzi_park_task` | Park a task and record its state |
+| `gitzi_list_epics` / `list_tasks` | Read project state |
+| `gitzi_get_adr` | Fetch ADR details |
 
 The LLM reasons about the user's message, calls whatever tools are needed, and responds
 with what it did. "Let's build user authentication" → LLM creates the epic, breaks it
@@ -362,15 +362,15 @@ into tasks, responds with a summary and asks for confirmation. All in one turn.
 
 | Tool | Chat LLM | Coding agent |
 |------|----------|--------------|
-| `create_epic` | ✓ | — |
-| `create_task` | ✓ | ✓ (dependency discovery) |
-| `create_adr` | ✓ | ✓ (raise clarification items) |
-| `resolve_adr` | ✓ | — |
-| `update_task` | ✓ | ✓ (own task only) |
-| `park_task` | ✓ | ✓ (own task only) |
-| `prioritize_task` | ✓ | — |
-| `list_epics` / `list_tasks` | ✓ | ✓ (read project context) |
-| `get_adr` | ✓ | ✓ (read decisions) |
+| `gitzi_create_epic` | ✓ | — |
+| `gitzi_create_task` | ✓ | ✓ (dependency discovery) |
+| `gitzi_create_adr` | ✓ | ✓ (raise clarification items) |
+| `gitzi_resolve_adr` | ✓ | — |
+| `gitzi_update_task` | ✓ | ✓ (own task only) |
+| `gitzi_park_task` | ✓ | ✓ (own task only) |
+| `gitzi_prioritize_task` | ✓ | — |
+| `gitzi_list_epics` / `list_tasks` | ✓ | ✓ (read project context) |
+| `gitzi_get_adr` | ✓ | ✓ (read decisions) |
 | `gitzi_switch_panel` | ✓ | — |
 | `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` | — | ✓ |
 
