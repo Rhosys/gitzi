@@ -315,6 +315,22 @@ A single persistent chat thread influences the creation and unblocking of:
 The user never leaves the chat to "go create a task" — the chat creates it, proposes it,
 and the user confirms or redirects inline.
 
+The `role = "main"` agent powers the chat harness. It is defined in `[[agents]]` like
+any other agent and gets the full gitzi management tool set. Its system prompt is focused
+on project coordination — understanding user intent, creating and refining epics/tasks,
+walking through the clarification queue, and surfacing status — not implementation.
+
+```toml
+[[agents]]
+role = "main"
+model = "claude-opus-4-8"
+system_prompt = """
+You are a project coordination agent. You help the user manage their software project
+by creating epics, tasks, and ADRs from natural conversation. You never write code
+directly. You surface what needs the user's attention and keep work moving.
+"""
+```
+
 ### Chat is an agentic tool-use loop
 
 When the user sends a message, it goes to the configured LLM (from `[[agents]]`) along
