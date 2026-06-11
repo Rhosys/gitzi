@@ -571,11 +571,12 @@ from chat when a significant design decision is made outside of a task context.
 - UUID
 - Title / decision summary
 - Context (what problem was being solved)
-- Options considered with pros/cons (sourced from the clarification item if agent-raised)
+- Options considered with pros/cons
 - Decision made and rationale
 - Consequences / follow-on implications
 - Linked task(s) and epic(s) that triggered or reference this decision
-- Timestamp raised / resolved
+- Resolution type: `human` | `agent-self-resolved`
+- Author (human or agent) + timestamp raised / timestamp resolved
 
 **Linking:** Tasks and epics carry an `adrs = ["<uuid>", ...]` field.
 The chat surfaces relevant ADRs when working on related tasks.
@@ -586,10 +587,25 @@ options filled in. When the user answers, the ADR is updated to `resolved` with 
 decision and rationale. The clarification item and the ADR are the same thing at
 different points in their lifecycle.
 
-**ADR lifecycle:**
+**ADR lifecycle — two resolution paths:**
+
 ```
-raised by agent → pending (question + options captured) → user answers → resolved (decision captured)
+Human-resolved:
+  raised by agent → pending → harness surfaces to user → user answers → resolved
+
+Agent self-resolved:
+  agent identifies issue → reasons through it → decides → creates ADR with own
+  reasoning as the answer → marked agent-resolved → visible to user for review/override
 ```
+
+When a background coding agent autonomously creates a dependency task, parks work, or
+makes any structural decision, it produces an agent-resolved ADR capturing:
+- What it encountered
+- How it reasoned about it
+- What it decided and why
+
+This gives the user a complete audit trail of every autonomous decision. Agent-resolved
+ADRs appear in the status panel for the user to review and override if they disagree.
 
 **ADRs are always injected into agent context.** When any agent picks up a task, the
 harness fetches all ADRs linked to that task (and its parent epic) and includes them in
