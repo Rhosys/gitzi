@@ -10,6 +10,21 @@ by surfacing small, reviewable diffs and driving test-first development.
 
 ---
 
+## Core principle: one thing at a time
+
+The user is never presented with more than one thing requiring their attention at once.
+This applies everywhere without exception:
+
+- Clarification queue → one ADR surfaced at a time
+- Attention queue → one background agent request surfaced at a time
+- Diff review → one task reviewed at a time
+- Opening status → surfaces the single most important thing first
+
+Queues may be long. The user works through them sequentially. The harness never
+front-loads, never batches, never summarises-and-picks. One thing. Then the next.
+
+---
+
 ## Goals
 
 1. **LLM-driven, human-in-the-loop** — the LLM proposes everything (epic breakdown,
@@ -610,9 +625,10 @@ Agent self-resolved (agent decides autonomously):
     → ADR visible in status panel for user to review / override at their own pace
 ```
 
-**Key principle:** background agents never interrupt an active user conversation. The
-attention queue holds their needs; the main agent drains it when idle. The main agent
-is the single point of contact between the user and all background work.
+**Key principles:**
+- Background agents never interrupt an active user conversation
+- The main agent is the single point of contact between the user and all background work
+- Items are surfaced **one at a time** — always (see Core principle above)
 
 **Attention queue** — stored in harness state, contains:
 - ADR UUID
