@@ -590,22 +590,35 @@ different points in their lifecycle.
 **ADR lifecycle — two resolution paths:**
 
 ```
-Human-resolved:
-  raised by agent → pending → harness surfaces to user → user answers → resolved
+Human-resolved (agent needs user input):
+  background agent hits uncertainty
+    → creates pending ADR
+    → enqueues in attention queue
+    → agent parks and waits
+  main agent becomes idle
+    → harness pulls next item from attention queue
+    → surfaces ADR to user through chat
+  user answers
+    → ADR resolved
+    → background agent resumes
 
-Agent self-resolved:
-  agent identifies issue → reasons through it → decides → creates ADR with own
-  reasoning as the answer → marked agent-resolved → visible to user for review/override
+Agent self-resolved (agent decides autonomously):
+  background agent makes a structural decision (dependency task, park, etc.)
+    → creates ADR with its own reasoning as the answer
+    → marked agent-resolved
+    → proceeds immediately
+    → ADR visible in status panel for user to review / override at their own pace
 ```
 
-When a background coding agent autonomously creates a dependency task, parks work, or
-makes any structural decision, it produces an agent-resolved ADR capturing:
-- What it encountered
-- How it reasoned about it
-- What it decided and why
+**Key principle:** background agents never interrupt an active user conversation. The
+attention queue holds their needs; the main agent drains it when idle. The main agent
+is the single point of contact between the user and all background work.
 
-This gives the user a complete audit trail of every autonomous decision. Agent-resolved
-ADRs appear in the status panel for the user to review and override if they disagree.
+**Attention queue** — stored in harness state, contains:
+- ADR UUID
+- Which task raised it
+- Priority / order raised
+- Status: `waiting` | `surfaced` | `resolved`
 
 **ADRs are always injected into agent context.** When any agent picks up a task, the
 harness fetches all ADRs linked to that task (and its parent epic) and includes them in
