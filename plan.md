@@ -410,15 +410,18 @@ through the chat harness for every action.
 When all queues are empty and no agents are active, the main agent does not go silent.
 It shifts into proactive planning:
 
-1. Reviews recently completed work (tasks that reached Done)
-2. Reviews the backlog (tasks not yet started or prioritized)
-3. Looks for improvement opportunities — gaps, patterns from ADRs, incomplete areas,
-   things raised but deferred
-4. Produces **one recommendation** for what to work on next, with reasoning
-5. Surfaces it to the user and waits
+1. **First:** check if any background agents created new tasks or epics via the async
+   queue — if so, propose those first (they represent work already identified and queued)
+2. **Otherwise:** review recently completed work and the backlog, find improvement
+   opportunities, and produce one recommendation for what to work on next with reasoning
+
+In both cases the main agent surfaces **one item** to the user and switches the right
+panel to show the proposed artifact — Task detail if a task, Epic detail if a new epic.
 
 The user can accept, redirect, defer, or start a new conversation. One recommendation
 at a time — never a ranked list.
+
+### Async queue — needs detailed design
 
 
 
