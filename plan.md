@@ -371,6 +371,7 @@ into tasks, responds with a summary and asks for confirmation. All in one turn.
 | `prioritize_task` | ✓ | — |
 | `list_epics` / `list_tasks` | ✓ | ✓ (read project context) |
 | `get_adr` | ✓ | ✓ (read decisions) |
+| `gitzi_switch_panel` | ✓ | — |
 | `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` | — | ✓ |
 
 Coding agents have enough gitzi access to manage their own work autonomously — creating
