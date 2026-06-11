@@ -333,9 +333,14 @@ directly. You surface what needs the user's attention and keep work moving.
 
 ### Chat is an agentic tool-use loop
 
-When the user sends a message, it goes to the configured LLM (from `[[agents]]`) along
-with the full chat history and current project state. The LLM has a set of **gitzi
-management tools** it can call directly in the same turn:
+Every user message — without exception — goes to the `role = "main"` agent. There is no
+command parser and no shortcut path. Even inputs that look like navigation ("show the
+board") go through the model, because the user rarely intends a bare command and when
+they do there is usually a conversation to be had about it.
+
+When the user sends a message, it goes to the configured LLM along with the full chat
+history and current project state. The LLM has a set of **gitzi management tools** it
+can call directly in the same turn:
 
 | Tool | What it does |
 |------|-------------|
