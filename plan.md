@@ -360,6 +360,16 @@ into tasks, responds with a summary and asks for confirmation. All in one turn.
 
 Responses are **never streamed** — the full response is displayed at once when complete.
 
+**Tool call visibility:**
+
+| Agent | Tool calls visible in chat? | Panel updates? |
+|-------|-----------------------------|----------------|
+| `role = "main"` | Yes — the user sees what was created/changed | Yes — panel switches to reflect the action |
+| Coding agents (background) | No — run silently | No — status panel updates only when a task stage changes |
+
+Background agents are workers. The user sees their outcomes (task moves to Waiting for
+Review, a notification appears in the status panel) but not their intermediate actions.
+
 **Two contexts, overlapping tool sets:**
 
 | Tool | Chat LLM | Coding agent |
