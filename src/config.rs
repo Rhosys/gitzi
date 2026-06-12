@@ -188,7 +188,7 @@ mod tests {
 
             // Build config agents vec: include only roles where flag is true
             let config_agents: Vec<AgentDef> = all_roles.iter().zip(include_flags.iter())
-                .filter(|(_, &include)| include)
+                .filter(|&(_, &include)| include)
                 .enumerate()
                 .map(|(i, (role, _))| AgentDef {
                     role: role.to_string(),
@@ -241,12 +241,6 @@ mod tests {
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
 
     // Feature: dispatcher-audit-fixes, Property 11: Config role validation rejects unknown roles
     // **Validates: Requirements 7.2**
