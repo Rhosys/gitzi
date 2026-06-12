@@ -63,6 +63,6 @@ impl AgentBackend for RigAgent {
             .await
             .map_err(|e| GitziError::AgentFailed(e.to_string()))?;
 
-        Ok(AgentResult { success: true, output: response })
+        Ok(AgentResult::Success { output: response })
     }
 }

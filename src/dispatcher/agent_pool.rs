@@ -233,13 +233,23 @@ async fn handle_agent_result(
 ) {
     let role = handle.role;
 
-    if !agent_result.success {
-        warn!(%role, task_id = %task.id, "agent reported failure, leaving task in column");
-        return;
-    }
+    let output = match agent_result {
+        AgentResult::Blocked { question } => {
+            info!(%role, task_id = %task.id, "agent blocked with question");
+            // TODO: persist review item, emit AgentBlocked, set blocked (task 6.3)
+            let _ = question;
+            return;
+        }
+        AgentResult::Failure { output } => {
+            warn!(%role, task_id = %task.id, "agent reported failure, leaving task in column");
+            let _ = output;
+            return;
+        }
+        AgentResult::Success { output } => output,
+    };
 
     // TropeBlocker scan
-    match trope_blocker::scan(&agent_result.output) {
+    match trope_blocker::scan(&output) {
         trope_blocker::ScanResult::Clean => {
             // Advance task to next buffer (or Done for Deploying)
             let next_col = role.column().next();
@@ -259,7 +269,7 @@ async fn handle_agent_result(
         }
         trope_blocker::ScanResult::Blocked(trope_match) => {
             // Estimate context tokens (rough: 4 chars per token)
-            let token_estimate = agent_result.output.len() / 4;
+            let token_estimate = output.len() / 4;
             let summary = format!("Task: {} — {}", task.id, task.title);
 
             let directive =
