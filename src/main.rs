@@ -60,7 +60,8 @@ async fn cmd_default(repo_root: PathBuf) -> Result<()> {
     // Launch TUI
     #[cfg(feature = "tui")]
     {
-        gitzi::tui::run(repo_root)?;
+        let _ = repo_root;
+        gitzi::tui::run_async().await?;
     }
     #[cfg(not(feature = "tui"))]
     {

@@ -1,0 +1,176 @@
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+use tokio::sync::mpsc;
+use tracing::warn;
+
+use crate::daemon::socket_path;
+use super::app::{BoardColumn, DaemonCommand, DaemonMessage, ReviewItem};
+
+/// Spawn the background task that manages the daemon socket connection.
+/// Returns an UnboundedReceiver for incoming messages.
+pub fn spawn(
+    cmd_rx: mpsc::UnboundedReceiver<DaemonCommand>,
+) -> mpsc::UnboundedReceiver<DaemonMessage> {
+    let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+    tokio::spawn(run_client(cmd_rx, msg_tx));
+    msg_rx
+}
+
+async fn run_client(
+    mut cmd_rx: mpsc::UnboundedReceiver<DaemonCommand>,
+    msg_tx: mpsc::UnboundedSender<DaemonMessage>,
+) {
+    // Connect to daemon
+    let path = socket_path();
+    let stream = match UnixStream::connect(&path).await {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = msg_tx.send(DaemonMessage::Disconnected(format!("connect failed: {e}")));
+            return;
+        }
+    };
+
+    let _ = msg_tx.send(DaemonMessage::Connected);
+
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    // Send initial board request
+    if writer.write_all(b"board\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+
+    // Read board snapshot response
+    if let Ok(Some(line)) = lines.next_line().await {
+        if let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+            let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
+        }
+    }
+
+    // Now open a second connection for subscription (subscribe holds the connection)
+    let sub_stream = match UnixStream::connect(&path).await {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("subscribe connect failed: {e}");
+            let _ = msg_tx.send(DaemonMessage::Disconnected(format!("subscribe failed: {e}")));
+            return;
+        }
+    };
+
+    let (sub_reader, mut sub_writer) = sub_stream.into_split();
+    if sub_writer.write_all(b"subscribe\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("subscribe write failed".to_string()));
+        return;
+    }
+    let mut sub_lines = BufReader::new(sub_reader).lines();
+
+    // Also get initial peek_review via the command connection
+    if writer.write_all(b"peek_review\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+    if let Ok(Some(line)) = lines.next_line().await {
+        let item: Option<ReviewItem> = if line.trim() == "null" {
+            None
+        } else {
+            serde_json::from_str(&line).ok()
+        };
+        let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+    }
+
+    // Main loop: select between subscription events and outgoing commands
+    loop {
+        tokio::select! {
+            // Incoming events from subscription stream
+            sub_result = sub_lines.next_line() => {
+                match sub_result {
+                    Ok(Some(line)) => {
+                        let _ = msg_tx.send(DaemonMessage::Event(line));
+                    }
+                    Ok(None) | Err(_) => {
+                        let _ = msg_tx.send(DaemonMessage::Disconnected("subscription closed".to_string()));
+                        return;
+                    }
+                }
+            }
+
+            // Outgoing commands from the TUI
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else { return };
+                match cmd {
+                    DaemonCommand::Approve(task_id) => {
+                        let msg = format!("approve {task_id}\n");
+                        if writer.write_all(msg.as_bytes()).await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(resp)) = lines.next_line().await {
+                            let result = if resp.starts_with("error") {
+                                Err(resp)
+                            } else {
+                                Ok(resp)
+                            };
+                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
+                        }
+                    }
+                    DaemonCommand::Reject(task_id, feedback) => {
+                        let msg = format!("reject {task_id} {feedback}\n");
+                        if writer.write_all(msg.as_bytes()).await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(resp)) = lines.next_line().await {
+                            let result = if resp.starts_with("error") {
+                                Err(resp)
+                            } else {
+                                Ok(resp)
+                            };
+                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
+                        }
+                    }
+                    DaemonCommand::Answer(item_id, answer) => {
+                        let msg = format!("answer {item_id} {answer}\n");
+                        if writer.write_all(msg.as_bytes()).await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(resp)) = lines.next_line().await {
+                            let result = if resp.starts_with("error") {
+                                Err(resp)
+                            } else {
+                                Ok(resp)
+                            };
+                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
+                        }
+                    }
+                    DaemonCommand::RefreshBoard => {
+                        if writer.write_all(b"board\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await {
+                            if let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+                                let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
+                            }
+                        }
+                    }
+                    DaemonCommand::RefreshReview => {
+                        if writer.write_all(b"peek_review\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await {
+                            let item: Option<ReviewItem> = if line.trim() == "null" {
+                                None
+                            } else {
+                                serde_json::from_str(&line).ok()
+                            };
+                            let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
