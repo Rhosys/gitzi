@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-use crate::error::Result;
+use crate::dispatcher::AgentRole;
+use crate::error::{GitziError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WipLimits {
@@ -132,15 +133,32 @@ impl Config {
         atomic_write(&path, &text)
     }
 
-    /// Find an agent by role. Returns the first match or the first agent in the list.
-    pub fn resolve_agent(&self, role: &str) -> &AgentDef {
-        self.agents.iter().find(|a| a.role == role)
-            .or_else(|| self.agents.first())
+    /// Validate config on load. Returns error for unknown role names.
+    pub fn validate(&self) -> Result<()> {
+        let valid_roles: Vec<String> = AgentRole::all().iter().map(|r| r.to_string()).collect();
+        for agent in &self.agents {
+            if !valid_roles.contains(&agent.role) {
+                return Err(GitziError::Config(format!(
+                    "unknown agent role '{}' in config — valid roles: {:?}",
+                    agent.role, valid_roles
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Find agent by role: config first, then hardcoded default. Never first-in-list.
+    pub fn resolve_agent(&self, role: &str) -> AgentDef {
+        self.agents
+            .iter()
+            .find(|a| a.role == role)
+            .cloned()
             .unwrap_or_else(|| {
-                // Safety: only reachable if agents is empty AND first() returned None.
-                // Return a static default; the scheduler will fall back to built-in behaviour.
-                static FALLBACK: std::sync::OnceLock<AgentDef> = std::sync::OnceLock::new();
-                FALLBACK.get_or_init(AgentDef::default)
+                AgentRole::all()
+                    .iter()
+                    .find(|r| r.to_string() == role)
+                    .map(|r| r.default_agent_def())
+                    .unwrap_or_else(|| AgentRole::Coder.default_agent_def())
             })
     }
 }

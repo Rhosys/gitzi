@@ -165,6 +165,30 @@ impl AgentRole {
     }
 }
 
+impl AgentRole {
+    /// Hardcoded default AgentDef for this role.
+    pub fn default_agent_def(&self) -> crate::config::AgentDef {
+        crate::config::AgentDef {
+            role: self.to_string(),
+            model: "claude-sonnet-4-20250514".to_string(),
+            system_prompt: Some(self.default_system_prompt().to_string()),
+        }
+    }
+
+    /// Hardcoded default system prompt for this role.
+    pub fn default_system_prompt(&self) -> &'static str {
+        match self {
+            AgentRole::Prioritizer => "You break epics into minimal, independently-shippable tasks ordered by dependency and value.",
+            AgentRole::Designer => "You produce concise technical designs. No code — architecture, data models, interfaces only.",
+            AgentRole::Coder => "You are a disciplined coding agent. Make the smallest possible change. No refactoring, no extras.",
+            AgentRole::Reviewer => "You review code for correctness, security, and adherence to the design. Flag issues, never rewrite.",
+            AgentRole::Tester => "You write and run tests. Property-based where applicable, example-based otherwise.",
+            AgentRole::Auditor => "You perform security audits. Check for vulnerabilities, leaked secrets, unsafe patterns.",
+            AgentRole::Infrarian => "You manage deployment infrastructure. Minimal, reproducible, observable.",
+        }
+    }
+}
+
 impl std::fmt::Display for AgentRole {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
