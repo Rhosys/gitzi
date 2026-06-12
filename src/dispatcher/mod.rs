@@ -13,7 +13,8 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::state::reader;
-use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind};
+use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind, ReviewAction};
+use crate::state::writer;
 
 use self::agent_pool::AgentPool;
 use self::board::{KanbanBoard, WipLimits};
@@ -355,18 +356,18 @@ impl Dispatcher {
         // 6. Create WIP waiting map (runtime-only, rebuilt on boot)
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
-        // 6. Spawn AgentPool
+        // 7. Spawn AgentPool
         let agent_pool = AgentPool::spawn(
             Arc::clone(&event_bus),
             Arc::clone(&board),
             Arc::clone(&config),
         );
 
-        // 7. Emit BootComplete
+        // 8. Emit BootComplete
         event_bus.emit(DispatchEvent::BootComplete);
         info!("boot complete event emitted");
 
-        // 8. Signal all agents that have work in their column
+        // 9. Signal all agents that have work in their column
         {
             let b = board.read().await;
             for role in AgentRole::all() {
@@ -412,7 +413,13 @@ impl Dispatcher {
                     self.agent_pool.signal(AgentRole::Prioritizer);
                 }
 
-                DispatchEvent::TaskStageChanged { task_id, from: _, to } => {
+                DispatchEvent::TaskStageChanged { task_id, from, to } => {
+                    // Check if a waiting agent can now advance (WIP slot freed)
+                    if let Some(role) = self.wip_waiting.lock().await.remove(&from) {
+                        info!(%role, column = %from, "WIP slot freed — re-signalling waiting agent");
+                        self.agent_pool.signal(role);
+                    }
+
                     if let Some(role) = to.agent_role() {
                         info!(%task_id, %role, "task entered work column — signalling agent");
                         self.agent_pool.signal(role);
