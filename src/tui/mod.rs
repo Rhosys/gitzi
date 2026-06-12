@@ -1,8 +1,8 @@
 mod app;
+mod daemon_client;
 mod ui;
 
 use std::io::{self, stdout};
-use std::path::PathBuf;
 use std::time::Duration;
 use ratatui::crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -11,10 +11,13 @@ use ratatui::crossterm::{
     cursor::Show,
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use crate::error::Result;
-use app::{App, Focus};
+use tokio::sync::mpsc;
 
-pub fn run(repo_root: PathBuf) -> Result<()> {
+use crate::error::Result;
+use app::{App, DaemonCommand, DaemonMessage, Mode, ReviewItemKind};
+
+/// Run the TUI. Must be called from within a tokio runtime.
+pub async fn run_async() -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
@@ -22,7 +25,7 @@ pub fn run(repo_root: PathBuf) -> Result<()> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_event_loop(&mut terminal, repo_root);
+    let result = run_event_loop(&mut terminal).await;
 
     // Always restore terminal
     let _ = disable_raw_mode();
@@ -32,16 +35,71 @@ pub fn run(repo_root: PathBuf) -> Result<()> {
     result
 }
 
-fn run_event_loop(
+/// Legacy synchronous entry point — spawns a tokio runtime internally.
+pub fn run(_repo_root: std::path::PathBuf) -> Result<()> {
+    // If we're already in a tokio runtime, use block_in_place
+    let rt = tokio::runtime::Handle::try_current();
+    match rt {
+        Ok(handle) => {
+            // Already in a runtime — use block_on from a new thread
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    handle.block_on(run_async())
+                }).join().unwrap()
+            })
+        }
+        Err(_) => {
+            // No runtime — create one
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(run_async())
+        }
+    }
+}
+
+async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    _repo_root: PathBuf,
 ) -> Result<()> {
-    let mut app = App::load()?;
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<DaemonCommand>();
+    let mut msg_rx = daemon_client::spawn(cmd_rx);
+    let mut app = App::new(cmd_tx);
 
     loop {
         terminal.draw(|frame| ui::draw(frame, &app))?;
 
-        if !event::poll(Duration::from_millis(250))? {
+        // Check for daemon messages (non-blocking)
+        while let Ok(msg) = msg_rx.try_recv() {
+            match msg {
+                DaemonMessage::BoardSnapshot(columns) => {
+                    app.apply_board_snapshot(columns);
+                }
+                DaemonMessage::ReviewItem(item) => {
+                    app.apply_review_item(item);
+                }
+                DaemonMessage::Event(json) => {
+                    app.handle_event(&json);
+                }
+                DaemonMessage::Connected => {
+                    app.connected = true;
+                    app.status = "connected".to_string();
+                }
+                DaemonMessage::Disconnected(reason) => {
+                    app.connected = false;
+                    app.status = format!("disconnected: {reason}");
+                }
+                DaemonMessage::CommandResult(result) => {
+                    match result {
+                        Ok(resp) => app.status = resp,
+                        Err(e) => app.status = e,
+                    }
+                    // After a command, refresh state
+                    let _ = app.cmd_tx.send(DaemonCommand::RefreshBoard);
+                    let _ = app.cmd_tx.send(DaemonCommand::RefreshReview);
+                }
+            }
+        }
+
+        // Poll for terminal events
+        if !event::poll(Duration::from_millis(50))? {
             continue;
         }
         let Event::Key(key) = event::read()? else { continue };
@@ -54,28 +112,43 @@ fn run_event_loop(
             break;
         }
 
-        match app.focus {
-            Focus::Chat => match key.code {
-                KeyCode::Enter => { let _ = app.process_input(); }
-                KeyCode::Backspace => { app.input.pop(); }
-                KeyCode::Tab => app.focus = Focus::Panel,
-                KeyCode::Up => app.scroll_chat_up(),
-                KeyCode::Down => app.scroll_chat_down(),
-                KeyCode::Char(c)
-                    if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    app.input.push(c);
-                }
-                _ => {}
-            },
-            Focus::Panel => match key.code {
-                KeyCode::Tab | KeyCode::Esc => app.focus = Focus::Chat,
-                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+        match app.mode {
+            Mode::Idle => match key.code {
                 KeyCode::Left | KeyCode::Char('h') => app.move_left(),
                 KeyCode::Right | KeyCode::Char('l') => app.move_right(),
-                KeyCode::Char('r') => { let _ = app.reload(); }
+                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                _ => {}
+            },
+            Mode::Review => match key.code {
+                KeyCode::Char('a') => {
+                    // 'a' = approve (buffer) or answer (question)
+                    if let Some(ref item) = app.review_item {
+                        match &item.kind {
+                            ReviewItemKind::AgentQuestion { .. } => app.begin_answer(),
+                            ReviewItemKind::BufferApproval { .. } => app.approve_current(),
+                        }
+                    }
+                }
+                KeyCode::Char('r') => app.begin_reject(),
+                KeyCode::Left | KeyCode::Char('h') => app.move_left(),
+                KeyCode::Right | KeyCode::Char('l') => app.move_right(),
+                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
+                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                _ => {}
+            },
+            Mode::RejectInput => match key.code {
+                KeyCode::Enter => app.submit_reject(),
+                KeyCode::Esc => app.cancel_input(),
+                KeyCode::Backspace => { app.input.pop(); }
+                KeyCode::Char(c) => app.input.push(c),
+                _ => {}
+            },
+            Mode::AnswerInput => match key.code {
+                KeyCode::Enter => app.submit_answer(),
+                KeyCode::Esc => app.cancel_input(),
+                KeyCode::Backspace => { app.input.pop(); }
+                KeyCode::Char(c) => app.input.push(c),
                 _ => {}
             },
         }

@@ -1,230 +1,277 @@
-use crate::model::{Epic, Stage, Task};
-use crate::model::task::new_id;
-use crate::state::{chat, home, reader, writer};
-use crate::state::chat::ChatMessage;
-use crate::error::Result;
+use std::collections::HashMap;
 
-pub const STAGES: &[Stage] = &[
-    Stage::Backlog,
-    Stage::Prioritized,
-    Stage::InProgress,
-    Stage::WaitingForReview,
-    Stage::InTesting,
-    Stage::Done,
-];
+use serde::Deserialize;
+use tokio::sync::mpsc;
 
-#[derive(PartialEq)]
-pub enum Focus {
-    Chat,
-    Panel,
+use crate::dispatcher::Column;
+
+// ─── Board snapshot types (deserialized from daemon JSON) ─────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct BoardTask {
+    pub id: String,
+    pub title: String,
+    pub priority: u32,
 }
 
-pub enum RightPanel {
-    Board,
-    EpicDetail(String),  // epic id
-    TaskDetail(String),  // task id
+#[derive(Debug, Clone, Deserialize)]
+pub struct BoardColumn {
+    pub column: String,
+    pub tasks: Vec<BoardTask>,
 }
+
+// ─── Review item (deserialized from daemon `peek_review` JSON) ────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReviewItem {
+    pub id: String,
+    pub task_id: String,
+    pub kind: ReviewItemKind,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReviewItemKind {
+    AgentQuestion { question: String },
+    BufferApproval { buffer_column: String, task_priority: u32 },
+}
+
+// ─── TUI Mode ─────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Mode {
+    /// Board overview — idle, no review items pending
+    Idle,
+    /// Showing a review item with controls
+    Review,
+    /// Typing rejection feedback
+    RejectInput,
+    /// Typing answer to agent question
+    AnswerInput,
+}
+
+// ─── Column abbreviations for compact rendering ───────────────────────────────
+
+pub fn column_order() -> &'static [Column] {
+    Column::all()
+}
+
+pub fn column_abbrev(col: &Column) -> &'static str {
+    match col {
+        Column::Prioritized => "PRI",
+        Column::Designing => "DES",
+        Column::CodingBuffer => "C·B",
+        Column::Coding => "COD",
+        Column::ReviewBuffer => "R·B",
+        Column::Reviewing => "REV",
+        Column::TestBuffer => "T·B",
+        Column::Testing => "TST",
+        Column::SecurityAuditBuffer => "A·B",
+        Column::Auditing => "AUD",
+        Column::DeploymentBuffer => "D·B",
+        Column::Deploying => "DEP",
+        Column::Done => "DON",
+    }
+}
+
+// ─── App state ────────────────────────────────────────────────────────────────
 
 pub struct App {
-    // Data
-    pub epics: Vec<Epic>,
-    pub tasks: Vec<Task>,
+    /// Board state: column name → list of tasks
+    pub board: HashMap<String, Vec<BoardTask>>,
 
-    // Chat
-    pub messages: Vec<ChatMessage>,
+    /// Current topmost review item (from peek_review)
+    pub review_item: Option<ReviewItem>,
+
+    /// Current mode
+    pub mode: Mode,
+
+    /// Input buffer for reject feedback / answer text
     pub input: String,
-    pub chat_scroll: usize,  // lines offset from bottom (0 = newest visible)
 
-    // Right panel
-    pub panel: RightPanel,
+    /// Board navigation: selected column index
     pub board_col: usize,
+
+    /// Board navigation: selected task index within column
     pub board_task: usize,
 
-    // Focus
-    pub focus: Focus,
+    /// Status message shown in footer
+    pub status: String,
+
+    /// Channel to send commands to the daemon client task
+    pub cmd_tx: mpsc::UnboundedSender<DaemonCommand>,
+
+    /// Whether we're connected to the daemon
+    pub connected: bool,
+}
+
+/// Commands sent from the TUI event loop to the daemon client task.
+#[derive(Debug)]
+pub enum DaemonCommand {
+    Approve(String),            // task_id
+    Reject(String, String),     // task_id, feedback
+    Answer(String, String),     // item_id, answer
+    RefreshBoard,
+    RefreshReview,
+}
+
+/// Messages received from the daemon client task into the TUI event loop.
+#[derive(Debug)]
+pub enum DaemonMessage {
+    BoardSnapshot(Vec<BoardColumn>),
+    ReviewItem(Option<ReviewItem>),
+    Event(String),  // raw JSON line from subscribe stream
+    Connected,
+    Disconnected(String),
+    CommandResult(std::result::Result<String, String>),
 }
 
 impl App {
-    pub fn load() -> Result<Self> {
-        let mut epics = reader::load_all_epics().unwrap_or_default();
-        epics.sort_by(|a, b| a.title.cmp(&b.title));
-        let tasks = reader::load_all_tasks().unwrap_or_default();
-
-        let messages = if let Ok(path) = home::chat_file() {
-            chat::load(&path).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        let mut app = Self {
-            epics,
-            tasks,
-            messages,
+    pub fn new(cmd_tx: mpsc::UnboundedSender<DaemonCommand>) -> Self {
+        Self {
+            board: HashMap::new(),
+            review_item: None,
+            mode: Mode::Idle,
             input: String::new(),
-            chat_scroll: 0,
-            panel: RightPanel::Board,
             board_col: 0,
             board_task: 0,
-            focus: Focus::Chat,
-        };
-
-        if app.messages.is_empty() {
-            let msg = ChatMessage::system(
-                "Session ready. Commands: board | epic <title> | task <title> | open <id>",
-            );
-            app.add_message(msg);
+            status: "connecting…".to_string(),
+            cmd_tx,
+            connected: false,
         }
-
-        Ok(app)
     }
 
-    pub fn reload(&mut self) -> Result<()> {
-        let mut epics = reader::load_all_epics()?;
-        epics.sort_by(|a, b| a.title.cmp(&b.title));
-        self.tasks = reader::load_all_tasks()?;
-        self.epics = epics;
-        // Clamp board_col
-        if self.board_col >= STAGES.len() {
-            self.board_col = STAGES.len().saturating_sub(1);
+    /// Apply a board snapshot from the daemon.
+    pub fn apply_board_snapshot(&mut self, columns: Vec<BoardColumn>) {
+        self.board.clear();
+        for col in columns {
+            self.board.insert(col.column, col.tasks);
         }
-        // Clamp board_task
-        let n = self.tasks_in_stage(&STAGES[self.board_col]).len();
-        self.board_task = if n > 0 { self.board_task.min(n - 1) } else { 0 };
-        Ok(())
+        // Clamp navigation indices
+        self.clamp_board_nav();
     }
 
-    pub fn process_input(&mut self) -> Result<()> {
-        let raw = std::mem::take(&mut self.input);
-        let input = raw.trim().to_string();
-        if input.is_empty() {
-            return Ok(());
+    /// Apply a review item update.
+    pub fn apply_review_item(&mut self, item: Option<ReviewItem>) {
+        self.review_item = item;
+        // Update mode based on review state
+        if self.review_item.is_some() && self.mode == Mode::Idle {
+            self.mode = Mode::Review;
+        } else if self.review_item.is_none() && self.mode == Mode::Review {
+            self.mode = Mode::Idle;
         }
+    }
 
-        self.add_message(ChatMessage::user(&input));
+    /// Handle an incoming dispatch event — just refresh board and review.
+    pub fn handle_event(&mut self, _raw_json: &str) {
+        // On any event, request fresh state from daemon
+        let _ = self.cmd_tx.send(DaemonCommand::RefreshBoard);
+        let _ = self.cmd_tx.send(DaemonCommand::RefreshReview);
+    }
 
-        let (cmd, rest) = match input.find(' ') {
-            Some(pos) => (&input[..pos], input[pos + 1..].trim()),
-            None => (input.as_str(), ""),
-        };
+    /// Get tasks for a given column index.
+    pub fn tasks_in_column(&self, col_idx: usize) -> &[BoardTask] {
+        let col = &column_order()[col_idx];
+        let key = col.to_string();
+        self.board.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
+    }
 
-        match cmd {
-            "board" => {
-                self.panel = RightPanel::Board;
-                self.add_message(ChatMessage::system("Showing board"));
+    /// Approve the current review item.
+    pub fn approve_current(&mut self) {
+        if let Some(ref item) = self.review_item {
+            let _ = self.cmd_tx.send(DaemonCommand::Approve(item.task_id.clone()));
+            self.status = format!("approving {}…", &item.task_id[..8.min(item.task_id.len())]);
+        }
+    }
+
+    /// Begin reject flow — switch to input mode.
+    pub fn begin_reject(&mut self) {
+        if self.review_item.is_some() {
+            self.mode = Mode::RejectInput;
+            self.input.clear();
+        }
+    }
+
+    /// Submit rejection with feedback.
+    pub fn submit_reject(&mut self) {
+        if let Some(ref item) = self.review_item {
+            let feedback = std::mem::take(&mut self.input);
+            if feedback.trim().is_empty() {
+                self.status = "feedback required".to_string();
+                return;
             }
-            "epic" if !rest.is_empty() => {
-                let id = new_id();
-                let epic = Epic::new(&id, rest);
-                let _ = writer::write_epic(&epic);
-                self.epics.push(epic);
-                self.epics.sort_by(|a, b| a.title.cmp(&b.title));
-                let reply = format!("Created epic {id}: {rest}");
-                self.panel = RightPanel::EpicDetail(id);
-                self.add_message(ChatMessage::system(reply));
+            let _ = self.cmd_tx.send(DaemonCommand::Reject(item.task_id.clone(), feedback));
+            self.status = format!("rejecting {}…", &item.task_id[..8.min(item.task_id.len())]);
+            self.mode = Mode::Review;
+        }
+    }
+
+    /// Begin answer flow — switch to input mode.
+    pub fn begin_answer(&mut self) {
+        if self.review_item.is_some() {
+            self.mode = Mode::AnswerInput;
+            self.input.clear();
+        }
+    }
+
+    /// Submit answer to agent question.
+    pub fn submit_answer(&mut self) {
+        if let Some(ref item) = self.review_item {
+            let answer = std::mem::take(&mut self.input);
+            if answer.trim().is_empty() {
+                self.status = "answer required".to_string();
+                return;
             }
-            "task" if !rest.is_empty() => {
-                let id = new_id();
-                let epic_id = match &self.panel {
-                    RightPanel::EpicDetail(eid) => eid.clone(),
-                    _ => self.epics.first().map(|e| e.id.clone()).unwrap_or_else(|| "?".to_string()),
-                };
-                let task = Task::new(&id, &epic_id, rest);
-                let _ = writer::write_task(&task);
-                let _ = self.reload();
-                let reply = format!("Created task {id}: {rest}");
-                self.add_message(ChatMessage::system(reply));
-            }
-            "open" if !rest.is_empty() => {
-                let prefix = rest;
-                if let Some(epic) = self.epics.iter().find(|e| e.id.starts_with(prefix)) {
-                    let eid = epic.id.clone();
-                    let title = epic.title.clone();
-                    self.panel = RightPanel::EpicDetail(eid.clone());
-                    self.add_message(ChatMessage::system(format!("Showing epic {eid}: {title}")));
-                } else if let Some(task) = self.tasks.iter().find(|t| t.id.starts_with(prefix)) {
-                    let tid = task.id.clone();
-                    let title = task.title.clone();
-                    self.panel = RightPanel::TaskDetail(tid.clone());
-                    self.add_message(ChatMessage::system(format!("Showing task {tid}: {title}")));
-                } else {
-                    self.add_message(ChatMessage::system(format!("Not found: {prefix}")));
-                }
-            }
-            _ => {
-                self.add_message(ChatMessage::system(
-                    "Unknown command. Try: board | epic <title> | task <title> | open <id>",
-                ));
-            }
-        }
-
-        self.chat_scroll = 0;
-        Ok(())
-    }
-
-    pub fn add_message(&mut self, msg: ChatMessage) {
-        if let Ok(path) = home::chat_file() {
-            let _ = chat::append(&path, &msg);
-        }
-        self.messages.push(msg);
-        self.chat_scroll = 0;
-    }
-
-    pub fn scroll_chat_up(&mut self) {
-        self.chat_scroll += 1;
-    }
-
-    pub fn scroll_chat_down(&mut self) {
-        if self.chat_scroll > 0 {
-            self.chat_scroll -= 1;
+            let _ = self.cmd_tx.send(DaemonCommand::Answer(item.id.clone(), answer));
+            self.status = "answering…".to_string();
+            self.mode = Mode::Review;
         }
     }
 
-    pub fn move_up(&mut self) {
-        if self.focus != Focus::Panel {
-            return;
-        }
-        if let RightPanel::Board = &self.panel && self.board_task > 0 {
-            self.board_task -= 1;
-        }
+    /// Cancel input mode, return to review.
+    pub fn cancel_input(&mut self) {
+        self.input.clear();
+        self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
     }
 
-    pub fn move_down(&mut self) {
-        if self.focus != Focus::Panel {
-            return;
-        }
-        if let RightPanel::Board = &self.panel {
-            let n = self.tasks_in_stage(&STAGES[self.board_col]).len();
-            if n > 0 && self.board_task < n - 1 {
-                self.board_task += 1;
-            }
-        }
-    }
-
+    // Navigation
     pub fn move_left(&mut self) {
-        if self.focus != Focus::Panel {
-            return;
-        }
-        if let RightPanel::Board = &self.panel && self.board_col > 0 {
+        if self.board_col > 0 {
             self.board_col -= 1;
             self.board_task = 0;
         }
     }
 
     pub fn move_right(&mut self) {
-        if self.focus != Focus::Panel {
-            return;
-        }
-        if let RightPanel::Board = &self.panel && self.board_col < STAGES.len() - 1 {
+        if self.board_col < column_order().len() - 1 {
             self.board_col += 1;
             self.board_task = 0;
         }
     }
 
-    pub fn tasks_in_stage(&self, stage: &Stage) -> Vec<&Task> {
-        let mut filtered: Vec<&Task> = self.tasks.iter()
-            .filter(|t| &t.stage == stage)
-            .collect();
-        filtered.sort_by_key(|t| t.priority);
-        filtered
+    pub fn move_up(&mut self) {
+        if self.board_task > 0 {
+            self.board_task -= 1;
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        let n = self.tasks_in_column(self.board_col).len();
+        if n > 0 && self.board_task < n - 1 {
+            self.board_task += 1;
+        }
+    }
+
+    fn clamp_board_nav(&mut self) {
+        if self.board_col >= column_order().len() {
+            self.board_col = column_order().len().saturating_sub(1);
+        }
+        let n = self.tasks_in_column(self.board_col).len();
+        if n == 0 {
+            self.board_task = 0;
+        } else if self.board_task >= n {
+            self.board_task = n - 1;
+        }
     }
 }
