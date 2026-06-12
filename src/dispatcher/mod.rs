@@ -217,7 +217,7 @@ pub struct Dispatcher {
     pub review_queue: Arc<Mutex<HumanReviewQueue>>,
     pub agent_pool: AgentPool,
     pub config: Arc<Config>,
-    pub wip_limits: WipLimits,
+    pub wip_limits: Arc<WipLimits>,
     /// Agents waiting to advance into a full column.
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
 }
@@ -392,7 +392,7 @@ impl Dispatcher {
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
         // 5. Create WipLimits::default()
-        let wip_limits = WipLimits::default();
+        let wip_limits = Arc::new(WipLimits::default());
 
         // 6. Create WIP waiting map (runtime-only, rebuilt on boot)
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
@@ -402,6 +402,9 @@ impl Dispatcher {
             Arc::clone(&event_bus),
             Arc::clone(&board),
             Arc::clone(&config),
+            Arc::clone(&wip_limits),
+            Arc::clone(&wip_waiting),
+            Arc::clone(&review_queue),
         );
 
         // 8. Emit BootComplete
