@@ -1,19 +1,24 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::{debug, info, warn};
 
-use super::board::KanbanBoard;
+use super::board::{KanbanBoard, WipLimits};
 use super::event_bus::EventBus;
-use super::AgentRole;
+use super::review_queue::{HumanReviewItem, HumanReviewQueue, ReviewItemKind};
+use super::{AgentRole, Column};
+use chrono::Utc;
+
 use crate::agent::{self, AgentBackend, AgentResult, RunContext};
 use crate::config::Config;
 use crate::dispatcher::event_bus::DispatchEvent;
 use crate::git::ops;
+use crate::id;
 use crate::model::task::Task;
+use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind};
+use crate::state::writer::write_task;
 use crate::trope_blocker;
 
 // ─── AgentHandle ──────────────────────────────────────────────────────────────
@@ -76,12 +81,15 @@ impl AgentPool {
     /// 2. Wake → pick highest-priority task from its column
     /// 3. Run agent backend with task context (including agent_feedback if present)
     /// 4. Scan response through TropeBlocker
-    /// 5. On clean: advance task to next buffer, emit AgentCompleted
+    /// 5. On clean: WIP check → advance task to next buffer, emit TaskStageChanged then AgentCompleted
     /// 6. On blocked: set blocked flag, emit AgentBlocked, sleep until unblocked
     pub fn spawn(
         event_bus: Arc<EventBus>,
         board: Arc<RwLock<KanbanBoard>>,
         config: Arc<Config>,
+        wip_limits: Arc<WipLimits>,
+        wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
+        review_queue: Arc<Mutex<HumanReviewQueue>>,
     ) -> Self {
         let mut agents = HashMap::new();
 
@@ -92,8 +100,11 @@ impl AgentPool {
             let eb = Arc::clone(&event_bus);
             let b = Arc::clone(&board);
             let cfg = Arc::clone(&config);
+            let wl = Arc::clone(&wip_limits);
+            let ww = Arc::clone(&wip_waiting);
+            let rq = Arc::clone(&review_queue);
 
-            tokio::spawn(agent_loop(handle, eb, b, cfg));
+            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq));
         }
 
         Self { agents }
@@ -152,6 +163,9 @@ async fn agent_loop(
     event_bus: Arc<EventBus>,
     board: Arc<RwLock<KanbanBoard>>,
     config: Arc<Config>,
+    wip_limits: Arc<WipLimits>,
+    wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
+    review_queue: Arc<Mutex<HumanReviewQueue>>,
 ) {
     let role = handle.role;
     let column = role.column();
@@ -210,6 +224,9 @@ async fn agent_loop(
                     agent_result,
                     &config,
                     &ctx,
+                    &wip_limits,
+                    &wip_waiting,
+                    &review_queue,
                 )
                 .await;
             }
@@ -230,19 +247,58 @@ async fn handle_agent_result(
     agent_result: AgentResult,
     config: &Arc<Config>,
     ctx: &RunContext,
+    wip_limits: &Arc<WipLimits>,
+    wip_waiting: &Arc<Mutex<HashMap<Column, AgentRole>>>,
+    review_queue: &Arc<Mutex<HumanReviewQueue>>,
 ) {
     let role = handle.role;
 
     let output = match agent_result {
         AgentResult::Blocked { question } => {
             info!(%role, task_id = %task.id, "agent blocked with question");
-            // TODO: persist review item, emit AgentBlocked, set blocked (task 6.3)
-            let _ = question;
+
+            // Persist review item to disk
+            let item = PersistedReviewItem {
+                id: crate::id::new_id(&task.id),
+                task_id: task.id.clone(),
+                kind: PersistedReviewKind::AgentQuestion {
+                    question: question.clone(),
+                },
+                created_at: chrono::Utc::now(),
+                actions: Vec::new(),
+            };
+            if let Err(e) = review::write_review_item(&item) {
+                warn!(
+                    %role, task_id = %task.id, error = %e,
+                    "failed to persist review item for blocked agent"
+                );
+            }
+
+            // Emit AgentBlocked event
+            event_bus.emit(DispatchEvent::AgentBlocked {
+                task_id: task.id.clone(),
+                agent_role: role,
+                question: question.clone(),
+            });
+
+            // Set blocked flag so agent sleeps
+            handle.set_blocked(true);
+
+            // Enqueue in-memory review item
+            let queue_item = HumanReviewItem::new(
+                &task.id,
+                ReviewItemKind::AgentQuestion { question },
+            );
+            let mut q = review_queue.lock().await;
+            q.enqueue(queue_item);
+
             return;
         }
         AgentResult::Failure { output } => {
-            warn!(%role, task_id = %task.id, "agent reported failure, leaving task in column");
-            let _ = output;
+            warn!(
+                %role, task_id = %task.id, output = %output,
+                "agent reported failure, leaving task in column"
+            );
             return;
         }
         AgentResult::Success { output } => output,
@@ -251,50 +307,166 @@ async fn handle_agent_result(
     // TropeBlocker scan
     match trope_blocker::scan(&output) {
         trope_blocker::ScanResult::Clean => {
-            // Advance task to next buffer (or Done for Deploying)
-            let next_col = role.column().next();
-            if let Some(target) = next_col {
-                let mut b = board.write().await;
-                if let Err(e) = b.advance(&task.id, target) {
-                    warn!(%role, task_id = %task.id, error = %e, "failed to advance task");
-                    return;
-                }
-                info!(%role, task_id = %task.id, to = %target, "task advanced");
-            }
-
-            event_bus.emit(DispatchEvent::AgentCompleted {
-                task_id: task.id.clone(),
-                agent_role: role,
-            });
+            try_advance(handle, event_bus, board, task, wip_limits, wip_waiting).await;
         }
         trope_blocker::ScanResult::Blocked(trope_match) => {
             // Estimate context tokens (rough: 4 chars per token)
             let token_estimate = output.len() / 4;
-            let summary = format!("Task: {} — {}", task.id, task.title);
+            let task_summary = format!("Task: {} — {}", task.id, task.title);
 
             let directive =
-                trope_blocker::execute(&trope_match, token_estimate, &summary);
+                trope_blocker::execute(&trope_match, token_estimate, &task_summary);
 
-            match directive {
-                trope_blocker::Directive::Continue { injection } => {
+            // Build retry context based on directive
+            let retry_ctx = match directive {
+                trope_blocker::Directive::Continue { ref injection } => {
                     debug!(%role, task_id = %task.id, "trope blocked — injecting correction");
-                    // Re-run agent with injection as context
-                    // For now, log the injection. Full retry loop is a follow-up task.
-                    let agent_def = config.resolve_agent(&role.to_string());
-                    let backend = agent::build_agent(&agent_def);
-                    // TODO: inject correction into context and retry (task 8.1)
-                    let _ = injection;
-                    let _ = backend;
-                    let _ = ctx;
+                    RunContext {
+                        repo_root: ctx.repo_root.clone(),
+                        branch: ctx.branch.clone(),
+                        resume_summary: Some(injection.clone()),
+                    }
                 }
-                trope_blocker::Directive::RotateSession { summary } => {
+                trope_blocker::Directive::RotateSession { ref summary } => {
                     debug!(%role, task_id = %task.id, "trope blocked — rotate session");
-                    // TODO: session rotation (task 8.1)
-                    let _ = summary;
+                    // Persist summary to task for recovery across restarts
+                    let mut task_mut = task.clone();
+                    task_mut.resume_summary = Some(summary.clone());
+                    if let Err(e) = write_task(&task_mut) {
+                        warn!(%role, task_id = %task.id, error = %e,
+                            "failed to persist resume_summary");
+                    }
+                    RunContext {
+                        repo_root: ctx.repo_root.clone(),
+                        branch: ctx.branch.clone(),
+                        resume_summary: Some(summary.clone()),
+                    }
                 }
+            };
+
+            // ONE retry attempt
+            let agent_def = config.resolve_agent(&role.to_string());
+            let backend = agent::build_agent(&agent_def);
+            let retry_result = backend.run(task, &retry_ctx).await;
+
+            let retry_clean = match retry_result {
+                Ok(AgentResult::Success { ref output }) => {
+                    trope_blocker::scan(output).is_clean()
+                }
+                _ => false,
+            };
+
+            if retry_clean {
+                info!(%role, task_id = %task.id, "retry succeeded — advancing");
+                try_advance(handle, event_bus, board, task, wip_limits, wip_waiting)
+                    .await;
+            } else {
+                // Escalate: create review item, emit AgentBlocked, set blocked
+                warn!(%role, task_id = %task.id, "retry still blocked — escalating");
+                escalate_trope_block(handle, event_bus, task, review_queue).await;
             }
         }
     }
+}
+
+/// Check WIP limits before advancing a task. If the target column is at capacity,
+/// record the agent in the `wip_waiting` map and return without advancing (agent sleeps).
+/// If under limit: advance, emit `TaskStageChanged` then `AgentCompleted`.
+async fn try_advance(
+    handle: &AgentHandle,
+    event_bus: &Arc<EventBus>,
+    board: &Arc<RwLock<KanbanBoard>>,
+    task: &Task,
+    wip_limits: &Arc<WipLimits>,
+    wip_waiting: &Arc<Mutex<HashMap<Column, AgentRole>>>,
+) {
+    let role = handle.role;
+    let from_col = role.column();
+    let next_col = from_col.next();
+
+    let Some(target) = next_col else {
+        // No next column (e.g. Done) — nothing to advance to
+        return;
+    };
+
+    // WIP gate: check if target column can accept another task
+    let count = {
+        let b = board.read().await;
+        b.count(target) as u32
+    };
+
+    if !wip_limits.allows(target, count) {
+        // Column at capacity — record waiting agent and sleep
+        info!(%role, task_id = %task.id, column = %target, "WIP limit reached — agent sleeping");
+        wip_waiting.lock().await.insert(target, role);
+        return;
+    }
+
+    // Advance the task
+    {
+        let mut b = board.write().await;
+        if let Err(e) = b.advance(&task.id, target) {
+            warn!(%role, task_id = %task.id, error = %e, "failed to advance task");
+            return;
+        }
+    }
+
+    info!(%role, task_id = %task.id, from = %from_col, to = %target, "task advanced");
+
+    // Emit TaskStageChanged FIRST
+    event_bus.emit(DispatchEvent::TaskStageChanged {
+        task_id: task.id.clone(),
+        from: from_col,
+        to: target,
+    });
+
+    // Then emit AgentCompleted
+    event_bus.emit(DispatchEvent::AgentCompleted {
+        task_id: task.id.clone(),
+        agent_role: role,
+    });
+}
+
+/// Escalate a trope block after retry failure: persist a review item, emit
+/// `AgentBlocked`, and set the agent's blocked flag so it sleeps.
+async fn escalate_trope_block(
+    handle: &AgentHandle,
+    event_bus: &Arc<EventBus>,
+    task: &Task,
+    review_queue: &Arc<Mutex<HumanReviewQueue>>,
+) {
+    let role = handle.role;
+    let question =
+        "Agent stuck after trope correction — needs human guidance".to_string();
+    let review_id = id::new_id("review-trope-block");
+    let item = PersistedReviewItem {
+        id: review_id,
+        task_id: task.id.clone(),
+        kind: PersistedReviewKind::AgentQuestion {
+            question: question.clone(),
+        },
+        created_at: Utc::now(),
+        actions: Vec::new(),
+    };
+
+    if let Err(e) = review::write_review_item(&item) {
+        warn!(%role, task_id = %task.id, error = %e, "failed to persist trope escalation review");
+    }
+
+    event_bus.emit(DispatchEvent::AgentBlocked {
+        task_id: task.id.clone(),
+        agent_role: role,
+        question: question.clone(),
+    });
+
+    handle.set_blocked(true);
+
+    // Enqueue in-memory review item
+    let queue_item = HumanReviewItem::new(
+        &task.id,
+        ReviewItemKind::AgentQuestion { question },
+    );
+    review_queue.lock().await.enqueue(queue_item);
 }
 
 /// Build the RunContext for an agent invocation.
@@ -309,7 +481,7 @@ fn build_run_context(task: &Task, _config: &Config) -> RunContext {
     let resume_summary = resume_context(task);
 
     RunContext {
-        repo_root: std::path::PathBuf::from("."),
+        repo_root: crate::state::home::repo_path(),
         branch,
         resume_summary,
     }
@@ -323,8 +495,8 @@ fn build_run_context(task: &Task, _config: &Config) -> RunContext {
 fn resume_context(task: &Task) -> Option<String> {
     let branch_name = task.branch.as_deref()?;
 
-    let repo_root = Path::new(".");
-    let repo = match ops::open_repo(repo_root) {
+    let repo_root = crate::state::home::repo_path();
+    let repo = match ops::open_repo(&repo_root) {
         Ok(r) => r,
         Err(e) => {
             warn!(task_id = %task.id, error = %e, "failed to open repo for resume inspection");
@@ -451,8 +623,13 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
+        let wip_limits = Arc::new(WipLimits::default());
+        let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
+        let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
-        let pool = AgentPool::spawn(event_bus, board, config);
+        let pool = AgentPool::spawn(
+            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+        );
 
         for role in AgentRole::all() {
             assert!(pool.handle(*role).is_some(), "missing handle for {role}");
@@ -464,8 +641,13 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
+        let wip_limits = Arc::new(WipLimits::default());
+        let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
+        let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
-        let pool = AgentPool::spawn(event_bus, board, config);
+        let pool = AgentPool::spawn(
+            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+        );
 
         for role in AgentRole::all() {
             assert!(!pool.is_blocked(*role));
@@ -477,8 +659,13 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
+        let wip_limits = Arc::new(WipLimits::default());
+        let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
+        let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
-        let pool = AgentPool::spawn(event_bus, board, config);
+        let pool = AgentPool::spawn(
+            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+        );
 
         // Simulate blocked state
         let handle = pool.handle(AgentRole::Coder).unwrap();
@@ -501,8 +688,13 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
+        let wip_limits = Arc::new(WipLimits::default());
+        let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
+        let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
-        let pool = AgentPool::spawn(event_bus, board, config);
+        let pool = AgentPool::spawn(
+            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+        );
         // All roles exist, so this just tests the method doesn't panic
         pool.signal(AgentRole::Infrarian);
     }

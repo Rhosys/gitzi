@@ -56,3 +56,25 @@ pub fn new_session() -> Result<String> {
 pub fn chat_file() -> Result<PathBuf> {
     Ok(session_dir()?.join("chat.jsonl"))
 }
+
+/// Read the repo path from `~/.gitzi/<session>/repo`.
+/// Falls back to the current working directory if not set.
+pub fn repo_path() -> PathBuf {
+    session_dir()
+        .ok()
+        .map(|d| d.join("repo"))
+        .filter(|p| p.exists())
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// Persist the repo path into the session state: `~/.gitzi/<session>/repo`.
+pub fn write_repo_path(repo_root: &std::path::Path) -> Result<()> {
+    let dir = session_dir()?;
+    std::fs::create_dir_all(&dir)?;
+    let canonical = std::fs::canonicalize(repo_root)
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    std::fs::write(dir.join("repo"), canonical.to_string_lossy().as_bytes())?;
+    Ok(())
+}

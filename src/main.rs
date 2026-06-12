@@ -122,6 +122,9 @@ fn cmd_init(repo_root: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(session_dir.join("plan").join("tasks"))?;
     std::fs::create_dir_all(session_dir.join("wip").join("tasks"))?;
 
+    // Persist the repo root so the daemon can locate git operations
+    home::write_repo_path(repo_root)?;
+
     // Write global config if not already present
     let config_path = home::global_config_file();
     if !config_path.exists() {
