@@ -9,7 +9,7 @@ use gitzi::config::Config;
 use gitzi::daemon;
 use gitzi::model::{Epic, Stage, Task};
 use gitzi::model::task::new_id;
-use gitzi::pipeline::{Orchestrator, Scheduler};
+use gitzi::pipeline::Orchestrator;
 use gitzi::state::{reader, writer};
 
 #[tokio::main]
@@ -71,30 +71,27 @@ async fn cmd_default(repo_root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Run the daemon process: scheduler loop + unix socket server.
+/// Run the daemon process: dispatcher event loop + unix socket server.
 /// Invoked by systemd, not directly by the user.
 async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
     info!("gitzi daemon starting");
 
-    let config = Arc::new(Config::load(repo_root).context("Failed to load config")?);
-    let (tx, _rx) = broadcast::channel::<gitzi::state::watcher::StateEvent>(64);
+    let config = Config::load(repo_root).context("Failed to load config")?;
 
-    let orchestrator = Arc::new(Orchestrator::new(
-        repo_root.to_path_buf(),
-        config.clone(),
-        tx.clone(),
-    ));
-
-    let scheduler = Scheduler::new(orchestrator.clone(), config.clone(), repo_root.to_path_buf());
+    let dispatcher = Arc::new(
+        gitzi::dispatcher::Dispatcher::start(config)
+            .await
+            .context("Failed to start dispatcher")?
+    );
 
     tokio::select! {
-        result = daemon::serve() => {
+        result = daemon::serve(Arc::clone(&dispatcher)) => {
             error!("Daemon socket server exited: {:?}", result);
             result
         }
-        result = scheduler.run() => {
-            error!("Scheduler exited: {:?}", result);
-            Ok(result?)
+        result = dispatcher.run() => {
+            error!("Dispatcher event loop exited: {:?}", result);
+            result
         }
         _ = shutdown_signal() => {
             info!("Shutdown signal received — exiting");
