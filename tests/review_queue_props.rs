@@ -1,0 +1,216 @@
+// Feature: event-driven-dispatcher, Property 12: Queue ordering invariant
+// Feature: event-driven-dispatcher, Property 13: Queue visibility — questions suppress approvals
+// **Validates: Requirements 7.2, 7.3, 7.4, 6.5**
+
+use chrono::{DateTime, TimeZone, Utc};
+use gitzi::dispatcher::review_queue::{HumanReviewItem, HumanReviewQueue, ReviewItemKind};
+use gitzi::dispatcher::Column;
+use proptest::prelude::*;
+
+/// The 5 buffer columns in pipeline order (left to right on the board).
+const BUFFER_COLUMNS: [Column; 5] = [
+    Column::CodingBuffer,
+    Column::ReviewBuffer,
+    Column::TestBuffer,
+    Column::SecurityAuditBuffer,
+    Column::DeploymentBuffer,
+];
+
+/// Strategy for an arbitrary buffer column.
+fn arb_buffer_column() -> impl Strategy<Value = Column> {
+    (0usize..5).prop_map(|i| BUFFER_COLUMNS[i])
+}
+
+/// Strategy for an arbitrary timestamp (seconds from epoch, spread out to avoid collisions).
+fn arb_timestamp() -> impl Strategy<Value = DateTime<Utc>> {
+    (1i64..100_000).prop_map(|s| Utc.timestamp_opt(s, 0).unwrap())
+}
+
+/// Strategy for an AgentQuestion review item.
+fn arb_question() -> impl Strategy<Value = HumanReviewItem> {
+    (0usize..1000, arb_timestamp()).prop_map(|(id, ts)| {
+        HumanReviewItem::with_timestamp(
+            format!("task-q-{id}"),
+            ReviewItemKind::AgentQuestion { question: format!("Question {id}?") },
+            ts,
+        )
+    })
+}
+
+/// Strategy for a BufferApproval review item.
+fn arb_approval() -> impl Strategy<Value = HumanReviewItem> {
+    (0usize..1000, arb_buffer_column(), 0u32..100, arb_timestamp()).prop_map(
+        |(id, col, prio, ts)| {
+            HumanReviewItem::with_timestamp(
+                format!("task-a-{id}"),
+                ReviewItemKind::BufferApproval { buffer_column: col, task_priority: prio },
+                ts,
+            )
+        },
+    )
+}
+
+/// Strategy for a mixed review item (question or approval).
+fn arb_review_item() -> impl Strategy<Value = HumanReviewItem> {
+    prop_oneof![arb_question(), arb_approval(),]
+}
+
+/// Strategy for a non-empty vec of mixed review items.
+fn arb_item_vec(max_len: usize) -> impl Strategy<Value = Vec<HumanReviewItem>> {
+    proptest::collection::vec(arb_review_item(), 1..=max_len)
+}
+
+/// Column index in the pipeline (higher = more rightward).
+fn column_index(col: Column) -> usize {
+    Column::all().iter().position(|c| *c == col).unwrap_or(0)
+}
+
+proptest! {
+    /// Property 12: Queue ordering invariant
+    ///
+    /// For any sequence of enqueue operations mixing questions and approvals, the resulting
+    /// queue maintains the invariant:
+    /// - All questions precede all approvals
+    /// - Questions are FIFO by timestamp
+    /// - Approvals are ordered by rightmost column first, then priority ascending
+    #[test]
+    fn queue_ordering_invariant(items in arb_item_vec(50)) {
+        let mut queue = HumanReviewQueue::new();
+        for item in &items {
+            queue.enqueue(item.clone());
+        }
+
+        // Drain the queue by repeatedly peeking and dequeueing the peeked item.
+        // This gives us the ordered sequence.
+        let mut ordered: Vec<HumanReviewItem> = Vec::new();
+        while let Some(peeked) = queue.peek() {
+            let id = peeked.id.clone();
+            let item = queue.dequeue(&id).unwrap();
+            ordered.push(item);
+        }
+
+        // All items were preserved
+        prop_assert_eq!(ordered.len(), items.len());
+
+        // Split into questions and approvals in order
+        let mut saw_approval = false;
+        let mut last_question_ts: Option<DateTime<Utc>> = None;
+        let mut last_approval_col_idx: Option<usize> = None;
+        let mut last_approval_prio: Option<u32> = None;
+        let mut last_approval_col_for_prio: Option<Column> = None;
+
+        for item in &ordered {
+            match &item.kind {
+                ReviewItemKind::AgentQuestion { .. } => {
+                    // No question should appear after an approval
+                    prop_assert!(
+                        !saw_approval,
+                        "Question '{}' appeared after an approval in the queue ordering",
+                        item.task_id
+                    );
+                    // Questions must be FIFO by timestamp
+                    if let Some(prev_ts) = last_question_ts {
+                        prop_assert!(
+                            item.created_at >= prev_ts,
+                            "Question '{}' (ts={}) appeared after question with later ts={}",
+                            item.task_id, item.created_at, prev_ts
+                        );
+                    }
+                    last_question_ts = Some(item.created_at);
+                }
+                ReviewItemKind::BufferApproval { buffer_column, task_priority } => {
+                    saw_approval = true;
+                    let col_idx = column_index(*buffer_column);
+
+                    // Approvals: rightmost column first (descending column index)
+                    if let Some(prev_col_idx) = last_approval_col_idx {
+                        prop_assert!(
+                            col_idx <= prev_col_idx,
+                            "Approval '{}' in column {:?} (idx={}) appeared after column idx={} — should be rightmost first",
+                            item.task_id, buffer_column, col_idx, prev_col_idx
+                        );
+
+                        // Within same column: priority ascending
+                        if col_idx == prev_col_idx {
+                            if let (Some(prev_prio), Some(prev_col)) = (last_approval_prio, last_approval_col_for_prio) {
+                                if prev_col == *buffer_column {
+                                    prop_assert!(
+                                        *task_priority >= prev_prio,
+                                        "Approval '{}' (prio={}) in {:?} should come after prio={} (ascending)",
+                                        item.task_id, task_priority, buffer_column, prev_prio
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    last_approval_col_idx = Some(col_idx);
+                    last_approval_prio = Some(*task_priority);
+                    last_approval_col_for_prio = Some(*buffer_column);
+                }
+            }
+        }
+    }
+
+    /// Property 13: Queue visibility — questions suppress approvals
+    ///
+    /// When the queue contains at least one AgentQuestion, `peek()` returns a question
+    /// (not an approval). When all questions are dequeued, `peek()` returns the
+    /// highest-priority approval.
+    #[test]
+    fn queue_visibility_questions_suppress_approvals(
+        questions in proptest::collection::vec(arb_question(), 1..=10),
+        approvals in proptest::collection::vec(arb_approval(), 1..=10),
+    ) {
+        let mut queue = HumanReviewQueue::new();
+
+        // Enqueue approvals first, then questions (order shouldn't matter)
+        for a in &approvals {
+            queue.enqueue(a.clone());
+        }
+        for q in &questions {
+            queue.enqueue(q.clone());
+        }
+
+        // While questions exist, peek must always return a question
+        prop_assert!(queue.has_agent_questions());
+        let peeked = queue.peek().unwrap();
+        prop_assert!(
+            matches!(peeked.kind, ReviewItemKind::AgentQuestion { .. }),
+            "peek() returned an approval while questions exist: task_id='{}'",
+            peeked.task_id
+        );
+
+        // Remove all questions one by one, verifying peek stays a question
+        let question_ids: Vec<String> = {
+            let mut ids = Vec::new();
+            let mut temp_queue = queue.clone();
+            while temp_queue.has_agent_questions() {
+                let p = temp_queue.peek().unwrap();
+                prop_assert!(
+                    matches!(p.kind, ReviewItemKind::AgentQuestion { .. }),
+                    "peek() returned approval while questions still exist"
+                );
+                let id = p.id.clone();
+                ids.push(id.clone());
+                temp_queue.dequeue(&id);
+            }
+            ids
+        };
+
+        // Now dequeue all questions from the real queue
+        for qid in &question_ids {
+            queue.dequeue(qid);
+        }
+
+        // After all questions removed, peek must return an approval
+        prop_assert!(!queue.has_agent_questions());
+        prop_assert!(!queue.is_empty(), "Queue should still have approvals");
+        let peeked = queue.peek().unwrap();
+        prop_assert!(
+            matches!(peeked.kind, ReviewItemKind::BufferApproval { .. }),
+            "After removing all questions, peek() should return an approval but got question: task_id='{}'",
+            peeked.task_id
+        );
+    }
+}
