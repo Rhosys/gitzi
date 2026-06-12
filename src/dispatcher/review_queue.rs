@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::Column;
@@ -6,7 +7,8 @@ use super::Column;
 // ─── ReviewItemKind ───────────────────────────────────────────────────────────
 
 /// The type of human review action needed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReviewItemKind {
     /// An agent is blocked and needs a human answer to continue.
     AgentQuestion { question: String },
@@ -17,7 +19,7 @@ pub enum ReviewItemKind {
 // ─── HumanReviewItem ──────────────────────────────────────────────────────────
 
 /// A single item in the human review queue.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanReviewItem {
     pub id: String,
     pub task_id: String,

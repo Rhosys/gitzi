@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 use super::AgentRole;
@@ -7,7 +8,8 @@ use super::Column;
 
 /// Typed events emitted on the bus whenever system state changes.
 /// All components subscribe and react — no polling.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum DispatchEvent {
     TaskCreated { task_id: String },
     TaskStageChanged { task_id: String, from: Column, to: Column },
