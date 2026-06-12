@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::state::reader;
+use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind};
 
 use self::agent_pool::AgentPool;
 use self::board::{KanbanBoard, WipLimits};
@@ -351,6 +352,9 @@ impl Dispatcher {
         // 5. Create WipLimits::default()
         let wip_limits = WipLimits::default();
 
+        // 6. Create WIP waiting map (runtime-only, rebuilt on boot)
+        let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
+
         // 6. Spawn AgentPool
         let agent_pool = AgentPool::spawn(
             Arc::clone(&event_bus),
@@ -381,6 +385,7 @@ impl Dispatcher {
             agent_pool,
             config,
             wip_limits,
+            wip_waiting,
         })
     }
 
@@ -419,6 +424,23 @@ impl Dispatcher {
                                 .map(|t| t.priority)
                                 .unwrap_or(u32::MAX)
                         };
+
+                        // Persist review item to disk
+                        let persisted = PersistedReviewItem {
+                            id: crate::id::new_id(&task_id),
+                            task_id: task_id.clone(),
+                            kind: PersistedReviewKind::BufferApproval {
+                                buffer_column: to,
+                                task_priority: priority,
+                            },
+                            created_at: chrono::Utc::now(),
+                            actions: Vec::new(),
+                        };
+                        if let Err(e) = review::write_review_item(&persisted) {
+                            warn!(%task_id, error = %e, "failed to persist review item");
+                        }
+
+                        // Enqueue in-memory review item
                         let item = review_queue::HumanReviewItem::new(
                             &task_id,
                             review_queue::ReviewItemKind::BufferApproval {
@@ -428,7 +450,7 @@ impl Dispatcher {
                         );
                         let mut q = self.review_queue.lock().await;
                         q.enqueue(item);
-                        info!(%task_id, column = %to, "buffer entry — review item created");
+                        info!(%task_id, column = %to, "buffer entry — review item created and persisted");
                     }
                 }
 
