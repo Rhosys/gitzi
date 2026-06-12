@@ -46,6 +46,16 @@ impl AgentHandle {
     pub fn is_blocked(&self) -> bool {
         self.blocked.load(Ordering::Acquire)
     }
+
+    /// Set the blocked state. Used by the pool internals and tests.
+    pub fn set_blocked(&self, blocked: bool) {
+        self.blocked.store(blocked, Ordering::Release);
+    }
+
+    /// Create a handle for testing purposes (not tied to a spawned task).
+    pub fn new_for_test(role: AgentRole) -> Self {
+        Self::new(role)
+    }
 }
 
 // ─── AgentPool ────────────────────────────────────────────────────────────────
