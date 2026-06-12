@@ -123,7 +123,8 @@ impl std::fmt::Display for Column {
 
 /// One of the seven LLM agent roles. Each role has exactly one agent instance
 /// and maps to a specific work column on the board.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum AgentRole {
     Prioritizer,
     Designer,
