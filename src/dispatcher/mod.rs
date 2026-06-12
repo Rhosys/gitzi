@@ -388,8 +388,37 @@ impl Dispatcher {
         // 3. Create EventBus (capacity 256)
         let event_bus = Arc::new(EventBus::new(256));
 
-        // 4. Create empty HumanReviewQueue
-        let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
+        // 4. Create empty HumanReviewQueue and load persisted unresolved items
+        let mut queue = HumanReviewQueue::new();
+        match review::load_all_unresolved() {
+            Ok(persisted_items) => {
+                for p in persisted_items {
+                    let kind = match p.kind {
+                        PersistedReviewKind::AgentQuestion { question } => {
+                            review_queue::ReviewItemKind::AgentQuestion { question }
+                        }
+                        PersistedReviewKind::BufferApproval { buffer_column, task_priority } => {
+                            review_queue::ReviewItemKind::BufferApproval {
+                                buffer_column,
+                                task_priority,
+                            }
+                        }
+                    };
+                    let item = review_queue::HumanReviewItem {
+                        id: p.id,
+                        task_id: p.task_id,
+                        kind,
+                        created_at: p.created_at,
+                    };
+                    queue.enqueue(item);
+                }
+                info!(count = queue.len(), "loaded unresolved review items from disk");
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to load persisted review items — starting with empty queue");
+            }
+        }
+        let review_queue = Arc::new(Mutex::new(queue));
 
         // 5. Create WipLimits::default()
         let wip_limits = Arc::new(WipLimits::default());
