@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -11,6 +12,7 @@ use super::AgentRole;
 use crate::agent::{self, AgentBackend, AgentResult, RunContext};
 use crate::config::Config;
 use crate::dispatcher::event_bus::DispatchEvent;
+use crate::git::ops;
 use crate::model::task::Task;
 use crate::trope_blocker;
 
@@ -294,10 +296,116 @@ fn build_run_context(task: &Task, _config: &Config) -> RunContext {
         .clone()
         .unwrap_or_else(|| task.branch_name());
 
+    let resume_summary = resume_context(task);
+
     RunContext {
         repo_root: std::path::PathBuf::from("."),
         branch,
+        resume_summary,
     }
+}
+
+/// Inspect existing branch state for a task that may have been in-progress before
+/// a restart. Returns `Some(summary)` with commit log and diff stats if the branch
+/// exists and has commits, or `None` if no recoverable state is found.
+///
+/// Requirements: 13.1, 13.2, 13.3, 13.4
+fn resume_context(task: &Task) -> Option<String> {
+    let branch_name = task.branch.as_deref()?;
+
+    let repo_root = Path::new(".");
+    let repo = match ops::open_repo(repo_root) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(task_id = %task.id, error = %e, "failed to open repo for resume inspection");
+            return None;
+        }
+    };
+
+    // Check if the branch exists
+    let branch_ref = format!("refs/heads/{branch_name}");
+    let reference = match repo.find_reference(&branch_ref) {
+        Ok(r) => r,
+        Err(_) => {
+            warn!(
+                task_id = %task.id,
+                branch = %branch_name,
+                "branch not found — no recoverable state, restarting task from beginning of stage"
+            );
+            return None;
+        }
+    };
+
+    // Get commit log (last 5 commits on this branch)
+    let branch_commit = match reference.peel_to_commit() {
+        Ok(c) => c,
+        Err(_) => {
+            warn!(task_id = %task.id, branch = %branch_name, "branch ref does not point to a commit");
+            return None;
+        }
+    };
+
+    let mut revwalk = match repo.revwalk() {
+        Ok(rw) => rw,
+        Err(_) => return None,
+    };
+    if revwalk.push(branch_commit.id()).is_err() {
+        return None;
+    }
+
+    let mut commits: Vec<String> = Vec::new();
+    for oid in revwalk.take(5).flatten() {
+        if let Ok(commit) = repo.find_commit(oid) {
+            let short_id = &commit.id().to_string()[..7];
+            let message = commit.summary().unwrap_or(None).unwrap_or("(no message)");
+            commits.push(format!("  {short_id} {message}"));
+        }
+    }
+
+    if commits.is_empty() {
+        warn!(task_id = %task.id, branch = %branch_name, "branch exists but has no commits");
+        return None;
+    }
+
+    // Get diff stats (files changed between merge-base and branch tip)
+    let diff_stats = match get_diff_stats(&repo, branch_name) {
+        Some(s) => s,
+        None => "  (unable to compute diff stats)".to_string(),
+    };
+
+    let summary = format!(
+        "Branch: {branch_name}\nRecent commits:\n{commits}\nDiff stats:\n{diff_stats}",
+        commits = commits.join("\n"),
+    );
+
+    info!(task_id = %task.id, branch = %branch_name, "boot resume: found recoverable work state");
+    Some(summary)
+}
+
+/// Get a short diff stat summary (files changed, insertions, deletions) between
+/// the merge-base and the branch tip.
+fn get_diff_stats(repo: &git2::Repository, branch_name: &str) -> Option<String> {
+    let branch_ref = format!("refs/heads/{branch_name}");
+    let branch_commit = repo.find_reference(&branch_ref).ok()?.peel_to_commit().ok()?;
+
+    // Find merge base with HEAD (main branch)
+    let head_oid = repo.head().ok()?.target()?;
+    let merge_base = repo.merge_base(head_oid, branch_commit.id()).ok()?;
+
+    let base_tree = repo.find_commit(merge_base).ok()?.tree().ok()?;
+    let branch_tree = branch_commit.tree().ok()?;
+
+    let diff = repo
+        .diff_tree_to_tree(Some(&base_tree), Some(&branch_tree), None)
+        .ok()?;
+    let stats = diff.stats().ok()?;
+
+    Some(format!(
+        "  {} file(s) changed, {} insertions(+), {} deletions(-)",
+        stats.files_changed(),
+        stats.insertions(),
+        stats.deletions(),
+    ))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
