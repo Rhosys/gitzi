@@ -3,9 +3,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{error, info};
 use gitzi::cli::{Cli, Commands, EpicCommands, TaskCommands};
 use gitzi::config::Config;
+use gitzi::daemon;
 use gitzi::model::{Epic, Stage, Task};
 use gitzi::model::task::new_id;
 use gitzi::pipeline::{Orchestrator, Scheduler};
@@ -23,24 +24,85 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let repo_root = PathBuf::from(".");
 
+    if cli.uninstall {
+        info!("Unregistering gitzi daemon service...");
+        daemon::uninstall()?;
+        info!("Done.");
+        return Ok(());
+    }
+
+    if cli.daemon {
+        return cmd_daemon(&repo_root).await;
+    }
+
     match cli.command {
-        Commands::Init => cmd_init(&repo_root)?,
-        Commands::Run { port } => cmd_run(&repo_root, port).await?,
-        Commands::Status => cmd_status()?,
-        Commands::Advance { task_id, stage, note } => cmd_advance(&repo_root, &task_id, &stage, note)?,
-        Commands::Task { command: TaskCommands::Create { epic, title, priority, description } } => {
+        None => cmd_default(repo_root).await?,
+        Some(Commands::Init) => cmd_init(&repo_root)?,
+        Some(Commands::Status) => cmd_status()?,
+        Some(Commands::Advance { task_id, stage, note }) => cmd_advance(&repo_root, &task_id, &stage, note)?,
+        Some(Commands::Task { command: TaskCommands::Create { epic, title, priority, description } }) => {
             cmd_task_create(&epic, &title, priority, description)?;
         }
-        Commands::Epic { command: EpicCommands::Create { title, description } } => {
+        Some(Commands::Epic { command: EpicCommands::Create { title, description } }) => {
             cmd_epic_create(&title, description)?;
-        }
-        #[cfg(feature = "tui")]
-        Commands::Tui => {
-            gitzi::tui::run(repo_root)?;
         }
     }
 
     Ok(())
+}
+
+/// Default command: ensure daemon is running, then launch TUI.
+async fn cmd_default(repo_root: PathBuf) -> Result<()> {
+    // Ensure daemon is running (registers systemd service on first run)
+    daemon::ensure_running().await?;
+    info!("Daemon is running");
+
+    // Launch TUI
+    #[cfg(feature = "tui")]
+    {
+        gitzi::tui::run(repo_root)?;
+    }
+    #[cfg(not(feature = "tui"))]
+    {
+        let _ = repo_root;
+        anyhow::bail!("TUI not available — build with --features tui");
+    }
+
+    Ok(())
+}
+
+/// Run the daemon process: scheduler loop + unix socket server.
+/// Invoked by systemd, not directly by the user.
+async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
+    info!("gitzi daemon starting");
+
+    let config = Arc::new(Config::load(repo_root).context("Failed to load config")?);
+    let (tx, _rx) = broadcast::channel::<gitzi::state::watcher::StateEvent>(64);
+
+    let orchestrator = Arc::new(Orchestrator::new(
+        repo_root.to_path_buf(),
+        config.clone(),
+        tx.clone(),
+    ));
+
+    let scheduler = Scheduler::new(orchestrator.clone(), config.clone(), repo_root.to_path_buf());
+
+    tokio::select! {
+        result = daemon::serve() => {
+            error!("Daemon socket server exited: {:?}", result);
+            result
+        }
+        result = scheduler.run() => {
+            error!("Scheduler exited: {:?}", result);
+            Ok(result?)
+        }
+        _ = shutdown_signal() => {
+            info!("Shutdown signal received — exiting");
+            // Clean up socket
+            let _ = std::fs::remove_file(daemon::socket_path());
+            Ok(())
+        }
+    }
 }
 
 fn cmd_init(repo_root: &std::path::Path) -> Result<()> {
@@ -73,47 +135,6 @@ fn cmd_init(repo_root: &std::path::Path) -> Result<()> {
     println!("Initialized gitzi");
     println!("  home:    {}", gitzi_home.display());
     println!("  session: {session_id}");
-    Ok(())
-}
-
-async fn cmd_run(repo_root: &std::path::Path, port: u16) -> Result<()> {
-    let config = Arc::new(Config::load(repo_root).context("Failed to load config")?);
-    let (tx, _rx) = broadcast::channel::<gitzi::state::watcher::StateEvent>(64);
-
-    let orchestrator = Arc::new(Orchestrator::new(
-        repo_root.to_path_buf(),
-        config.clone(),
-        tx.clone(),
-    ));
-
-    let scheduler = Scheduler::new(orchestrator.clone(), config.clone(), repo_root.to_path_buf());
-
-    #[cfg(feature = "dashboard")]
-    {
-        let env = gitzi::dashboard::build_env();
-        let state = Arc::new(gitzi::dashboard::AppState {
-            repo_root: repo_root.to_path_buf(),
-            orchestrator: orchestrator.clone(),
-            tx: tx.clone(),
-            env,
-        });
-        let router = gitzi::dashboard::build_router(state);
-        let addr = format!("0.0.0.0:{port}");
-        info!("Dashboard listening on http://{addr}");
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-        tokio::select! {
-            r = axum::serve(listener, router) => { r?; }
-            r = scheduler.run() => { r?; }
-        }
-    }
-
-    #[cfg(not(feature = "dashboard"))]
-    {
-        let _ = port;
-        info!("Running scheduler (no dashboard — build with --features dashboard)");
-        scheduler.run().await?;
-    }
-
     Ok(())
 }
 
@@ -174,6 +195,34 @@ fn parse_stage(s: &str) -> Result<Stage> {
         "waiting-for-review" => Ok(Stage::WaitingForReview),
         "in-testing" => Ok(Stage::InTesting),
         "done" => Ok(Stage::Done),
+        "designing" => Ok(Stage::Designing),
+        "coding-buffer" => Ok(Stage::CodingBuffer),
+        "coding" => Ok(Stage::Coding),
+        "review-buffer" => Ok(Stage::ReviewBuffer),
+        "reviewing" => Ok(Stage::Reviewing),
+        "test-buffer" => Ok(Stage::TestBuffer),
+        "testing" => Ok(Stage::Testing),
+        "security-audit-buffer" => Ok(Stage::SecurityAuditBuffer),
+        "auditing" => Ok(Stage::Auditing),
+        "deployment-buffer" => Ok(Stage::DeploymentBuffer),
+        "deploying" => Ok(Stage::Deploying),
         other => anyhow::bail!("Unknown stage: {other}"),
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigint = signal(SignalKind::interrupt()).expect("failed to bind SIGINT");
+        let mut sigterm = signal(SignalKind::terminate()).expect("failed to bind SIGTERM");
+        tokio::select! {
+            _ = sigint.recv() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await.expect("failed to bind Ctrl-C");
     }
 }

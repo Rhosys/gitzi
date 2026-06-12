@@ -333,15 +333,28 @@ fn draw_task_detail(frame: &mut Frame, app: &App, area: Rect, id: String) {
 
     // History: last 5 transitions
     let history_start = task.history.len().saturating_sub(5);
-    for transition in &task.history[history_start..] {
-        let ts = transition.at.format("%Y-%m-%d %H:%M").to_string();
+    for entry in &task.history[history_start..] {
+        let line_text = match entry {
+            crate::model::HistoryEntry::StageChange { from, to, at, .. } => {
+                let ts = at.format("%Y-%m-%d %H:%M").to_string();
+                format!(
+                    "  {} → {}  at {}",
+                    stage_label(from),
+                    stage_label(to),
+                    ts
+                )
+            }
+            crate::model::HistoryEntry::Approval { at, target_stage } => {
+                let ts = at.format("%Y-%m-%d %H:%M").to_string();
+                format!("  ✓ approved → {}  at {}", stage_label(target_stage), ts)
+            }
+            crate::model::HistoryEntry::Rejection { at, feedback, returned_to } => {
+                let ts = at.format("%Y-%m-%d %H:%M").to_string();
+                format!("  ✗ rejected → {} ({})  at {}", stage_label(returned_to), feedback, ts)
+            }
+        };
         lines.push(Line::from(Span::styled(
-            format!(
-                "  {} → {}  at {}",
-                stage_label(&transition.from),
-                stage_label(&transition.to),
-                ts
-            ),
+            line_text,
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -359,6 +372,17 @@ fn stage_label(stage: &Stage) -> &'static str {
         Stage::WaitingForReview => "REVIEW",
         Stage::InTesting => "TESTING",
         Stage::Done => "DONE",
+        Stage::Designing => "DESIGNING",
+        Stage::CodingBuffer => "CODING BUF",
+        Stage::Coding => "CODING",
+        Stage::ReviewBuffer => "REVIEW BUF",
+        Stage::Reviewing => "REVIEWING",
+        Stage::TestBuffer => "TEST BUF",
+        Stage::Testing => "TESTING",
+        Stage::SecurityAuditBuffer => "AUDIT BUF",
+        Stage::Auditing => "AUDITING",
+        Stage::DeploymentBuffer => "DEPLOY BUF",
+        Stage::Deploying => "DEPLOYING",
     }
 }
 
@@ -370,6 +394,17 @@ fn stage_color(stage: &Stage) -> Color {
         Stage::WaitingForReview => Color::Magenta,
         Stage::InTesting => Color::Cyan,
         Stage::Done => Color::Green,
+        Stage::Designing => Color::Blue,
+        Stage::CodingBuffer => Color::DarkGray,
+        Stage::Coding => Color::Yellow,
+        Stage::ReviewBuffer => Color::DarkGray,
+        Stage::Reviewing => Color::Magenta,
+        Stage::TestBuffer => Color::DarkGray,
+        Stage::Testing => Color::Cyan,
+        Stage::SecurityAuditBuffer => Color::DarkGray,
+        Stage::Auditing => Color::Red,
+        Stage::DeploymentBuffer => Color::DarkGray,
+        Stage::Deploying => Color::Green,
     }
 }
 
