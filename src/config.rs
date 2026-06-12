@@ -169,3 +169,119 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Feature: dispatcher-audit-fixes, Property 12: resolve_agent returns config override or hardcoded default
+    // **Validates: Requirements 7.1, 7.3, 7.4**
+    proptest! {
+        #[test]
+        fn resolve_agent_returns_config_override_or_hardcoded_default(
+            include_flags in prop::collection::vec(any::<bool>(), 7..=7),
+            custom_models in prop::collection::vec("[a-z]{3,10}", 7..=7),
+            custom_prompts in prop::collection::vec("[a-z ]{5,30}", 7..=7),
+        ) {
+            let all_roles = AgentRole::all();
+
+            // Build config agents vec: include only roles where flag is true
+            let config_agents: Vec<AgentDef> = all_roles.iter().zip(include_flags.iter())
+                .filter(|(_, &include)| include)
+                .enumerate()
+                .map(|(i, (role, _))| AgentDef {
+                    role: role.to_string(),
+                    model: custom_models[i % custom_models.len()].clone(),
+                    system_prompt: Some(custom_prompts[i % custom_prompts.len()].clone()),
+                })
+                .collect();
+
+            let config = Config {
+                agents: config_agents.clone(),
+                ..Config::default()
+            };
+
+            for (idx, role) in all_roles.iter().enumerate() {
+                let role_name = role.to_string();
+                let resolved = config.resolve_agent(&role_name);
+
+                // Never returns a mismatched role
+                prop_assert_eq!(
+                    &resolved.role, &role_name,
+                    "resolved agent role '{}' doesn't match queried role '{}'",
+                    resolved.role, role_name
+                );
+
+                if include_flags[idx] {
+                    // Config had an entry — should match the config entry
+                    let config_entry = config_agents.iter()
+                        .find(|a| a.role == role_name).unwrap();
+                    prop_assert_eq!(
+                        &resolved.model, &config_entry.model,
+                        "model mismatch for role '{}'", role_name
+                    );
+                    prop_assert_eq!(
+                        &resolved.system_prompt, &config_entry.system_prompt,
+                        "system_prompt mismatch for role '{}'", role_name
+                    );
+                } else {
+                    // No config entry — should match hardcoded default
+                    let default_def = role.default_agent_def();
+                    prop_assert_eq!(
+                        &resolved.model, &default_def.model,
+                        "model should be hardcoded default for role '{}'", role_name
+                    );
+                    prop_assert_eq!(
+                        &resolved.system_prompt, &default_def.system_prompt,
+                        "system_prompt should be hardcoded default for role '{}'",
+                        role_name
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // Feature: dispatcher-audit-fixes, Property 11: Config role validation rejects unknown roles
+    // **Validates: Requirements 7.2**
+    proptest! {
+        #[test]
+        fn config_role_validation_rejects_unknown_roles(
+            role_name in "[a-zA-Z0-9_-]{1,30}"
+                .prop_filter("must not match any valid AgentRole display name", |s| {
+                    let valid = [
+                        "prioritizer", "designer", "coder",
+                        "reviewer", "tester", "auditor", "infrarian",
+                    ];
+                    !valid.contains(&s.as_str())
+                })
+        ) {
+            let config = Config {
+                agents: vec![AgentDef {
+                    role: role_name.clone(),
+                    model: "claude-sonnet-4-6".to_string(),
+                    system_prompt: None,
+                }],
+                ..Config::default()
+            };
+
+            let result = config.validate();
+            prop_assert!(
+                result.is_err(),
+                "validate() should reject unknown role '{}'", role_name
+            );
+            let err_msg = format!("{}", result.unwrap_err());
+            prop_assert!(
+                err_msg.contains(&role_name),
+                "error should contain invalid role '{}', got: {}",
+                role_name, err_msg
+            );
+        }
+    }
+}

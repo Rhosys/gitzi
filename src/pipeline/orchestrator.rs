@@ -2,12 +2,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use crate::config::Config;
-use crate::error::{GitziError, Result};
-use crate::model::{Stage, Task};
+use crate::error::Result;
+use crate::model::Stage;
 use crate::pipeline::transitions::validate_transition;
 use crate::state::{reader, writer};
 use crate::state::watcher::StateEvent;
 
+/// Thin compatibility layer retained for the CLI `advance` command and the
+/// legacy dashboard. All WIP enforcement and dispatch logic now lives in
+/// `src/dispatcher/mod.rs`.
 pub struct Orchestrator {
     pub repo_root: PathBuf,
     pub config: Arc<Config>,
@@ -19,35 +22,12 @@ impl Orchestrator {
         Self { repo_root, config, tx }
     }
 
-    pub fn pick_next_task<'a>(&self, tasks: &'a [Task]) -> Option<&'a Task> {
-        let in_progress = tasks.iter().filter(|t| t.stage == Stage::InProgress).count();
-        if in_progress >= self.config.wip_limits.in_progress as usize {
-            return None;
-        }
-        tasks.iter()
-            .filter(|t| t.stage == Stage::Prioritized && !t.wip_limit_blocked)
-            .min_by_key(|t| t.priority)
-    }
-
+    /// Advance a task to a new stage. Validates the transition and persists the
+    /// change. WIP limits are NOT enforced here — that responsibility belongs to
+    /// the Dispatcher for event-driven flow.
     pub fn advance_task(&self, task_id: &str, to: Stage, note: Option<String>) -> Result<()> {
         let mut task = reader::load_task(task_id)?;
         validate_transition(&task.stage, &to)?;
-
-        let stage_str = to.to_string();
-        let limit = match to {
-            Stage::InProgress => Some(self.config.wip_limits.in_progress),
-            Stage::WaitingForReview => Some(self.config.wip_limits.waiting_for_review),
-            Stage::InTesting => Some(self.config.wip_limits.in_testing),
-            _ => None,
-        };
-
-        if let Some(limit) = limit {
-            let tasks = reader::load_all_tasks()?;
-            let count = tasks.iter().filter(|t| t.stage == to && t.id != task_id).count();
-            if count >= limit as usize {
-                return Err(GitziError::WipLimitExceeded { stage: stage_str, limit });
-            }
-        }
 
         task.transition_to(to, note);
         writer::write_task(&task)?;

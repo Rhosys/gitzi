@@ -70,6 +70,58 @@ pub fn derive_slug(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    // Feature: dispatcher-audit-fixes, Property 3: ID format invariant
+    // **Validates: Requirements 2.1, 2.2, 2.3**
+    proptest! {
+        #[test]
+        fn prop_id_format_invariant(title in ".{1,200}") {
+            let id = new_id(&title);
+
+            // Split: first 22 chars are base64url prefix
+            let (prefix, slug_part) = id.split_at(22);
+
+            // Prefix decodes to exactly 16 bytes (UUID v7)
+            let decoded = URL_SAFE_NO_PAD.decode(prefix)
+                .map_err(|e| TestCaseError::Fail(
+                    format!("base64url decode failed: {e}").into()))?;
+            prop_assert_eq!(decoded.len(), 16, "UUID bytes must be exactly 16");
+
+            // Separator hyphen between prefix and slug
+            prop_assert!(slug_part.starts_with('-'),
+                "expected hyphen after base64url prefix");
+            let slug = &slug_part[1..];
+
+            // Slug: exactly 3 hyphen-separated lowercase words from WORDS
+            let words: Vec<&str> = slug.split('-').collect();
+            prop_assert_eq!(words.len(), 3,
+                "slug must have exactly 3 words, got: {:?}", words);
+
+            for w in &words {
+                prop_assert!(w.chars().all(|c| c.is_ascii_lowercase()),
+                    "word '{}' is not all lowercase", w);
+                prop_assert!(WORDS.contains(w),
+                    "word '{}' not found in WORDS list", w);
+            }
+        }
+    }
+
+    // Feature: dispatcher-audit-fixes, Property 4: ID slug determinism
+    proptest! {
+        /// **Validates: Requirements 2.3**
+        #[test]
+        fn slug_is_deterministic_across_calls(title in ".+") {
+            let id1 = new_id(&title);
+            let id2 = new_id(&title);
+
+            // Extract slug: everything after the 22-char base64url prefix and its trailing hyphen
+            let slug1 = &id1[23..];
+            let slug2 = &id2[23..];
+
+            prop_assert_eq!(slug1, slug2, "slug must be identical for the same title");
+        }
+    }
 
     #[test]
     fn new_id_format_is_valid() {
