@@ -310,6 +310,13 @@ fn install_systemd() -> Result<()> {
     use std::fmt::Write;
 
     let binary = binary_path()?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .to_string_lossy()
+            .into_owned()
+    });
+
     let mut unit = String::new();
     writeln!(unit, "[Unit]")?;
     writeln!(unit, "Description=gitzi agent orchestrator daemon")?;
@@ -318,6 +325,7 @@ fn install_systemd() -> Result<()> {
     writeln!(unit, "[Service]")?;
     writeln!(unit, "Type=simple")?;
     writeln!(unit, "ExecStart={} --daemon", binary.display())?;
+    writeln!(unit, "Environment=HOME={home}")?;
     writeln!(unit, "Restart=on-failure")?;
     writeln!(unit, "RestartSec=5")?;
     writeln!(unit)?;
