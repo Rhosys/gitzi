@@ -71,7 +71,8 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(tasks)));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
     let config = Arc::new(Config::default());
-    let wip_limits = WipLimits::default();
+    let wip_limits = Arc::new(WipLimits::default());
+    let wip_waiting = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     // Build a minimal agent pool with test handles (spawn real tokio tasks
     // but with an empty board so they just sleep)
@@ -79,6 +80,9 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         Arc::clone(&event_bus),
         Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![]))),
         Arc::clone(&config),
+        Arc::clone(&wip_limits),
+        Arc::clone(&wip_waiting),
+        Arc::clone(&review_queue),
     );
 
     Dispatcher {
@@ -88,6 +92,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         agent_pool,
         config,
         wip_limits,
+        wip_waiting,
     }
 }
 
