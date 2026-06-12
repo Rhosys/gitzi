@@ -3,7 +3,19 @@ pub mod board;
 pub mod event_bus;
 pub mod review_queue;
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
+use tokio::sync::{Mutex, RwLock};
+use tracing::info;
+
+use crate::config::Config;
+use crate::state::reader;
+
+use self::agent_pool::AgentPool;
+use self::board::{KanbanBoard, WipLimits};
+use self::event_bus::{DispatchEvent, EventBus};
+use self::review_queue::HumanReviewQueue;
 
 /// A named stage on the Kanban board. Columns are ordered from intake (Prioritized)
 /// through delivery (Done), with buffer columns between every work stage requiring
@@ -163,6 +175,75 @@ impl std::fmt::Display for AgentRole {
             AgentRole::Infrarian => "infrarian",
         };
         write!(f, "{s}")
+    }
+}
+
+// ─── Dispatcher ───────────────────────────────────────────────────────────────
+
+/// Central orchestration struct. Owns the event bus, board projection,
+/// review queue, agent pool, and WIP limits. Replaces the polling Scheduler.
+pub struct Dispatcher {
+    pub event_bus: Arc<EventBus>,
+    pub board: Arc<RwLock<KanbanBoard>>,
+    pub review_queue: Arc<Mutex<HumanReviewQueue>>,
+    pub agent_pool: AgentPool,
+    pub config: Arc<Config>,
+    pub wip_limits: WipLimits,
+}
+
+impl Dispatcher {
+    /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
+    /// and signal agents whose columns contain work.
+    pub async fn start(config: Config) -> anyhow::Result<Self> {
+        let config = Arc::new(config);
+
+        // 1. Load tasks from disk
+        let tasks = reader::load_all_tasks()?;
+        info!(task_count = tasks.len(), "loaded tasks from disk");
+
+        // 2. Build KanbanBoard from tasks
+        let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(tasks)));
+
+        // 3. Create EventBus (capacity 256)
+        let event_bus = Arc::new(EventBus::new(256));
+
+        // 4. Create empty HumanReviewQueue
+        let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
+
+        // 5. Create WipLimits::default()
+        let wip_limits = WipLimits::default();
+
+        // 6. Spawn AgentPool
+        let agent_pool = AgentPool::spawn(
+            Arc::clone(&event_bus),
+            Arc::clone(&board),
+            Arc::clone(&config),
+        );
+
+        // 7. Emit BootComplete
+        event_bus.emit(DispatchEvent::BootComplete);
+        info!("boot complete event emitted");
+
+        // 8. Signal all agents that have work in their column
+        {
+            let b = board.read().await;
+            for role in AgentRole::all() {
+                let col = role.column();
+                if !b.tasks_in(col).is_empty() {
+                    agent_pool.signal(*role);
+                    info!(%role, "signalled agent — work available");
+                }
+            }
+        }
+
+        Ok(Self {
+            event_bus,
+            board,
+            review_queue,
+            agent_pool,
+            config,
+            wip_limits,
+        })
     }
 }
 
