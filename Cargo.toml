@@ -15,7 +15,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
 rig = { package = "rig-core", version = "0.38", features = ["derive"] }
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 clap = { version = "4", features = ["derive"] }
@@ -25,6 +25,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 notify = "6"
 dirs = "5"
 serde_json = "1"
+base64 = "0.22"
 
 axum = { version = "0.8", features = ["macros"], optional = true }
 minijinja = { version = "2", optional = true }
