@@ -1,7 +1,12 @@
+use std::path::PathBuf;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::config::atomic_write;
 use crate::dispatcher::Column;
+use crate::error::Result;
+use crate::state::home::session_dir;
 
 /// An action taken on a review item (approval, rejection, or answer to a question).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -36,4 +41,46 @@ impl PersistedReviewItem {
     pub fn is_unresolved(&self) -> bool {
         self.actions.is_empty()
     }
+}
+
+// ── Persistence functions ─────────────────────────────────────────────────────
+
+/// Directory for review item files: `~/.gitzi/<session>/reviews/`
+pub fn reviews_dir() -> Result<PathBuf> {
+    let dir = session_dir()?.join("reviews");
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Persist a review item to disk atomically.
+pub fn write_review_item(item: &PersistedReviewItem) -> Result<()> {
+    let path = reviews_dir()?.join(format!("{}.toml", item.id));
+    atomic_write(&path, &toml::to_string_pretty(item)?)
+}
+
+/// Load a single review item by ID.
+pub fn load_review_item(id: &str) -> Result<PersistedReviewItem> {
+    let path = reviews_dir()?.join(format!("{id}.toml"));
+    let text = std::fs::read_to_string(&path)?;
+    Ok(toml::from_str(&text)?)
+}
+
+/// Load all review items that have no terminal action recorded.
+pub fn load_all_unresolved() -> Result<Vec<PersistedReviewItem>> {
+    let dir = session_dir()?.join("reviews");
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut items = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            let text = std::fs::read_to_string(&path)?;
+            let item: PersistedReviewItem = toml::from_str(&text)?;
+            if item.is_unresolved() {
+                items.push(item);
+            }
+        }
+    }
+    Ok(items)
 }
