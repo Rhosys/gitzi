@@ -156,8 +156,8 @@ pub struct Task {
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_feedback: Option<String>,
-    #[serde(default)]
-    pub wip_limit_blocked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_summary: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
@@ -181,7 +181,7 @@ impl Task {
             agent: None,
             branch: None,
             agent_feedback: None,
-            wip_limit_blocked: false,
+            resume_summary: None,
             created_at: now,
             updated_at: now,
             history: Vec::new(),
