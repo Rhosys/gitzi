@@ -46,12 +46,12 @@ Surgical fixes to the event-driven dispatcher addressing 11 audit findings. Chan
     - Register module in `src/state/mod.rs`
     - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
-  - [ ] 2.3 Write property test for review item round-trip (Property 1)
+  - [-] 2.3 Write property test for review item round-trip (Property 1)
     - **Property 1: Review item persistence round-trip**
     - Generate random `PersistedReviewItem` instances, serialize to TOML, write to temp dir, read back, assert equality
     - **Validates: Requirements 1.1, 1.4**
 
-  - [ ] 2.4 Write property test for action append persistence (Property 2)
+  - [-] 2.4 Write property test for action append persistence (Property 2)
     - **Property 2: Approval/rejection action persistence**
     - Generate review item + random actions, append and persist, verify on-disk file contains all actions in order
     - **Validates: Requirements 1.2, 1.3, 1.5**
@@ -64,22 +64,22 @@ Surgical fixes to the event-driven dispatcher addressing 11 audit findings. Chan
     - Change return type from `&AgentDef` to owned `AgentDef` to support generating defaults
     - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
-  - [ ] 3.2 Write property test for ID format invariant (Property 3)
+  - [-] 3.2 Write property test for ID format invariant (Property 3)
     - **Property 3: ID format invariant**
     - Generate arbitrary non-empty title strings, validate `new_id()` output: 22-char base64url prefix decoding to 16 bytes, hyphen, 3 hyphen-separated lowercase words from word list
     - **Validates: Requirements 2.1, 2.2, 2.3**
 
-  - [ ] 3.3 Write property test for slug determinism (Property 4)
+  - [-] 3.3 Write property test for slug determinism (Property 4)
     - **Property 4: ID slug determinism**
     - Generate title strings, call `new_id()` twice with same title, verify slug portions are identical (UUID prefix will differ)
     - **Validates: Requirements 2.3**
 
-  - [ ] 3.4 Write property test for old/new ID acceptance (Property 5)
+  - [-] 3.4 Write property test for old/new ID acceptance (Property 5)
     - **Property 5: Old and new ID format acceptance**
     - Generate both old-format (8 hex chars) and new-format IDs, write a task with each, load from disk, verify ID matches
     - **Validates: Requirements 2.4**
 
-  - [ ] 3.5 Write property test for config role validation (Property 11)
+  - [-] 3.5 Write property test for config role validation (Property 11)
     - **Property 11: Config role validation rejects unknown roles**
     - Generate random strings that don't match any AgentRole display name, create config with that role, call validate(), assert error containing the invalid role name
     - **Validates: Requirements 7.2**
