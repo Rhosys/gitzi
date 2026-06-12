@@ -15,6 +15,13 @@ pub enum ScanResult {
     Blocked(TropeMatch),
 }
 
+impl ScanResult {
+    /// Returns true if no trope was detected.
+    pub fn is_clean(&self) -> bool {
+        matches!(self, ScanResult::Clean)
+    }
+}
+
 /// A matched trope with its metadata and prescribed action.
 pub struct TropeMatch {
     pub name: &'static str,
