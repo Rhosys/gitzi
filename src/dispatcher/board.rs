@@ -64,6 +64,16 @@ impl KanbanBoard {
         self.tasks.get(id)
     }
 
+    /// Find a task mutably by ID.
+    pub fn task_mut(&mut self, id: &str) -> Option<&mut Task> {
+        self.tasks.get_mut(id)
+    }
+
+    /// Find which column a task currently lives in (public for dispatcher use).
+    pub fn column_of(&self, task_id: &str) -> Option<Column> {
+        self.find_column(task_id)
+    }
+
     /// Number of tasks in a column.
     pub fn count(&self, column: Column) -> usize {
         self.columns.get(&column).map(|v| v.len()).unwrap_or(0)

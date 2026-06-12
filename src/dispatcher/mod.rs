@@ -6,8 +6,9 @@ pub mod review_queue;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Mutex, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::state::reader;
@@ -192,6 +193,115 @@ pub struct Dispatcher {
 }
 
 impl Dispatcher {
+    /// Approve a task in a buffer column: advance to the next work column,
+    /// record history, emit event, and signal the agent for the target column.
+    pub async fn approve(&self, task_id: &str) -> anyhow::Result<()> {
+        let next_col = {
+            let board = self.board.read().await;
+            let current_col = board.column_of(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
+            if !current_col.is_buffer() {
+                anyhow::bail!("task '{task_id}' is in {current_col}, not a buffer column");
+            }
+            current_col.next()
+                .ok_or_else(|| anyhow::anyhow!("buffer column {current_col} has no next column"))?
+        };
+
+        // Write to board: advance task and record history
+        {
+            let mut board = self.board.write().await;
+            board.advance(task_id, next_col)?;
+            let task = board.task_mut(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
+            task.history.push(crate::model::task::HistoryEntry::Approval {
+                at: chrono::Utc::now(),
+                target_stage: next_col.into(),
+            });
+        }
+
+        // Emit event
+        self.event_bus.emit(DispatchEvent::HumanApprovalReceived {
+            task_id: task_id.to_string(),
+            target_column: next_col,
+        });
+
+        // Signal the agent for the target work column
+        if let Some(role) = next_col.agent_role() {
+            self.agent_pool.signal(role);
+        }
+
+        Ok(())
+    }
+
+    /// Reject a task in a buffer column: move to previous work column with priority 0,
+    /// store feedback, record history, emit event, and signal the agent.
+    pub async fn reject(&self, task_id: &str, feedback: String) -> anyhow::Result<()> {
+        let prev_col = {
+            let board = self.board.read().await;
+            let current_col = board.column_of(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
+            if !current_col.is_buffer() {
+                anyhow::bail!("task '{task_id}' is in {current_col}, not a buffer column");
+            }
+            current_col.prev()
+                .ok_or_else(|| anyhow::anyhow!("buffer column {current_col} has no previous column"))?
+        };
+
+        // Write to board: advance to prev, set priority, store feedback, record history
+        {
+            let mut board = self.board.write().await;
+            board.advance(task_id, prev_col)?;
+            board.set_priority(task_id, 0);
+            let task = board.task_mut(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
+            task.agent_feedback = Some(feedback.clone());
+            task.history.push(crate::model::task::HistoryEntry::Rejection {
+                at: chrono::Utc::now(),
+                feedback: feedback.clone(),
+                returned_to: prev_col.into(),
+            });
+        }
+
+        // Emit event
+        self.event_bus.emit(DispatchEvent::HumanRejectionReceived {
+            task_id: task_id.to_string(),
+            returned_to: prev_col,
+            feedback,
+        });
+
+        // Signal the agent for the previous work column
+        if let Some(role) = prev_col.agent_role() {
+            self.agent_pool.signal(role);
+        }
+
+        Ok(())
+    }
+
+    /// Answer an agent's question: dequeue the review item and unblock the agent.
+    pub async fn answer_question(&self, item_id: &str, answer: String) -> anyhow::Result<()> {
+        // Dequeue the item from the review queue
+        let item = {
+            let mut queue = self.review_queue.lock().await;
+            queue.dequeue(item_id)
+                .ok_or_else(|| anyhow::anyhow!("review item '{item_id}' not found in queue"))?
+        };
+
+        // Determine which agent role is blocked (from task's current column)
+        let role = {
+            let board = self.board.read().await;
+            let task = board.task(&item.task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{}' not found on board", item.task_id))?;
+            let col = task.stage.to_column();
+            col.agent_role()
+                .ok_or_else(|| anyhow::anyhow!("task '{}' is in column {col} which has no agent", item.task_id))?
+        };
+
+        // Unblock the agent with the answer
+        self.agent_pool.unblock(role, answer);
+
+        Ok(())
+    }
+
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
     /// and signal agents whose columns contain work.
     pub async fn start(config: Config) -> anyhow::Result<Self> {
@@ -244,6 +354,94 @@ impl Dispatcher {
             config,
             wip_limits,
         })
+    }
+
+    /// Main event loop — subscribes to the bus and reacts to each event variant.
+    pub async fn run(&self) -> anyhow::Result<()> {
+        let mut rx = self.event_bus.subscribe();
+
+        loop {
+            let event = match rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(n)) => {
+                    warn!(skipped = n, "event bus receiver lagged, some events missed");
+                    continue;
+                }
+                Err(RecvError::Closed) => {
+                    info!("event bus closed, dispatcher shutting down");
+                    return Ok(());
+                }
+            };
+
+            match event {
+                DispatchEvent::TaskCreated { task_id } => {
+                    info!(%task_id, "task created — signalling prioritizer");
+                    self.agent_pool.signal(AgentRole::Prioritizer);
+                }
+
+                DispatchEvent::TaskStageChanged { task_id, from: _, to } => {
+                    if let Some(role) = to.agent_role() {
+                        info!(%task_id, %role, "task entered work column — signalling agent");
+                        self.agent_pool.signal(role);
+                    } else if to.is_buffer() {
+                        // Create a BufferApproval review item
+                        let priority = {
+                            let b = self.board.read().await;
+                            b.task(&task_id)
+                                .map(|t| t.priority)
+                                .unwrap_or(u32::MAX)
+                        };
+                        let item = review_queue::HumanReviewItem::new(
+                            &task_id,
+                            review_queue::ReviewItemKind::BufferApproval {
+                                buffer_column: to,
+                                task_priority: priority,
+                            },
+                        );
+                        let mut q = self.review_queue.lock().await;
+                        q.enqueue(item);
+                        info!(%task_id, column = %to, "buffer entry — review item created");
+                    }
+                }
+
+                DispatchEvent::AgentCompleted { task_id, agent_role } => {
+                    // The agent loop already handles advancing the task to the next buffer.
+                    // This event is for downstream consumers (TUI, logging).
+                    info!(%task_id, %agent_role, "agent completed");
+                }
+
+                DispatchEvent::AgentBlocked { task_id, agent_role, ref question } => {
+                    info!(%task_id, %agent_role, "agent blocked — creating review item");
+                    let item = review_queue::HumanReviewItem::new(
+                        &task_id,
+                        review_queue::ReviewItemKind::AgentQuestion {
+                            question: question.clone(),
+                        },
+                    );
+                    let mut q = self.review_queue.lock().await;
+                    q.enqueue(item);
+                }
+
+                DispatchEvent::HumanApprovalReceived { task_id: _, target_column } => {
+                    if let Some(role) = target_column.agent_role() {
+                        info!(%role, "approval received — signalling agent");
+                        self.agent_pool.signal(role);
+                    }
+                }
+
+                DispatchEvent::HumanRejectionReceived { task_id: _, returned_to, feedback: _ } => {
+                    if let Some(role) = returned_to.agent_role() {
+                        info!(%role, "rejection received — signalling agent");
+                        self.agent_pool.signal(role);
+                    }
+                }
+
+                DispatchEvent::BootComplete => {
+                    // Already handled in start() — no-op here.
+                    info!("boot complete event received in run loop");
+                }
+            }
+        }
     }
 }
 
