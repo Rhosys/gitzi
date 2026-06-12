@@ -6,12 +6,16 @@ use crate::model::Task;
 pub struct RunContext {
     pub repo_root: PathBuf,
     pub branch: String,
+    /// Work state summary from a previous session (branch commits, diff stats).
+    /// Populated on boot resume when recoverable state is found.
+    pub resume_summary: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct AgentResult {
-    pub success: bool,
-    pub output: String,
+pub enum AgentResult {
+    Success { output: String },
+    Failure { output: String },
+    Blocked { question: String },
 }
 
 pub trait AgentBackend: Send + Sync {
