@@ -195,7 +195,7 @@ async fn agent_loop(
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
-        let backend = agent::build_agent(agent_def);
+        let backend = agent::build_agent(&agent_def);
 
         // Run the agent backend
         let result = backend.run(&task, &ctx).await;
@@ -281,7 +281,7 @@ async fn handle_agent_result(
                     // Re-run agent with injection as context
                     // For now, log the injection. Full retry loop is a follow-up task.
                     let agent_def = config.resolve_agent(&role.to_string());
-                    let backend = agent::build_agent(agent_def);
+                    let backend = agent::build_agent(&agent_def);
                     // TODO: inject correction into context and retry (task 8.1)
                     let _ = injection;
                     let _ = backend;
