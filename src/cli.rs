@@ -4,20 +4,21 @@ use clap::{Parser, Subcommand};
 #[command(name = "gitzi", about = "Kanban agent harness for software development pipelines")]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
+
+    /// Run as background daemon (used by systemd, not invoked directly)
+    #[arg(long, hide = true)]
+    pub daemon: bool,
+
+    /// Unregister the background daemon service
+    #[arg(long)]
+    pub uninstall: bool,
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
     /// Initialize .gitzi/ in the current repo
     Init,
-
-    /// Start the scheduler loop and dashboard
-    Run {
-        /// Port for the web dashboard
-        #[arg(long, default_value = "3000")]
-        port: u16,
-    },
 
     /// Show current WIP snapshot
     Status,
@@ -41,10 +42,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: EpicCommands,
     },
-
-    /// Open the terminal UI
-    #[cfg(feature = "tui")]
-    Tui,
 }
 
 #[derive(Subcommand)]
