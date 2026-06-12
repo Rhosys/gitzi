@@ -33,5 +33,17 @@ pub fn next_stage(stage: &Stage) -> Option<Stage> {
         Stage::WaitingForReview => Some(Stage::InTesting),
         Stage::InTesting => Some(Stage::Done),
         Stage::Done => None,
+        // New column-aligned stages use Column::next() for progression
+        Stage::Designing => Some(Stage::CodingBuffer),
+        Stage::CodingBuffer => Some(Stage::Coding),
+        Stage::Coding => Some(Stage::ReviewBuffer),
+        Stage::ReviewBuffer => Some(Stage::Reviewing),
+        Stage::Reviewing => Some(Stage::TestBuffer),
+        Stage::TestBuffer => Some(Stage::Testing),
+        Stage::Testing => Some(Stage::SecurityAuditBuffer),
+        Stage::SecurityAuditBuffer => Some(Stage::Auditing),
+        Stage::Auditing => Some(Stage::DeploymentBuffer),
+        Stage::DeploymentBuffer => Some(Stage::Deploying),
+        Stage::Deploying => Some(Stage::Done),
     }
 }
