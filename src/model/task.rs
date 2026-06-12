@@ -223,3 +223,56 @@ pub fn slug(s: &str) -> String {
 pub fn new_id() -> String {
     Uuid::new_v4().to_string()[..8].to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Generate an old-format ID: 8 lowercase hex characters.
+    fn arb_old_id() -> impl Strategy<Value = String> {
+        "[a-f0-9]{8}".prop_map(|s| s)
+    }
+
+    /// Generate a new-format ID: 22-char base64url prefix + hyphen + 3-word slug.
+    fn arb_new_id() -> impl Strategy<Value = String> {
+        prop::array::uniform16(prop::num::u8::ANY).prop_map(|bytes| {
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            use base64::Engine;
+            let b64 = URL_SAFE_NO_PAD.encode(bytes);
+            format!("{b64}-ace-box-fin")
+        })
+    }
+
+    /// Generate either old or new format ID.
+    fn arb_any_id() -> impl Strategy<Value = String> {
+        prop_oneof![arb_old_id(), arb_new_id()]
+    }
+
+    /// Build a minimal valid Task with the given ID.
+    fn make_task(id: String) -> Task {
+        Task::new(id, "test-epic", "Test Title")
+    }
+
+    // Feature: dispatcher-audit-fixes, Property 5: Old and new ID format acceptance
+    // **Validates: Requirements 2.4**
+    proptest! {
+        #[test]
+        fn prop_old_and_new_id_format_acceptance(id in arb_any_id()) {
+            let task = make_task(id.clone());
+
+            // Write to a temp directory
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(format!("{}.toml", &task.id));
+            let serialized = toml::to_string_pretty(&task).unwrap();
+            std::fs::write(&path, &serialized).unwrap();
+
+            // Load from disk
+            let text = std::fs::read_to_string(&path).unwrap();
+            let loaded: Task = toml::from_str(&text).unwrap();
+
+            // ID round-trips correctly
+            prop_assert_eq!(&loaded.id, &id);
+        }
+    }
+}
