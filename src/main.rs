@@ -7,8 +7,8 @@ use tracing::{error, info};
 use gitzi::cli::{Cli, Commands, EpicCommands, TaskCommands};
 use gitzi::config::Config;
 use gitzi::daemon;
+use gitzi::id::new_id;
 use gitzi::model::{Epic, Stage, Task};
-use gitzi::model::task::new_id;
 use gitzi::pipeline::Orchestrator;
 use gitzi::state::{reader, writer};
 
@@ -160,7 +160,7 @@ fn cmd_task_create(
     priority: u32,
     description: Option<String>,
 ) -> Result<()> {
-    let id = new_id();
+    let id = new_id(title);
     let mut task = Task::new(&id, epic_id, title);
     task.priority = priority;
     task.description = description;
@@ -177,7 +177,7 @@ fn cmd_task_create(
 }
 
 fn cmd_epic_create(title: &str, description: Option<String>) -> Result<()> {
-    let id = new_id();
+    let id = new_id(title);
     let mut epic = Epic::new(&id, title);
     epic.description = description;
     writer::write_epic(&epic)?;
