@@ -249,6 +249,26 @@ impl Dispatcher {
             });
         }
 
+        // Persist task to disk
+        {
+            let board = self.board.read().await;
+            if let Some(task) = board.task(task_id) {
+                if let Err(e) = writer::write_task(task) {
+                    warn!(%task_id, error = %e, "failed to persist task after approval");
+                }
+            }
+        }
+
+        // Persist review item with approval action appended
+        if let Ok(Some(mut review_item)) = review::find_unresolved_for_task(task_id) {
+            review_item.actions.push(ReviewAction::Approval {
+                at: chrono::Utc::now(),
+            });
+            if let Err(e) = review::write_review_item(&review_item) {
+                warn!(%task_id, error = %e, "failed to persist review item approval");
+            }
+        }
+
         // Emit event
         self.event_bus.emit(DispatchEvent::HumanApprovalReceived {
             task_id: task_id.to_string(),
@@ -290,6 +310,27 @@ impl Dispatcher {
                 feedback: feedback.clone(),
                 returned_to: prev_col.into(),
             });
+        }
+
+        // Persist task to disk
+        {
+            let board = self.board.read().await;
+            if let Some(task) = board.task(task_id) {
+                if let Err(e) = writer::write_task(task) {
+                    warn!(%task_id, error = %e, "failed to persist task after rejection");
+                }
+            }
+        }
+
+        // Persist review item with rejection action appended
+        if let Ok(Some(mut review_item)) = review::find_unresolved_for_task(task_id) {
+            review_item.actions.push(ReviewAction::Rejection {
+                at: chrono::Utc::now(),
+                feedback: feedback.clone(),
+            });
+            if let Err(e) = review::write_review_item(&review_item) {
+                warn!(%task_id, error = %e, "failed to persist review item rejection");
+            }
         }
 
         // Emit event

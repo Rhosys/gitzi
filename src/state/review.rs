@@ -65,6 +65,25 @@ pub fn load_review_item(id: &str) -> Result<PersistedReviewItem> {
     Ok(toml::from_str(&text)?)
 }
 
+/// Find an unresolved review item for the given task ID.
+pub fn find_unresolved_for_task(task_id: &str) -> Result<Option<PersistedReviewItem>> {
+    let dir = session_dir()?.join("reviews");
+    if !dir.exists() {
+        return Ok(None);
+    }
+    for entry in std::fs::read_dir(&dir)? {
+        let path = entry?.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("toml") {
+            let text = std::fs::read_to_string(&path)?;
+            let item: PersistedReviewItem = toml::from_str(&text)?;
+            if item.task_id == task_id && item.is_unresolved() {
+                return Ok(Some(item));
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Load all review items that have no terminal action recorded.
 pub fn load_all_unresolved() -> Result<Vec<PersistedReviewItem>> {
     let dir = session_dir()?.join("reviews");
