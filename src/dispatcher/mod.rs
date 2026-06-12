@@ -3,6 +3,7 @@ pub mod board;
 pub mod event_bus;
 pub mod review_queue;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -215,6 +216,8 @@ pub struct Dispatcher {
     pub agent_pool: AgentPool,
     pub config: Arc<Config>,
     pub wip_limits: WipLimits,
+    /// Agents waiting to advance into a full column.
+    pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
 }
 
 impl Dispatcher {
@@ -447,18 +450,16 @@ impl Dispatcher {
                     q.enqueue(item);
                 }
 
-                DispatchEvent::HumanApprovalReceived { task_id: _, target_column } => {
-                    if let Some(role) = target_column.agent_role() {
-                        info!(%role, "approval received — signalling agent");
-                        self.agent_pool.signal(role);
-                    }
+                DispatchEvent::HumanApprovalReceived { task_id, target_column } => {
+                    // NO-OP: approve() already signalled the agent.
+                    // This event exists for TUI/logging consumers only.
+                    info!(%task_id, %target_column, "approval event received (no-op in run loop)");
                 }
 
-                DispatchEvent::HumanRejectionReceived { task_id: _, returned_to, feedback: _ } => {
-                    if let Some(role) = returned_to.agent_role() {
-                        info!(%role, "rejection received — signalling agent");
-                        self.agent_pool.signal(role);
-                    }
+                DispatchEvent::HumanRejectionReceived { task_id, returned_to, feedback: _ } => {
+                    // NO-OP: reject() already signalled the agent.
+                    // This event exists for TUI/logging consumers only.
+                    info!(%task_id, %returned_to, "rejection event received (no-op in run loop)");
                 }
 
                 DispatchEvent::BootComplete => {
