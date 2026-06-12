@@ -8,7 +8,7 @@ use super::Column;
 
 /// Typed events emitted on the bus whenever system state changes.
 /// All components subscribe and react — no polling.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DispatchEvent {
     TaskCreated { task_id: String },
