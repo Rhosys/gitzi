@@ -159,6 +159,23 @@ mod tests {
             })
     }
 
+    fn arb_persisted_review_item() -> impl Strategy<Value = PersistedReviewItem> {
+        (
+            "[a-z0-9]{5,20}",
+            "[a-z0-9]{5,20}",
+            arb_review_kind(),
+            arb_datetime(),
+            prop::collection::vec(arb_review_action(), 0..5),
+        )
+            .prop_map(|(id, task_id, kind, created_at, actions)| PersistedReviewItem {
+                id,
+                task_id,
+                kind,
+                created_at,
+                actions,
+            })
+    }
+
     /// Write a review item to a path inside a given directory.
     fn write_item_to(dir: &Path, item: &PersistedReviewItem) {
         std::fs::create_dir_all(dir).unwrap();
@@ -172,6 +189,27 @@ mod tests {
         let path = dir.join(format!("{id}.toml"));
         let text = std::fs::read_to_string(&path).unwrap();
         toml::from_str(&text).unwrap()
+    }
+
+    // Feature: dispatcher-audit-fixes, Property 1: Review item persistence round-trip
+    // **Validates: Requirements 1.1, 1.4**
+    proptest! {
+        #[test]
+        fn review_item_round_trip(item in arb_persisted_review_item()) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(format!("{}.toml", &item.id));
+
+            // Serialize and write
+            let serialized = toml::to_string_pretty(&item).unwrap();
+            std::fs::write(&path, &serialized).unwrap();
+
+            // Read back and deserialize
+            let read_back = std::fs::read_to_string(&path).unwrap();
+            let deserialized: PersistedReviewItem =
+                toml::from_str(&read_back).unwrap();
+
+            prop_assert_eq!(item, deserialized);
+        }
     }
 
     // Feature: dispatcher-audit-fixes, Property 2: Approval/rejection action persistence
@@ -214,97 +252,6 @@ mod tests {
             prop_assert_eq!(&loaded.task_id, &item.task_id);
             prop_assert_eq!(&loaded.kind, &item.kind);
             prop_assert_eq!(loaded.created_at, item.created_at);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use proptest::prelude::*;
-
-    // Feature: dispatcher-audit-fixes, Property 1: Review item persistence round-trip
-    // **Validates: Requirements 1.1, 1.4**
-
-    fn arb_column() -> impl Strategy<Value = Column> {
-        prop_oneof![
-            Just(Column::Prioritized),
-            Just(Column::Designing),
-            Just(Column::CodingBuffer),
-            Just(Column::Coding),
-            Just(Column::ReviewBuffer),
-            Just(Column::Reviewing),
-            Just(Column::TestBuffer),
-            Just(Column::Testing),
-            Just(Column::SecurityAuditBuffer),
-            Just(Column::Auditing),
-            Just(Column::DeploymentBuffer),
-            Just(Column::Deploying),
-            Just(Column::Done),
-        ]
-    }
-
-    fn arb_datetime() -> impl Strategy<Value = DateTime<Utc>> {
-        // Generate timestamps in a reasonable range (2020-2030)
-        (1_577_836_800i64..1_893_456_000i64).prop_map(|secs| {
-            DateTime::from_timestamp(secs, 0).unwrap()
-        })
-    }
-
-    fn arb_review_action() -> impl Strategy<Value = ReviewAction> {
-        prop_oneof![
-            arb_datetime().prop_map(|at| ReviewAction::Approval { at }),
-            (arb_datetime(), "[a-z]{1,20}")
-                .prop_map(|(at, feedback)| ReviewAction::Rejection { at, feedback }),
-            (arb_datetime(), "[a-z]{1,20}")
-                .prop_map(|(at, content)| ReviewAction::Answer { at, content }),
-        ]
-    }
-
-    fn arb_review_kind() -> impl Strategy<Value = PersistedReviewKind> {
-        prop_oneof![
-            "[a-z]{1,30}".prop_map(|question| {
-                PersistedReviewKind::AgentQuestion { question }
-            }),
-            (arb_column(), 0u32..1000u32).prop_map(|(buffer_column, task_priority)| {
-                PersistedReviewKind::BufferApproval { buffer_column, task_priority }
-            }),
-        ]
-    }
-
-    fn arb_persisted_review_item() -> impl Strategy<Value = PersistedReviewItem> {
-        (
-            "[a-z0-9]{5,20}",
-            "[a-z0-9]{5,20}",
-            arb_review_kind(),
-            arb_datetime(),
-            prop::collection::vec(arb_review_action(), 0..5),
-        )
-            .prop_map(|(id, task_id, kind, created_at, actions)| PersistedReviewItem {
-                id,
-                task_id,
-                kind,
-                created_at,
-                actions,
-            })
-    }
-
-    proptest! {
-        #[test]
-        fn review_item_round_trip(item in arb_persisted_review_item()) {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(format!("{}.toml", &item.id));
-
-            // Serialize and write
-            let serialized = toml::to_string_pretty(&item).unwrap();
-            std::fs::write(&path, &serialized).unwrap();
-
-            // Read back and deserialize
-            let read_back = std::fs::read_to_string(&path).unwrap();
-            let deserialized: PersistedReviewItem =
-                toml::from_str(&read_back).unwrap();
-
-            prop_assert_eq!(item, deserialized);
         }
     }
 }
