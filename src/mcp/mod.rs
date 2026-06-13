@@ -27,6 +27,17 @@ struct McpState {
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
+/// Build the Axum router for the MCP HTTP API.
+///
+/// Exposed for integration testing so tests can call `router.oneshot(...)` without
+/// binding a real Unix socket.
+pub fn build_router(dispatcher: Arc<Dispatcher>, token_store: Arc<TokenStore>) -> Router {
+    let state = McpState { dispatcher, token_store };
+    Router::new()
+        .route("/mcp", post(handle_mcp))
+        .with_state(state)
+}
+
 /// Bind a Unix-domain socket at `~/.gitzi/mcp.sock` and serve the MCP HTTP
 /// API on it.  Stale socket files are removed before binding so that a crashed
 /// process does not prevent restart.
@@ -44,12 +55,7 @@ pub async fn serve(
         std::fs::create_dir_all(parent)?;
     }
 
-    let state = McpState { dispatcher, token_store };
-
-    let app = Router::new()
-        .route("/mcp", post(handle_mcp))
-        .with_state(state);
-
+    let app = build_router(dispatcher, token_store);
     let listener = tokio::net::UnixListener::bind(&socket_path)?;
 
     info!(socket = %socket_path.display(), "MCP server listening");
