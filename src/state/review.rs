@@ -84,6 +84,53 @@ pub fn find_unresolved_for_task(task_id: &str) -> Result<Option<PersistedReviewI
     Ok(None)
 }
 
+/// Load all answered agent questions for a task, as (question, answer) pairs.
+/// Returns an empty Vec if there are no reviews dir or no answered questions.
+/// Used to inject prior decisions into an agent's prompt so it never re-asks
+/// a question the human has already answered.
+pub fn load_answered_for_task(task_id: &str) -> Vec<(String, String)> {
+    let dir = match session_dir().map(|d| d.join("reviews")) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    if !dir.exists() {
+        return Vec::new();
+    }
+    let mut pairs = Vec::new();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let item: PersistedReviewItem = match toml::from_str(&text) {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        if item.task_id != task_id {
+            continue;
+        }
+        let question = match &item.kind {
+            PersistedReviewKind::AgentQuestion { question } => question.clone(),
+            PersistedReviewKind::BufferApproval { .. } => continue,
+        };
+        // Use the most recent Answer action if multiple exist.
+        if let Some(answer) = item.actions.iter().rev().find_map(|a| {
+            if let ReviewAction::Answer { content, .. } = a { Some(content.clone()) } else { None }
+        }) {
+            pairs.push((question, answer));
+        }
+    }
+    pairs
+}
+
 /// Load all review items that have no terminal action recorded.
 pub fn load_all_unresolved() -> Result<Vec<PersistedReviewItem>> {
     let dir = session_dir()?.join("reviews");

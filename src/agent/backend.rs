@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use crate::error::Result;
 use crate::model::Task;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunContext {
     pub repo_root: PathBuf,
     pub branch: String,
@@ -12,6 +12,10 @@ pub struct RunContext {
     /// Bearer token for the MCP server. Injected as `GITZI_MCP_TOKEN` env var
     /// when spawning agent subprocesses.
     pub mcp_token: Option<String>,
+    /// Answered questions from the human review queue for this task.
+    /// Each entry is (question, answer). Injected into the agent prompt so the
+    /// agent implements decisions already made without re-asking them.
+    pub answered_questions: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]

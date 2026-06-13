@@ -358,6 +358,7 @@ async fn handle_agent_result(
                         branch: ctx.branch.clone(),
                         resume_summary: Some(injection.clone()),
                         mcp_token: ctx.mcp_token.clone(),
+                        answered_questions: ctx.answered_questions.clone(),
                     }
                 }
                 trope_blocker::Directive::RotateSession { ref summary } => {
@@ -374,6 +375,7 @@ async fn handle_agent_result(
                         branch: ctx.branch.clone(),
                         resume_summary: Some(summary.clone()),
                         mcp_token: ctx.mcp_token.clone(),
+                        answered_questions: ctx.answered_questions.clone(),
                     }
                 }
             };
@@ -505,7 +507,8 @@ async fn escalate_trope_block(
 
 fn build_run_context(task: &Task, worktree_root: std::path::PathBuf, branch: String, mcp_token: Option<String>) -> RunContext {
     let resume_summary = resume_context(task);
-    RunContext { repo_root: worktree_root, branch, resume_summary, mcp_token }
+    let answered_questions = crate::state::review::load_answered_for_task(&task.id);
+    RunContext { repo_root: worktree_root, branch, resume_summary, mcp_token, answered_questions }
 }
 
 /// Create or reuse the worktree for a task, returning its path.

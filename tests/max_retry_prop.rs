@@ -73,6 +73,7 @@ async fn simulate_retry_path(
         branch: "main".to_string(),
         resume_summary: None,
         mcp_token: None,
+        answered_questions: vec![],
     };
 
     // Step 1: Scan the initial output (already known to be Blocked)
@@ -93,12 +94,14 @@ async fn simulate_retry_path(
             branch: ctx.branch.clone(),
             resume_summary: Some(injection.clone()),
             mcp_token: None,
+            answered_questions: ctx.answered_questions.clone(),
         },
         trope_blocker::Directive::RotateSession { ref summary } => RunContext {
             repo_root: ctx.repo_root.clone(),
             branch: ctx.branch.clone(),
             resume_summary: Some(summary.clone()),
             mcp_token: None,
+            answered_questions: ctx.answered_questions.clone(),
         },
     };
 

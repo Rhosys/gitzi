@@ -34,7 +34,7 @@ struct ClaudeResult {
 
 impl AgentBackend for ClaudeCodeCli {
     async fn run(&self, task: &Task, ctx: &RunContext) -> Result<AgentResult> {
-        let prompt = build_prompt(task, self.system_prompt.as_deref(), ctx.resume_summary.as_deref());
+        let prompt = build_prompt(task, self.system_prompt.as_deref(), ctx.resume_summary.as_deref(), &ctx.answered_questions);
         let mut cmd = Command::new("claude");
         cmd.args(["-p", "--output-format", "json", "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep"]);
         if let Some(model) = &self.model {
@@ -71,7 +71,7 @@ impl AgentBackend for ClaudeCodeCli {
     }
 }
 
-fn build_prompt(task: &Task, system_prompt: Option<&str>, resume_summary: Option<&str>) -> String {
+fn build_prompt(task: &Task, system_prompt: Option<&str>, resume_summary: Option<&str>, answered_questions: &[(String, String)]) -> String {
     let preamble = system_prompt.unwrap_or(
         "You are a disciplined coding agent with one rule above all others: \
         do the smallest change that satisfies the task. Nothing more.\n\n\
@@ -92,6 +92,15 @@ fn build_prompt(task: &Task, system_prompt: Option<&str>, resume_summary: Option
 
     if let Some(desc) = &task.description {
         prompt.push_str(&format!("\nDescription:\n{desc}\n"));
+    }
+
+    // Inject answers from the human review queue. These are decisions already
+    // made — implement them directly, do not raise the same question again.
+    if !answered_questions.is_empty() {
+        prompt.push_str("\nDecisions already made for this task (implement these, do not re-ask):\n");
+        for (question, answer) in answered_questions {
+            prompt.push_str(&format!("Q: {question}\nA: {answer}\n\n"));
+        }
     }
 
     if let Some(summary) = resume_summary {
