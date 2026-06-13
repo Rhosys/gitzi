@@ -24,8 +24,8 @@ pub fn task_wip_dir(task_id: &str) -> Result<PathBuf> {
     Ok(wip_dir()?.join("tasks").join(task_id))
 }
 
-pub fn task_worktree_path(task_id: &str) -> Result<PathBuf> {
-    Ok(task_wip_dir(task_id)?.join("worktree"))
+pub fn task_worktree_path(task_id: &str, repo_slug: &str) -> Result<PathBuf> {
+    Ok(task_wip_dir(task_id)?.join("worktrees").join(repo_slug))
 }
 
 pub fn task_log_path(task_id: &str) -> Result<PathBuf> {
