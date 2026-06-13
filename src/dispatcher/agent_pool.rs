@@ -13,6 +13,7 @@ use chrono::Utc;
 
 use crate::agent::{self, AgentBackend, AgentResult, RunContext};
 use crate::config::Config;
+use crate::mcp::auth::TokenStore;
 use crate::dispatcher::event_bus::DispatchEvent;
 use crate::git::ops;
 use crate::id;
@@ -90,6 +91,7 @@ impl AgentPool {
         wip_limits: Arc<WipLimits>,
         wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
         review_queue: Arc<Mutex<HumanReviewQueue>>,
+        token_store: Arc<TokenStore>,
     ) -> Self {
         let mut agents = HashMap::new();
 
@@ -103,8 +105,9 @@ impl AgentPool {
             let wl = Arc::clone(&wip_limits);
             let ww = Arc::clone(&wip_waiting);
             let rq = Arc::clone(&review_queue);
+            let ts = Arc::clone(&token_store);
 
-            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq));
+            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq, ts));
         }
 
         Self { agents }
@@ -166,6 +169,7 @@ async fn agent_loop(
     wip_limits: Arc<WipLimits>,
     wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     review_queue: Arc<Mutex<HumanReviewQueue>>,
+    token_store: Arc<TokenStore>,
 ) {
     let role = handle.role;
     let column = role.column();
@@ -204,15 +208,19 @@ async fn agent_loop(
 
         info!(%role, task_id = %task.id, "processing task");
 
+        // Issue a scoped MCP token for this agent session
+        let mcp_token = token_store.issue(&task.id).await;
+
         // Build prompt context — include agent_feedback if present
-        let ctx = build_run_context(&task, &config);
+        let ctx = build_run_context(&task, &config, Some(mcp_token.clone()));
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
         let backend = agent::build_agent(&agent_def);
 
-        // Run the agent backend
+        // Run the agent backend, then revoke the token regardless of outcome
         let result = backend.run(&task, &ctx).await;
+        token_store.revoke(&mcp_token).await;
 
         match result {
             Ok(agent_result) => {
@@ -325,6 +333,7 @@ async fn handle_agent_result(
                         repo_root: ctx.repo_root.clone(),
                         branch: ctx.branch.clone(),
                         resume_summary: Some(injection.clone()),
+                        mcp_token: ctx.mcp_token.clone(),
                     }
                 }
                 trope_blocker::Directive::RotateSession { ref summary } => {
@@ -340,6 +349,7 @@ async fn handle_agent_result(
                         repo_root: ctx.repo_root.clone(),
                         branch: ctx.branch.clone(),
                         resume_summary: Some(summary.clone()),
+                        mcp_token: ctx.mcp_token.clone(),
                     }
                 }
             };
@@ -469,10 +479,7 @@ async fn escalate_trope_block(
     review_queue.lock().await.enqueue(queue_item);
 }
 
-/// Build the RunContext for an agent invocation.
-/// Includes agent_feedback in the branch field as a signal (the actual prompt
-/// injection happens in the agent backend using the task's agent_feedback field).
-fn build_run_context(task: &Task, _config: &Config) -> RunContext {
+fn build_run_context(task: &Task, _config: &Config, mcp_token: Option<String>) -> RunContext {
     let branch = task
         .branch
         .clone()
@@ -484,6 +491,7 @@ fn build_run_context(task: &Task, _config: &Config) -> RunContext {
         repo_root: crate::state::home::repo_path(),
         branch,
         resume_summary,
+        mcp_token,
     }
 }
 
@@ -627,8 +635,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
 
         for role in AgentRole::all() {
@@ -645,8 +654,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
 
         for role in AgentRole::all() {
@@ -663,8 +673,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
 
         // Simulate blocked state
@@ -692,8 +703,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
         // All roles exist, so this just tests the method doesn't panic
         pool.signal(AgentRole::Infrarian);

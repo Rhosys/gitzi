@@ -103,6 +103,14 @@ impl KanbanBoard {
         Ok(())
     }
 
+    /// Add a new task to the board, placing it in the column matching its stage.
+    pub fn add_task(&mut self, task: Task) {
+        let column = task.stage.to_column();
+        self.columns.entry(column).or_default().push(task.id.clone());
+        self.tasks.insert(task.id.clone(), task);
+        self.sort_column(column);
+    }
+
     /// Update a task's priority and re-sort its column.
     pub fn set_priority(&mut self, task_id: &str, priority: u32) {
         if let Some(task) = self.tasks.get_mut(task_id) {

@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::agent::{build_main_agent, MainAgent};
 use crate::config::Config;
+use crate::mcp::auth::TokenStore;
 use crate::state::chat::{self as chat_store, ChatMessage};
 use crate::state::home;
 use crate::state::reader;
@@ -228,6 +229,8 @@ pub struct Dispatcher {
     pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
     /// The main coordination agent that drives the chat interface.
     pub main_agent: MainAgent,
+    /// Token store for MCP sub-agent authorization.
+    pub token_store: Arc<TokenStore>,
 }
 
 impl Dispatcher {
@@ -406,6 +409,148 @@ impl Dispatcher {
         Ok(())
     }
 
+    // ── gitzi_ management tools ───────────────────────────────────────────────
+
+    pub async fn gitzi_list_epics(&self) -> anyhow::Result<Vec<crate::model::Epic>> {
+        Ok(reader::load_all_epics()?)
+    }
+
+    pub async fn gitzi_list_tasks(&self, epic_id: Option<&str>) -> anyhow::Result<Vec<crate::model::Task>> {
+        let all = reader::load_all_tasks()?;
+        if let Some(id) = epic_id {
+            Ok(all.into_iter().filter(|t| t.epic == id).collect())
+        } else {
+            Ok(all)
+        }
+    }
+
+    pub async fn gitzi_get_adr(&self, id: &str) -> anyhow::Result<PersistedReviewItem> {
+        Ok(review::load_review_item(id)?)
+    }
+
+    pub async fn gitzi_create_epic(
+        &self,
+        title: String,
+        description: Option<String>,
+    ) -> anyhow::Result<crate::model::Epic> {
+        let id = crate::id::new_id(&title);
+        let mut epic = crate::model::Epic::new(&id, &title);
+        epic.description = description;
+        writer::write_epic(&epic)?;
+        Ok(epic)
+    }
+
+    pub async fn gitzi_create_task(
+        &self,
+        epic_id: String,
+        title: String,
+        description: Option<String>,
+        priority: Option<u32>,
+    ) -> anyhow::Result<crate::model::Task> {
+        let id = crate::id::new_id(&title);
+        let mut task = crate::model::Task::new(&id, &epic_id, &title);
+        task.description = description;
+        task.priority = priority.unwrap_or(100);
+        writer::write_task(&task)?;
+
+        // Update parent epic's task list on disk
+        if let Ok(mut epic) = reader::load_epic(&epic_id) {
+            epic.tasks.push(id.clone());
+            if let Err(e) = writer::write_epic(&epic) {
+                warn!(%epic_id, error = %e, "failed to update epic task list after create_task");
+            }
+        }
+
+        // Add to in-memory board and signal the prioritizer
+        {
+            let mut board = self.board.write().await;
+            board.add_task(task.clone());
+        }
+        self.event_bus.emit(DispatchEvent::TaskCreated { task_id: id.clone() });
+
+        Ok(task)
+    }
+
+    pub async fn gitzi_update_task(
+        &self,
+        task_id: &str,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> anyhow::Result<crate::model::Task> {
+        let mut task = reader::load_task(task_id)?;
+        if let Some(t) = title { task.title = t; }
+        if let Some(d) = description { task.description = Some(d); }
+        task.updated_at = chrono::Utc::now();
+        writer::write_task(&task)?;
+
+        // Sync in-memory board entry
+        {
+            let mut board = self.board.write().await;
+            if let Some(t) = board.task_mut(task_id) {
+                *t = task.clone();
+            }
+        }
+
+        Ok(task)
+    }
+
+    pub async fn gitzi_park_task(&self, task_id: &str, reason: String) -> anyhow::Result<()> {
+        let mut task = reader::load_task(task_id)?;
+        task.resume_summary = Some(reason);
+        task.updated_at = chrono::Utc::now();
+        writer::write_task(&task)?;
+
+        // Sync in-memory board entry
+        {
+            let mut board = self.board.write().await;
+            if let Some(t) = board.task_mut(task_id) {
+                t.resume_summary = task.resume_summary.clone();
+                t.updated_at = task.updated_at;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn gitzi_create_adr(
+        &self,
+        task_id: String,
+        question: String,
+        context: Option<String>,
+    ) -> anyhow::Result<PersistedReviewItem> {
+        let full_question = if let Some(ctx) = context {
+            format!("{question}\n\nContext:\n{ctx}")
+        } else {
+            question
+        };
+
+        // Use the same ID for both the persisted file and the in-memory queue item
+        let item_id = crate::id::new_id(&task_id);
+        let now = chrono::Utc::now();
+
+        let persisted = PersistedReviewItem {
+            id: item_id.clone(),
+            task_id: task_id.clone(),
+            kind: PersistedReviewKind::AgentQuestion { question: full_question.clone() },
+            created_at: now,
+            actions: Vec::new(),
+        };
+        review::write_review_item(&persisted)?;
+
+        // Enqueue in-memory with the same ID
+        {
+            let mut q = self.review_queue.lock().await;
+            q.enqueue(review_queue::HumanReviewItem {
+                id: item_id,
+                task_id: task_id.clone(),
+                kind: review_queue::ReviewItemKind::AgentQuestion { question: full_question },
+                created_at: now,
+            });
+        }
+
+        Ok(persisted)
+    }
+
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
     /// and signal agents whose columns contain work.
     pub async fn start(config: Config) -> anyhow::Result<Self> {
@@ -460,6 +605,7 @@ impl Dispatcher {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
         // 7. Spawn AgentPool
+        let token_store = Arc::new(TokenStore::new());
         let agent_pool = AgentPool::spawn(
             Arc::clone(&event_bus),
             Arc::clone(&board),
@@ -467,6 +613,7 @@ impl Dispatcher {
             Arc::clone(&wip_limits),
             Arc::clone(&wip_waiting),
             Arc::clone(&review_queue),
+            Arc::clone(&token_store),
         );
 
         // 8. Emit BootComplete
@@ -507,6 +654,7 @@ impl Dispatcher {
             wip_waiting,
             chat_history,
             main_agent,
+            token_store,
         })
     }
 
