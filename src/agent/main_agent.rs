@@ -1,64 +1,127 @@
-use serde::Deserialize;
-use tokio::process::Command;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 use crate::config::AgentDef;
 use crate::error::{GitziError, Result};
 use crate::state::chat::{ChatMessage, Role};
 
 pub struct MainAgent {
-    model: Option<String>,
+    client: Client,
+    base_url: String,
+    model: String,
     system_prompt: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct ClaudeOutput {
-    #[serde(rename = "type")]
-    #[allow(dead_code)]
-    kind: String,
-    result: Option<String>,
-    #[serde(default)]
-    is_error: bool,
+// ── OpenAI-compatible request/response types ──────────────────────────────────
+
+#[derive(Serialize)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
+
+#[derive(Serialize, Deserialize)]
+struct Message {
+    role: String,
+    content: String,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: Message,
+}
+
+// ── MainAgent ─────────────────────────────────────────────────────────────────
 
 impl MainAgent {
     pub fn new(def: &AgentDef) -> Self {
         Self {
-            model: Some(def.model.clone()),
-            system_prompt: def.system_prompt.clone().unwrap_or_else(default_system_prompt),
+            client: Client::new(),
+            base_url: def
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
+            model: def.model.clone(),
+            system_prompt: def
+                .system_prompt
+                .clone()
+                .unwrap_or_else(default_system_prompt),
         }
     }
 
-    /// Send a message and return the agent's response.
-    /// `history` contains prior turns (User + Agent messages only; System is skipped).
+    /// Send a user message and return the model's response.
+    /// History contains prior User + Agent turns; System messages are skipped.
     pub async fn chat(&self, history: &[ChatMessage], message: &str) -> Result<String> {
-        let prompt = build_prompt(&self.system_prompt, history, message);
+        let mut messages = vec![Message {
+            role: "system".to_string(),
+            content: self.system_prompt.clone(),
+        }];
 
-        let mut cmd = Command::new("claude");
-        cmd.args(["-p", "--output-format", "json"]);
-        if let Some(model) = &self.model {
-            cmd.args(["--model", model]);
-        }
-        cmd.arg(&prompt);
-
-        let output = cmd
-            .output()
-            .await
-            .map_err(|e| GitziError::AgentFailed(format!("failed to spawn claude: {e}")))?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        if let Ok(parsed) = serde_json::from_str::<ClaudeOutput>(stdout.trim()) {
-            if parsed.is_error {
-                return Err(GitziError::AgentFailed(
-                    parsed.result.unwrap_or_else(|| "unknown error".to_string()),
-                ));
-            }
-            Ok(parsed.result.unwrap_or_default())
-        } else if output.status.success() {
-            Ok(stdout.trim().to_string())
+        // Include the last 20 turns to keep context manageable
+        let recent = if history.len() > 20 {
+            &history[history.len() - 20..]
         } else {
-            Err(GitziError::AgentFailed(stdout.trim().to_string()))
+            history
+        };
+
+        for msg in recent {
+            let role = match msg.role {
+                Role::User => "user",
+                Role::Agent => "assistant",
+                Role::System => continue,
+            };
+            messages.push(Message {
+                role: role.to_string(),
+                content: msg.content.clone(),
+            });
         }
+
+        messages.push(Message {
+            role: "user".to_string(),
+            content: message.to_string(),
+        });
+
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let body = ChatRequest {
+            model: self.model.clone(),
+            messages,
+            temperature: None,
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| GitziError::AgentFailed(format!("LM Studio request failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GitziError::AgentFailed(format!(
+                "LM Studio returned {status}: {text}"
+            )));
+        }
+
+        let parsed: ChatResponse = resp
+            .json()
+            .await
+            .map_err(|e| GitziError::AgentFailed(format!("failed to parse LM Studio response: {e}")))?;
+
+        parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .ok_or_else(|| GitziError::AgentFailed("LM Studio returned empty choices".to_string()))
     }
 }
 
@@ -77,26 +140,4 @@ Rules:\n\
 - Never batch multiple questions\n\
 - Be concise: the user reads in a terminal"
         .to_string()
-}
-
-fn build_prompt(system_prompt: &str, history: &[ChatMessage], message: &str) -> String {
-    let mut prompt = format!("{system_prompt}\n\n");
-
-    // Include the last 20 turns so context stays manageable
-    let recent = if history.len() > 20 {
-        &history[history.len() - 20..]
-    } else {
-        history
-    };
-
-    for msg in recent {
-        match msg.role {
-            Role::User => prompt.push_str(&format!("User: {}\n\n", msg.content)),
-            Role::Agent => prompt.push_str(&format!("Assistant: {}\n\n", msg.content)),
-            Role::System => {} // system messages are context, not turns
-        }
-    }
-
-    prompt.push_str(&format!("User: {message}\n\nAssistant:"));
-    prompt
 }
