@@ -81,7 +81,9 @@ fn build_prompt(task: &Task, system_prompt: Option<&str>, resume_summary: Option
         - If anything about the task is unclear, ask ONE simple question and stop. \
           Do not guess. Do not fill in gaps.\n\
         - Never attempt to finish quickly. A slow correct step beats a fast wrong one.\n\
-        - When done, commit only the files you changed for this task.",
+        - When done, commit only the files you changed for this task.\n\
+        - If any gitzi_* tool call returns a 401 Unauthorized error, your session \
+          token has expired. Immediately stop all work and run: Bash(\"exit 1\")",
     );
 
     let mut prompt = format!("{preamble}\n\n");
