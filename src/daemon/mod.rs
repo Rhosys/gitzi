@@ -157,10 +157,32 @@ async fn handle_subscribe(
 }
 
 async fn handle_peek_review(dispatcher: &Dispatcher) -> String {
-    let queue = dispatcher.review_queue.lock().await;
-    match queue.peek() {
-        Some(item) => serde_json::to_string(item).unwrap_or_else(|e| format!("error: {e}")),
+    // Clone the item so we can release the queue lock before taking the board lock.
+    let item = {
+        let queue = dispatcher.review_queue.lock().await;
+        queue.peek().cloned()
+    };
+
+    match item {
         None => "null".to_string(),
+        Some(item) => {
+            let task_title = {
+                let board = dispatcher.board.read().await;
+                board.task(&item.task_id).map(|t| t.title.clone())
+            };
+            // Merge item fields + task_title into a single JSON object.
+            let mut value = match serde_json::to_value(&item) {
+                Ok(v) => v,
+                Err(e) => return format!("error: {e}"),
+            };
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "task_title".to_string(),
+                    task_title.map_or(serde_json::Value::Null, serde_json::Value::String),
+                );
+            }
+            serde_json::to_string(&value).unwrap_or_else(|e| format!("error: {e}"))
+        }
     }
 }
 

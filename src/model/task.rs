@@ -117,6 +117,13 @@ pub enum HistoryEntry {
         feedback: String,
         returned_to: Stage,
     },
+    /// An agent question was answered by the user. Stored permanently so the
+    /// decision context survives across sessions and can be surfaced again.
+    Decision {
+        at: DateTime<Utc>,
+        question: String,
+        answer: String,
+    },
 }
 
 /// Legacy struct kept for backward compatibility with code that constructs transitions directly.

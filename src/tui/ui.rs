@@ -244,11 +244,25 @@ fn draw_review_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Task ID
-    lines.push(Line::from(vec![
-        Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&item.task_id, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-    ]));
+    // Task title (preferred) or ID as fallback
+    if let Some(ref title) = item.task_title {
+        lines.push(Line::from(Span::styled(
+            title.as_str(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("id: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                item.task_id.get(..8).unwrap_or(&item.task_id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&item.task_id, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]));
+    }
     lines.push(Line::from(""));
 
     match &item.kind {
