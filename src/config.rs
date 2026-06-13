@@ -52,6 +52,10 @@ pub struct AgentDef {
     pub role: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// Base URL of the OpenAI-compatible API endpoint.
+    /// Defaults to `http://localhost:1234/v1` (LM Studio).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     /// System prompt sent before every task. Falls back to a sensible built-in default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -62,6 +66,7 @@ impl Default for AgentDef {
         Self {
             role: "developer".to_string(),
             model: default_model(),
+            base_url: None,
             system_prompt: None,
         }
     }
@@ -72,7 +77,8 @@ impl AgentDef {
     pub fn default_main() -> Self {
         Self {
             role: "main".to_string(),
-            model: "claude-opus-4-8".to_string(),
+            model: "local-model".to_string(),
+            base_url: Some("http://localhost:1234/v1".to_string()),
             system_prompt: Some(
                 "You are the main coordination agent for gitzi, an AI-driven software \
                  development pipeline. Help the user manage their project through natural \
@@ -216,6 +222,7 @@ mod tests {
                 .map(|(i, (role, _))| AgentDef {
                     role: role.to_string(),
                     model: custom_models[i % custom_models.len()].clone(),
+                    base_url: None,
                     system_prompt: Some(custom_prompts[i % custom_prompts.len()].clone()),
                 })
                 .collect();
@@ -283,6 +290,7 @@ mod tests {
                 agents: vec![AgentDef {
                     role: role_name.clone(),
                     model: "claude-sonnet-4-6".to_string(),
+                    base_url: None,
                     system_prompt: None,
                 }],
                 ..Config::default()
