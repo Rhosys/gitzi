@@ -12,6 +12,11 @@ pub fn global_config_file() -> PathBuf {
     gitzi_home().join("config.toml")
 }
 
+/// Unix socket path for the MCP HTTP server: `~/.gitzi/mcp.sock`.
+pub fn mcp_socket_path() -> PathBuf {
+    gitzi_home().join("mcp.sock")
+}
+
 /// Path to the file that records the active session ID.
 pub fn current_session_file() -> PathBuf {
     gitzi_home().join("current")

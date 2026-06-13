@@ -43,6 +43,10 @@ impl AgentBackend for ClaudeCodeCli {
         cmd.arg(&prompt)
             .current_dir(&ctx.repo_root)
             .env("GIT_BRANCH", &ctx.branch);
+        if let Some(token) = &ctx.mcp_token {
+            cmd.env("GITZI_MCP_TOKEN", token);
+            cmd.env("GITZI_MCP_SOCKET", crate::state::home::mcp_socket_path().to_string_lossy().as_ref());
+        }
 
         let output = cmd.output().await
             .map_err(|e| GitziError::AgentFailed(format!("failed to spawn claude: {e}")))?;

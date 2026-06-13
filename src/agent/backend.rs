@@ -9,6 +9,9 @@ pub struct RunContext {
     /// Work state summary from a previous session (branch commits, diff stats).
     /// Populated on boot resume when recoverable state is found.
     pub resume_summary: Option<String>,
+    /// Bearer token for the MCP server. Injected as `GITZI_MCP_TOKEN` env var
+    /// when spawning agent subprocesses.
+    pub mcp_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]

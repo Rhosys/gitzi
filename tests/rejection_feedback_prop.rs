@@ -47,6 +47,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
     let wip_limits = Arc::new(WipLimits::default());
     let wip_waiting = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
+    let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
     let agent_pool = AgentPool::spawn(
         Arc::clone(&event_bus),
         Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![]))),
@@ -54,6 +55,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         Arc::clone(&wip_limits),
         Arc::clone(&wip_waiting),
         Arc::clone(&review_queue),
+        Arc::clone(&token_store),
     );
 
     let main_agent_def = config.resolve_agent("main");
@@ -69,6 +71,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         wip_waiting,
         chat_history: Arc::new(Mutex::new(vec![])),
         main_agent,
+        token_store,
     }
 }
 
