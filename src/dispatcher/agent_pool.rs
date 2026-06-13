@@ -208,11 +208,35 @@ async fn agent_loop(
 
         info!(%role, task_id = %task.id, "processing task");
 
+        // Determine branch name, creating it if this is the first pick-up.
+        let branch = task.branch.clone().unwrap_or_else(|| task.branch_name());
+
+        // Persist the branch name back to disk and in-memory board if it was
+        // just generated (task.branch was None). resume_context() needs it on
+        // restart; without this it silently falls back to no resume summary.
+        if task.branch.is_none() {
+            {
+                let mut b = board.write().await;
+                if let Some(t) = b.task_mut(&task.id) {
+                    t.branch = Some(branch.clone());
+                }
+            }
+            let mut disk_task = task.clone();
+            disk_task.branch = Some(branch.clone());
+            if let Err(e) = write_task(&disk_task) {
+                warn!(task_id = %task.id, error = %e, "failed to persist branch name");
+            }
+        }
+
+        // Create or reuse the worktree for this task. Each agent runs in its
+        // own checkout so concurrent tasks never share a working tree.
+        let worktree_root = setup_task_worktree(&task.id, &branch);
+
         // Issue a scoped MCP token for this agent session
         let mcp_token = token_store.issue(&task.id).await;
 
         // Build prompt context — include agent_feedback if present
-        let ctx = build_run_context(&task, &config, Some(mcp_token.clone()));
+        let ctx = build_run_context(&task, worktree_root, branch.clone(), Some(mcp_token.clone()));
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
@@ -479,19 +503,40 @@ async fn escalate_trope_block(
     review_queue.lock().await.enqueue(queue_item);
 }
 
-fn build_run_context(task: &Task, _config: &Config, mcp_token: Option<String>) -> RunContext {
-    let branch = task
-        .branch
-        .clone()
-        .unwrap_or_else(|| task.branch_name());
-
+fn build_run_context(task: &Task, worktree_root: std::path::PathBuf, branch: String, mcp_token: Option<String>) -> RunContext {
     let resume_summary = resume_context(task);
+    RunContext { repo_root: worktree_root, branch, resume_summary, mcp_token }
+}
 
-    RunContext {
-        repo_root: crate::state::home::repo_path(),
-        branch,
-        resume_summary,
-        mcp_token,
+/// Create or reuse the worktree for a task, returning its path.
+/// Falls back to the main repo root if setup fails (no git repo, bare repo, etc.).
+fn setup_task_worktree(task_id: &str, branch_name: &str) -> std::path::PathBuf {
+    let main_repo_root = crate::state::home::repo_path();
+
+    let repo = match ops::open_repo(&main_repo_root) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(task_id, "cannot open repo for worktree setup: {e}");
+            return main_repo_root;
+        }
+    };
+
+    // Derive a stable slug from the repo directory name for the path component.
+    let repo_slug = main_repo_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .to_string();
+
+    match ops::TaskWorktree::create(&repo, task_id, branch_name, &repo_slug) {
+        Ok(wt) => {
+            info!(task_id, branch = branch_name, path = %wt.path.display(), "worktree ready");
+            wt.path
+        }
+        Err(e) => {
+            warn!(task_id, branch = branch_name, "worktree setup failed, falling back to main repo: {e}");
+            main_repo_root
+        }
     }
 }
 
