@@ -28,6 +28,9 @@ pub struct ReviewItem {
     pub id: String,
     pub task_id: String,
     pub kind: ReviewItemKind,
+    /// Human-readable task title looked up by the daemon at serialization time.
+    #[serde(default)]
+    pub task_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
