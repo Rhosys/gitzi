@@ -11,7 +11,10 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
+use crate::agent::{build_main_agent, MainAgent};
 use crate::config::Config;
+use crate::state::chat::{self as chat_store, ChatMessage};
+use crate::state::home;
 use crate::state::reader;
 use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind, ReviewAction};
 use crate::state::writer;
@@ -210,7 +213,7 @@ impl std::fmt::Display for AgentRole {
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 /// Central orchestration struct. Owns the event bus, board projection,
-/// review queue, agent pool, and WIP limits. Replaces the polling Scheduler.
+/// review queue, agent pool, WIP limits, and the main chat harness.
 pub struct Dispatcher {
     pub event_bus: Arc<EventBus>,
     pub board: Arc<RwLock<KanbanBoard>>,
@@ -220,6 +223,10 @@ pub struct Dispatcher {
     pub wip_limits: Arc<WipLimits>,
     /// Agents waiting to advance into a full column.
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
+    /// Persistent chat history (in-memory mirror of chat.jsonl).
+    pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
+    /// The main coordination agent that drives the chat interface.
+    pub main_agent: MainAgent,
 }
 
 impl Dispatcher {
@@ -452,6 +459,18 @@ impl Dispatcher {
             }
         }
 
+        // 10. Load chat history from disk
+        let chat_history = {
+            let path = home::chat_file().unwrap_or_else(|_| std::path::PathBuf::from("/tmp/gitzi-chat.jsonl"));
+            let messages = chat_store::load(&path).unwrap_or_default();
+            info!(messages = messages.len(), "loaded chat history from disk");
+            Arc::new(Mutex::new(messages))
+        };
+
+        // 11. Build main agent from config
+        let main_agent_def = config.resolve_agent("main");
+        let main_agent = build_main_agent(&main_agent_def);
+
         Ok(Self {
             event_bus,
             board,
@@ -460,7 +479,35 @@ impl Dispatcher {
             config,
             wip_limits,
             wip_waiting,
+            chat_history,
+            main_agent,
         })
+    }
+
+    /// Process a user chat message: run the main agent and persist both turns.
+    pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
+        let history = self.chat_history.lock().await.clone();
+
+        let response = self
+            .main_agent
+            .chat(&history, message)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        // Persist both turns to disk
+        if let Ok(path) = home::chat_file() {
+            let user_msg = ChatMessage::user(message);
+            let agent_msg = ChatMessage::agent(&response);
+            chat_store::append(&path, &user_msg).ok();
+            chat_store::append(&path, &agent_msg).ok();
+
+            // Mirror in memory
+            let mut hist = self.chat_history.lock().await;
+            hist.push(user_msg);
+            hist.push(agent_msg);
+        }
+
+        Ok(response)
     }
 
     /// Main event loop — subscribes to the bus and reacts to each event variant.

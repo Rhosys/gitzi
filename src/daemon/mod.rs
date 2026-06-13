@@ -110,6 +110,13 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             cmd if cmd.starts_with("answer ") => {
                 handle_answer(&dispatcher, cmd.strip_prefix("answer ").unwrap().trim()).await
             }
+            cmd if cmd.starts_with("chat ") => {
+                let encoded = cmd.strip_prefix("chat ").unwrap().trim();
+                let message: String = serde_json::from_str(encoded)
+                    .unwrap_or_else(|_| encoded.to_string());
+                handle_chat(&dispatcher, &message).await
+            }
+            "chat_history" => handle_chat_history(&dispatcher).await,
             other => format!("error: unknown command '{other}'"),
         };
         if writer.write_all(format!("{response}\n").as_bytes()).await.is_err() {
@@ -215,6 +222,23 @@ async fn handle_answer(dispatcher: &Dispatcher, args: &str) -> String {
         Ok(()) => "ok".to_string(),
         Err(e) => format!("error: {e}"),
     }
+}
+
+/// Run the user's chat message through the main agent, return JSON-encoded response.
+async fn handle_chat(dispatcher: &Dispatcher, message: &str) -> String {
+    match dispatcher.chat(message).await {
+        Ok(response) => serde_json::to_string(&response)
+            .unwrap_or_else(|e| format!("\"error serializing: {e}\"")),
+        Err(e) => serde_json::to_string(&format!("Error: {e}"))
+            .unwrap_or_else(|_| "\"error\"".to_string()),
+    }
+}
+
+/// Return the full chat history as a JSON array.
+async fn handle_chat_history(dispatcher: &Dispatcher) -> String {
+    let history = dispatcher.chat_history.lock().await;
+    serde_json::to_string(&*history)
+        .unwrap_or_else(|_| "[]".to_string())
 }
 
 // ── Service registration (systemd / launchd) ─────────────────────────────────
