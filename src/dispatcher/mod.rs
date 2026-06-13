@@ -356,44 +356,45 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Answer an agent's question: dequeue the review item, store the Q&A in the
-    /// task's history permanently, and unblock the waiting agent.
+    /// Answer an agent's question: dequeue the review item, persist the answer on the
+    /// review item, and unblock the waiting agent.
     pub async fn answer_question(&self, item_id: &str, answer: String) -> anyhow::Result<()> {
-        // Dequeue the item from the review queue
+        // Dequeue the item from the in-memory review queue
         let item = {
             let mut queue = self.review_queue.lock().await;
             queue.dequeue(item_id)
                 .ok_or_else(|| anyhow::anyhow!("review item '{item_id}' not found in queue"))?
         };
 
-        // Extract the question text from the item kind
-        let question = match &item.kind {
-            review_queue::ReviewItemKind::AgentQuestion { question } => question.clone(),
+        // Validate it's a question, not a buffer approval
+        match &item.kind {
+            review_queue::ReviewItemKind::AgentQuestion { .. } => {}
             review_queue::ReviewItemKind::BufferApproval { .. } => {
                 anyhow::bail!("review item '{item_id}' is a buffer approval, not a question");
             }
-        };
+        }
 
-        // Determine which agent role is blocked (from task's current column)
-        // and store the Q&A in the task's history
-        let role = {
-            let mut board = self.board.write().await;
-            let task = board.task_mut(&item.task_id)
-                .ok_or_else(|| anyhow::anyhow!("task '{}' not found on board", item.task_id))?;
-
-            // Append decision to task history
-            task.history.push(crate::model::task::HistoryEntry::Decision {
-                at: chrono::Utc::now(),
-                question: question.clone(),
-                answer: answer.clone(),
-            });
-            task.updated_at = chrono::Utc::now();
-
-            // Persist the updated task to disk
-            if let Err(e) = writer::write_task(task) {
-                warn!(task_id = %item.task_id, error = %e, "failed to persist decision to task");
+        // Persist the answer on the review item (not the task)
+        match review::load_review_item(item_id) {
+            Ok(mut persisted) => {
+                persisted.actions.push(ReviewAction::Answer {
+                    at: chrono::Utc::now(),
+                    content: answer.clone(),
+                });
+                if let Err(e) = review::write_review_item(&persisted) {
+                    warn!(%item_id, error = %e, "failed to persist answer to review item");
+                }
             }
+            Err(e) => {
+                warn!(%item_id, error = %e, "failed to load review item for answer persistence");
+            }
+        }
 
+        // Determine which agent role is blocked (read-only board access)
+        let role = {
+            let board = self.board.read().await;
+            let task = board.task(&item.task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{}' not found on board", item.task_id))?;
             let col = task.stage.to_column();
             col.agent_role()
                 .ok_or_else(|| anyhow::anyhow!("task '{}' is in column {col} which has no agent", item.task_id))?
