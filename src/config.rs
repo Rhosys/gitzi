@@ -67,6 +67,24 @@ impl Default for AgentDef {
     }
 }
 
+impl AgentDef {
+    /// Hardcoded default for the `role = "main"` chat harness agent.
+    pub fn default_main() -> Self {
+        Self {
+            role: "main".to_string(),
+            model: "claude-opus-4-8".to_string(),
+            system_prompt: Some(
+                "You are the main coordination agent for gitzi, an AI-driven software \
+                 development pipeline. Help the user manage their project through natural \
+                 conversation. Create and refine epics, tasks, and work items. Surface what \
+                 needs attention. Keep work moving. Never write code directly. \
+                 Ask one question at a time — never more."
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 fn default_model() -> String { "claude-sonnet-4-6".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,7 +153,9 @@ impl Config {
 
     /// Validate config on load. Returns error for unknown role names.
     pub fn validate(&self) -> Result<()> {
-        let valid_roles: Vec<String> = AgentRole::all().iter().map(|r| r.to_string()).collect();
+        let mut valid_roles: Vec<String> =
+            AgentRole::all().iter().map(|r| r.to_string()).collect();
+        valid_roles.push("main".to_string());
         for agent in &self.agents {
             if !valid_roles.contains(&agent.role) {
                 return Err(GitziError::Config(format!(
@@ -154,6 +174,9 @@ impl Config {
             .find(|a| a.role == role)
             .cloned()
             .unwrap_or_else(|| {
+                if role == "main" {
+                    return AgentDef::default_main();
+                }
                 AgentRole::all()
                     .iter()
                     .find(|r| r.to_string() == role)
@@ -248,10 +271,10 @@ mod tests {
         #[test]
         fn config_role_validation_rejects_unknown_roles(
             role_name in "[a-zA-Z0-9_-]{1,30}"
-                .prop_filter("must not match any valid AgentRole display name", |s| {
+                .prop_filter("must not match any valid role name", |s| {
                     let valid = [
                         "prioritizer", "designer", "coder",
-                        "reviewer", "tester", "auditor", "infrarian",
+                        "reviewer", "tester", "auditor", "infrarian", "main",
                     ];
                     !valid.contains(&s.as_str())
                 })

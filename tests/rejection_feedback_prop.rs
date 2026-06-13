@@ -56,6 +56,9 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         Arc::clone(&review_queue),
     );
 
+    let main_agent_def = config.resolve_agent("main");
+    let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
+
     Dispatcher {
         event_bus,
         board,
@@ -64,6 +67,8 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         config,
         wip_limits,
         wip_waiting,
+        chat_history: Arc::new(Mutex::new(vec![])),
+        main_agent,
     }
 }
 
