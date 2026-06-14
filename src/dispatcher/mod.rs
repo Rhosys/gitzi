@@ -675,10 +675,51 @@ impl Dispatcher {
     }
 
     /// Process a user chat message through the main agent tool calling loop.
+    ///
+    /// On every turn we first peek the review queue. If an item is pending we
+    /// switch the side panel to the review view and inject queue context into
+    /// the LLM message so the agent surfaces it. Only the original user message
+    /// (without injected context) is persisted to chat history.
     pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
-        let history = self.chat_history.lock().await.clone();
-        let mut messages = MainAgent::history_to_messages(&history, message);
+        // 1. Peek review queue (lock released immediately after clone)
+        let pending_review = {
+            let queue = self.review_queue.lock().await;
+            queue.peek().cloned()
+        };
 
+        // 2. Switch side panel when something needs human attention
+        if pending_review.is_some() {
+            self.gitzi_switch_panel("review".to_string()).await;
+        }
+
+        // 3. Build context-augmented message for the LLM
+        let llm_message = if let Some(ref item) = pending_review {
+            let task_title = {
+                let board = self.board.read().await;
+                board.task(&item.task_id)
+                    .map(|t| t.title.clone())
+                    .unwrap_or_else(|| item.task_id.clone())
+            };
+            let kind_summary = match &item.kind {
+                review_queue::ReviewItemKind::AgentQuestion { question } => {
+                    format!("agent question: {question}")
+                }
+                review_queue::ReviewItemKind::BufferApproval { buffer_column, .. } => {
+                    format!("needs approval to advance past {buffer_column}")
+                }
+            };
+            format!(
+                "[Review queue] Task \"{task_title}\" needs attention: {kind_summary}\n\nUser: {message}"
+            )
+        } else {
+            message.to_string()
+        };
+
+        // 4. Build messages from history + (possibly augmented) user message
+        let history = self.chat_history.lock().await.clone();
+        let mut messages = MainAgent::history_to_messages(&history, &llm_message);
+
+        // 5. Tool-calling loop
         let final_response = loop {
             let (raw_assistant, turn) = self
                 .main_agent
@@ -708,14 +749,13 @@ impl Dispatcher {
             }
         };
 
-        // Persist both turns to disk
+        // 6. Persist original user message (not augmented) and agent response
         if let Ok(path) = home::chat_file() {
             let user_msg = ChatMessage::user(message);
             let agent_msg = ChatMessage::agent(&final_response);
             chat_store::append(&path, &user_msg).ok();
             chat_store::append(&path, &agent_msg).ok();
 
-            // Mirror in memory
             let mut hist = self.chat_history.lock().await;
             hist.push(user_msg);
             hist.push(agent_msg);
