@@ -222,12 +222,12 @@ fn main_agent_tools() -> Vec<OaiTool> {
         OaiTool {
             r#type: "function",
             function: OaiFunctionDef {
-                name: "gitzi_get_adr",
-                description: "Retrieve a single Architecture Decision Record (ADR) by its ID.",
+                name: "gitzi_get_review_item",
+                description: "Retrieve a single review item by its ID. Returns the question, context, and any actions taken on it.",
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "The unique ID of the ADR to retrieve." }
+                        "id": { "type": "string", "description": "The unique ID of the review item to retrieve." }
                     },
                     "required": ["id"]
                 }),

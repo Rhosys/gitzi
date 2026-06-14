@@ -12,7 +12,7 @@ use crate::dispatcher::Dispatcher;
 ///
 /// The caller is expected to have already validated the Bearer token and
 /// produced a `TokenEntry` before calling this function.  For write operations
-/// that are scoped to a specific task (`gitzi_create_adr`, `gitzi_update_task`,
+/// that are scoped to a specific task (`gitzi_create_review_item`, `gitzi_update_task`,
 /// `gitzi_park_task`) the `entry.task_id` must match the `task_id` argument
 /// supplied by the agent.
 ///
@@ -49,15 +49,15 @@ pub async fn dispatch(
             Ok(serde_json::to_value(tasks).unwrap_or(Value::Null))
         }
 
-        "gitzi_get_adr" => {
+        "gitzi_get_review_item" => {
             let id = args
                 .get("id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "missing required argument: id".to_string())?;
             let adr = dispatcher
-                .gitzi_get_adr(id)
+                .gitzi_get_review_item(id)
                 .await
-                .map_err(|e| format!("gitzi_get_adr failed: {e}"))?;
+                .map_err(|e| format!("gitzi_get_review_item failed: {e}"))?;
             Ok(serde_json::to_value(adr).unwrap_or(Value::Null))
         }
 
@@ -91,7 +91,7 @@ pub async fn dispatch(
 
         // ── Write operations scoped to the agent's assigned task ─────────────
 
-        "gitzi_create_adr" => {
+        "gitzi_create_review_item" => {
             let task_id = args
                 .get("task_id")
                 .and_then(Value::as_str)
@@ -112,9 +112,9 @@ pub async fn dispatch(
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let adr = dispatcher
-                .gitzi_create_adr(task_id.to_string(), question, context)
+                .gitzi_create_review_item(task_id.to_string(), question, context)
                 .await
-                .map_err(|e| format!("gitzi_create_adr failed: {e}"))?;
+                .map_err(|e| format!("gitzi_create_review_item failed: {e}"))?;
             Ok(serde_json::to_value(adr).unwrap_or(Value::Null))
         }
 

@@ -422,7 +422,7 @@ impl Dispatcher {
         }
     }
 
-    pub async fn gitzi_get_adr(&self, id: &str) -> anyhow::Result<PersistedReviewItem> {
+    pub async fn gitzi_get_review_item(&self, id: &str) -> anyhow::Result<PersistedReviewItem> {
         Ok(review::load_review_item(id)?)
     }
 
@@ -528,7 +528,7 @@ impl Dispatcher {
         self.event_bus.emit(DispatchEvent::PanelSwitch { view });
     }
 
-    pub async fn gitzi_create_adr(
+    pub async fn gitzi_create_review_item(
         &self,
         task_id: String,
         question: String,
@@ -878,7 +878,7 @@ impl Dispatcher {
                 }
             }
 
-            "gitzi_get_adr" => {
+            "gitzi_get_review_item" => {
                 let id = args
                     .get("id")
                     .and_then(serde_json::Value::as_str)
@@ -887,8 +887,8 @@ impl Dispatcher {
                 if id.is_empty() {
                     return "error: missing required argument: id".to_string();
                 }
-                match self.gitzi_get_adr(&id).await {
-                    Ok(adr) => serde_json::to_string(&adr).unwrap_or_else(|_| "{}".to_string()),
+                match self.gitzi_get_review_item(&id).await {
+                    Ok(item) => serde_json::to_string(&item).unwrap_or_else(|_| "{}".to_string()),
                     Err(e) => format!("error: {e}"),
                 }
             }
