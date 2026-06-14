@@ -263,10 +263,9 @@ impl Dispatcher {
         // Persist task to disk
         {
             let board = self.board.read().await;
-            if let Some(task) = board.task(task_id) {
-                if let Err(e) = writer::write_task(task) {
-                    warn!(%task_id, error = %e, "failed to persist task after approval");
-                }
+            if let Some(task) = board.task(task_id)
+                && let Err(e) = writer::write_task(task) {
+                warn!(%task_id, error = %e, "failed to persist task after approval");
             }
         }
 
@@ -326,10 +325,9 @@ impl Dispatcher {
         // Persist task to disk
         {
             let board = self.board.read().await;
-            if let Some(task) = board.task(task_id) {
-                if let Err(e) = writer::write_task(task) {
-                    warn!(%task_id, error = %e, "failed to persist task after rejection");
-                }
+            if let Some(task) = board.task(task_id)
+                && let Err(e) = writer::write_task(task) {
+                warn!(%task_id, error = %e, "failed to persist task after rejection");
             }
         }
 
