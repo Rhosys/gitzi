@@ -11,7 +11,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-use crate::agent::{build_main_agent, MainAgent};
+use crate::agent::{build_main_agent, ChatTurn, MainAgent, OaiMessage};
 use crate::config::Config;
 use crate::mcp::auth::TokenStore;
 use crate::state::chat::{self as chat_store, ChatMessage};
@@ -524,6 +524,10 @@ impl Dispatcher {
         Ok(())
     }
 
+    pub async fn gitzi_switch_panel(&self, view: String) {
+        self.event_bus.emit(DispatchEvent::PanelSwitch { view });
+    }
+
     pub async fn gitzi_create_adr(
         &self,
         task_id: String,
@@ -670,20 +674,44 @@ impl Dispatcher {
         })
     }
 
-    /// Process a user chat message: run the main agent and persist both turns.
+    /// Process a user chat message through the main agent tool calling loop.
     pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
         let history = self.chat_history.lock().await.clone();
+        let mut messages = MainAgent::history_to_messages(&history, message);
 
-        let response = self
-            .main_agent
-            .chat(&history, message)
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let final_response = loop {
+            let (raw_assistant, turn) = self
+                .main_agent
+                .turn(&messages)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            match turn {
+                ChatTurn::Text(text) => break text,
+                ChatTurn::ToolCalls(calls) => {
+                    // Add assistant message (with tool_calls) to conversation
+                    messages.push(raw_assistant);
+
+                    // Execute each tool and add the result
+                    for call in &calls {
+                        let result = self
+                            .execute_main_agent_tool(&call.name, &call.arguments)
+                            .await;
+                        messages.push(OaiMessage {
+                            role: "tool".to_string(),
+                            content: Some(result),
+                            tool_calls: vec![],
+                            tool_call_id: Some(call.id.clone()),
+                        });
+                    }
+                }
+            }
+        };
 
         // Persist both turns to disk
         if let Ok(path) = home::chat_file() {
             let user_msg = ChatMessage::user(message);
-            let agent_msg = ChatMessage::agent(&response);
+            let agent_msg = ChatMessage::agent(&final_response);
             chat_store::append(&path, &user_msg).ok();
             chat_store::append(&path, &agent_msg).ok();
 
@@ -693,7 +721,180 @@ impl Dispatcher {
             hist.push(agent_msg);
         }
 
-        Ok(response)
+        Ok(final_response)
+    }
+
+    /// Dispatch a tool call from the main agent to the appropriate Dispatcher method.
+    async fn execute_main_agent_tool(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> String {
+        match name {
+            "gitzi_create_epic" => {
+                let title = args
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if title.is_empty() {
+                    return "error: missing required argument: title".to_string();
+                }
+                let description = args
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                match self.gitzi_create_epic(title, description).await {
+                    Ok(epic) => serde_json::to_string(&epic).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_prioritize_task" => {
+                let task_id = args
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let priority = args
+                    .get("priority")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|v| v as u32);
+                if task_id.is_empty() {
+                    return "error: missing required argument: task_id".to_string();
+                }
+                let priority = match priority {
+                    Some(p) => p,
+                    None => return "error: missing required argument: priority".to_string(),
+                };
+                match self.gitzi_prioritize_task(&task_id, priority).await {
+                    Ok(task) => serde_json::to_string(&task).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_switch_panel" => {
+                let view = args
+                    .get("view")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if view.is_empty() {
+                    return "error: missing required argument: view".to_string();
+                }
+                self.gitzi_switch_panel(view).await;
+                r#"{"ok":true}"#.to_string()
+            }
+
+            "gitzi_create_task" => {
+                let epic_id = args
+                    .get("epic_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let title = args
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if epic_id.is_empty() {
+                    return "error: missing required argument: epic_id".to_string();
+                }
+                if title.is_empty() {
+                    return "error: missing required argument: title".to_string();
+                }
+                let description = args
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let priority = args
+                    .get("priority")
+                    .and_then(serde_json::Value::as_u64)
+                    .map(|v| v as u32);
+                match self.gitzi_create_task(epic_id, title, description, priority).await {
+                    Ok(task) => serde_json::to_string(&task).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_update_task" => {
+                let task_id = args
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if task_id.is_empty() {
+                    return "error: missing required argument: task_id".to_string();
+                }
+                let title = args
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let description = args
+                    .get("description")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                match self.gitzi_update_task(&task_id, title, description).await {
+                    Ok(task) => serde_json::to_string(&task).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_park_task" => {
+                let task_id = args
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let reason = args
+                    .get("reason")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if task_id.is_empty() {
+                    return "error: missing required argument: task_id".to_string();
+                }
+                if reason.is_empty() {
+                    return "error: missing required argument: reason".to_string();
+                }
+                match self.gitzi_park_task(&task_id, reason).await {
+                    Ok(()) => r#"{"ok":true}"#.to_string(),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_list_epics" => match self.gitzi_list_epics().await {
+                Ok(epics) => serde_json::to_string(&epics).unwrap_or_else(|_| "[]".to_string()),
+                Err(e) => format!("error: {e}"),
+            },
+
+            "gitzi_list_tasks" => {
+                let epic_id = args
+                    .get("epic_id")
+                    .and_then(serde_json::Value::as_str);
+                match self.gitzi_list_tasks(epic_id).await {
+                    Ok(tasks) => serde_json::to_string(&tasks).unwrap_or_else(|_| "[]".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_get_adr" => {
+                let id = args
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if id.is_empty() {
+                    return "error: missing required argument: id".to_string();
+                }
+                match self.gitzi_get_adr(&id).await {
+                    Ok(adr) => serde_json::to_string(&adr).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            other => format!("error: unknown tool: {other}"),
+        }
     }
 
     /// Main event loop — subscribes to the bus and reacts to each event variant.
@@ -800,6 +1001,10 @@ impl Dispatcher {
                 DispatchEvent::BootComplete => {
                     // Already handled in start() — no-op here.
                     info!("boot complete event received in run loop");
+                }
+
+                DispatchEvent::PanelSwitch { .. } => {
+                    // TUI-only event — no-op in dispatcher run loop.
                 }
             }
         }

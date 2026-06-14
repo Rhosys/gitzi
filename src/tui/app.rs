@@ -146,6 +146,7 @@ pub enum DaemonMessage {
     ChatHistory(Vec<ChatEntry>),
     ChatResponse(String),
     Event(String),  // raw JSON line from subscribe stream
+    SwitchPanel(String),
     Connected,
     Disconnected(String),
     CommandResult(std::result::Result<String, String>),
@@ -186,6 +187,15 @@ impl App {
             self.mode = Mode::Review;
         } else if self.review_item.is_none() && self.mode == Mode::Review {
             self.mode = Mode::Idle;
+        }
+    }
+
+    /// Apply a panel switch command from the main agent.
+    pub fn apply_panel_switch(&mut self, view: &str) {
+        match view {
+            "board" => self.mode = Mode::Idle,
+            "review" => self.mode = Mode::Review,
+            _ => {} // ignore unknown views
         }
     }
 
