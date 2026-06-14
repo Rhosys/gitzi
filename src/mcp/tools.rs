@@ -78,6 +78,25 @@ pub async fn dispatch(
             Ok(serde_json::to_value(adr).unwrap_or(Value::Null))
         }
 
+        // ── Priority (no ownership check — main agent sets ordering) ─────────
+
+        "gitzi_prioritize_task" => {
+            let task_id = args
+                .get("task_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing required argument: task_id".to_string())?;
+            let priority = args
+                .get("priority")
+                .and_then(Value::as_u64)
+                .ok_or_else(|| "missing required argument: priority".to_string())?
+                as u32;
+            let task = dispatcher
+                .gitzi_prioritize_task(task_id, priority)
+                .await
+                .map_err(|e| format!("gitzi_prioritize_task failed: {e}"))?;
+            Ok(serde_json::to_value(task).unwrap_or(Value::Null))
+        }
+
         // ── Create task (no ownership check — creates a *new* task) ──────────
 
         "gitzi_create_task" => {
