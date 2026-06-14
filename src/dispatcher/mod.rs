@@ -492,6 +492,20 @@ impl Dispatcher {
         Ok(task)
     }
 
+    pub async fn gitzi_prioritize_task(&self, task_id: &str, priority: u32) -> anyhow::Result<crate::model::Task> {
+        let mut task = reader::load_task(task_id)?;
+        task.priority = priority;
+        task.updated_at = chrono::Utc::now();
+        writer::write_task(&task)?;
+
+        {
+            let mut board = self.board.write().await;
+            board.set_priority(task_id, priority);
+        }
+
+        Ok(task)
+    }
+
     pub async fn gitzi_park_task(&self, task_id: &str, reason: String) -> anyhow::Result<()> {
         let mut task = reader::load_task(task_id)?;
         task.resume_summary = Some(reason);

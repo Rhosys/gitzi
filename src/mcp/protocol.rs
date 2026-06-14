@@ -129,6 +129,28 @@ pub fn sub_agent_tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "gitzi_prioritize_task",
+            description: "Set the priority of a task, controlling the order agents pick it up. \
+                          Lower numbers are worked first (1 = highest priority, 100 = default). \
+                          Use this when the user wants to reorder work — e.g. \"do the auth \
+                          refresh before the login page\". The change takes effect immediately: \
+                          the next agent wake-up will pick the highest-priority task.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The ID of the task to reprioritize."
+                    },
+                    "priority": {
+                        "type": "integer",
+                        "description": "New priority value. Lower is worked first. 1 = urgent, 100 = normal, 200 = low."
+                    }
+                },
+                "required": ["task_id", "priority"]
+            }),
+        },
+        Tool {
             name: "gitzi_create_task",
             description: "Create a new task inside the specified epic. The task is placed in the \
                           Prioritized column so the Prioritizer agent can order it. Supply a \
