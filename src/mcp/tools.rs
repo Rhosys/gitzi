@@ -32,6 +32,23 @@ pub async fn dispatch(
     match name {
         // ── Read operations (no ownership check needed) ───────────────────────
 
+        "gitzi_create_epic" => {
+            let title = args
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing required argument: title".to_string())?
+                .to_string();
+            let description = args
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let epic = dispatcher
+                .gitzi_create_epic(title, description)
+                .await
+                .map_err(|e| format!("gitzi_create_epic failed: {e}"))?;
+            Ok(serde_json::to_value(epic).unwrap_or(Value::Null))
+        }
+
         "gitzi_list_epics" => {
             let epics = dispatcher
                 .gitzi_list_epics()

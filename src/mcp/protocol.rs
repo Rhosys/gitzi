@@ -62,6 +62,27 @@ pub struct Tool {
 pub fn sub_agent_tools() -> Vec<Tool> {
     vec![
         Tool {
+            name: "gitzi_create_epic",
+            description: "Create a new epic. An epic is the top-level unit of work — a feature, \
+                          initiative, or goal that contains one or more tasks. Supply a clear \
+                          title and an optional description. The returned epic ID is what you \
+                          pass to gitzi_create_task when breaking the epic into tasks.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the epic (e.g. \"User authentication\")."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional detailed description of the epic's goal and scope."
+                    }
+                },
+                "required": ["title"]
+            }),
+        },
+        Tool {
             name: "gitzi_list_epics",
             description: "List all epics in the project. Returns an array of epic objects, each \
                           containing id, title, description, and the list of task IDs that belong \
