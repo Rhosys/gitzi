@@ -78,6 +78,9 @@ async fn run_event_loop(
                 DaemonMessage::Event(json) => {
                     app.handle_event(&json);
                 }
+                DaemonMessage::SwitchPanel(view) => {
+                    app.apply_panel_switch(&view);
+                }
                 DaemonMessage::Connected => {
                     app.connected = true;
                     app.status = "connected".to_string();

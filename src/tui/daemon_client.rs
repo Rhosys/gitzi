@@ -97,6 +97,14 @@ async fn run_client(
             sub_result = sub_lines.next_line() => {
                 match sub_result {
                     Ok(Some(line)) => {
+                        // Check for panel_switch events specifically
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str()) == Some("panel_switch")
+                            && let Some(view) = val.get("view").and_then(|v| v.as_str())
+                        {
+                            let _ = msg_tx.send(DaemonMessage::SwitchPanel(view.to_string()));
+                            continue; // don't also send Event(line)
+                        }
                         let _ = msg_tx.send(DaemonMessage::Event(line));
                     }
                     Ok(None) | Err(_) => {

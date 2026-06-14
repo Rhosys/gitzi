@@ -1,5 +1,6 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::config::AgentDef;
 use crate::error::{GitziError, Result};
@@ -12,20 +13,56 @@ pub struct MainAgent {
     system_prompt: String,
 }
 
-// ── OpenAI-compatible request/response types ──────────────────────────────────
+// ── OpenAI-compatible message types ──────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OaiMessage {
+    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub tool_calls: Vec<OaiToolCall>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OaiToolCall {
+    pub id: String,
+    pub function: OaiFunctionBody,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct OaiFunctionBody {
+    pub name: String,
+    pub arguments: String, // JSON string
+}
+
+// ── Tool definitions ──────────────────────────────────────────────────────────
+
+#[derive(Serialize, Clone)]
+struct OaiTool {
+    r#type: &'static str,
+    function: OaiFunctionDef,
+}
+
+#[derive(Serialize, Clone)]
+struct OaiFunctionDef {
+    name: &'static str,
+    description: &'static str,
+    parameters: serde_json::Value,
+}
+
+// ── Request / response types ──────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
-    messages: Vec<Message>,
+    messages: Vec<OaiMessage>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<OaiTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Message {
-    role: String,
-    content: String,
 }
 
 #[derive(Deserialize)]
@@ -35,7 +72,168 @@ struct ChatResponse {
 
 #[derive(Deserialize)]
 struct Choice {
-    message: Message,
+    finish_reason: Option<String>,
+    message: AssistantMessage,
+}
+
+#[derive(Deserialize)]
+struct AssistantMessage {
+    role: String,
+    content: Option<String>,
+    #[serde(default)]
+    tool_calls: Vec<OaiToolCall>,
+}
+
+// ── Public result types ───────────────────────────────────────────────────────
+
+pub struct ToolCallRequest {
+    pub id: String,
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+pub enum ChatTurn {
+    Text(String),
+    ToolCalls(Vec<ToolCallRequest>),
+}
+
+// ── Tool list ─────────────────────────────────────────────────────────────────
+
+fn main_agent_tools() -> Vec<OaiTool> {
+    vec![
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_create_epic",
+                description: "Create a new epic. An epic is the top-level unit of work containing one or more tasks.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Short title for the epic." },
+                        "description": { "type": "string", "description": "Optional detailed description." }
+                    },
+                    "required": ["title"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_prioritize_task",
+                description: "Set the priority of a task. Lower numbers are worked first (1=highest, 100=default).",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "The ID of the task to reprioritize." },
+                        "priority": { "type": "integer", "description": "New priority value. Lower is worked first." }
+                    },
+                    "required": ["task_id", "priority"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_switch_panel",
+                description: "Switch the right panel to a different view.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "view": { "type": "string", "enum": ["board", "review"], "description": "The view to switch to." }
+                    },
+                    "required": ["view"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_create_task",
+                description: "Create a new task inside the specified epic.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "epic_id": { "type": "string", "description": "The ID of the epic this task belongs to." },
+                        "title": { "type": "string", "description": "Short, imperative title for the task." },
+                        "description": { "type": "string", "description": "Optional detailed description." },
+                        "priority": { "type": "integer", "description": "Optional initial priority. Defaults to 100." }
+                    },
+                    "required": ["epic_id", "title"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_update_task",
+                description: "Update the title or description of a task.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "The ID of the task to update." },
+                        "title": { "type": "string", "description": "New title for the task. Omit to leave unchanged." },
+                        "description": { "type": "string", "description": "New description. Omit to leave unchanged." }
+                    },
+                    "required": ["task_id"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_park_task",
+                description: "Park (block) a task, providing a reason why it cannot progress.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "The ID of the task to park." },
+                        "reason": { "type": "string", "description": "A clear explanation of why the task is blocked." }
+                    },
+                    "required": ["task_id", "reason"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_list_epics",
+                description: "List all epics in the project.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_list_tasks",
+                description: "List tasks, optionally filtered to a single epic.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "epic_id": { "type": "string", "description": "If provided, only return tasks belonging to this epic." }
+                    },
+                    "required": []
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_get_adr",
+                description: "Retrieve a single Architecture Decision Record (ADR) by its ID.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "The unique ID of the ADR to retrieve." }
+                    },
+                    "required": ["id"]
+                }),
+            },
+        },
+    ]
 }
 
 // ── MainAgent ─────────────────────────────────────────────────────────────────
@@ -56,13 +254,12 @@ impl MainAgent {
         }
     }
 
-    /// Send a user message and return the model's response.
-    /// History contains prior User + Agent turns; System messages are skipped.
-    pub async fn chat(&self, history: &[ChatMessage], message: &str) -> Result<String> {
-        let mut messages = vec![Message {
-            role: "system".to_string(),
-            content: self.system_prompt.clone(),
-        }];
+    /// Convert stored chat history + a new user message into OaiMessage format.
+    pub fn history_to_messages(history: &[ChatMessage], user_message: &str) -> Vec<OaiMessage> {
+        let mut messages = Vec::new();
+
+        // System prompt is injected by the caller via the first OaiMessage
+        // (we don't store it here — MainAgent injects it in turn())
 
         // Include the last 20 turns to keep context manageable
         let recent = if history.len() > 20 {
@@ -77,21 +274,41 @@ impl MainAgent {
                 Role::Agent => "assistant",
                 Role::System => continue,
             };
-            messages.push(Message {
+            messages.push(OaiMessage {
                 role: role.to_string(),
-                content: msg.content.clone(),
+                content: Some(msg.content.clone()),
+                tool_calls: vec![],
+                tool_call_id: None,
             });
         }
 
-        messages.push(Message {
+        messages.push(OaiMessage {
             role: "user".to_string(),
-            content: message.to_string(),
+            content: Some(user_message.to_string()),
+            tool_calls: vec![],
+            tool_call_id: None,
         });
+
+        messages
+    }
+
+    /// Single API call with tools. Prepends the system prompt.
+    /// Returns (raw assistant OaiMessage, ChatTurn).
+    pub async fn turn(&self, messages: &[OaiMessage]) -> Result<(OaiMessage, ChatTurn)> {
+        // Prepend system message
+        let mut full_messages = vec![OaiMessage {
+            role: "system".to_string(),
+            content: Some(self.system_prompt.clone()),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }];
+        full_messages.extend_from_slice(messages);
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let body = ChatRequest {
             model: self.model.clone(),
-            messages,
+            messages: full_messages,
+            tools: main_agent_tools(),
             temperature: None,
         };
 
@@ -116,12 +333,57 @@ impl MainAgent {
             .await
             .map_err(|e| GitziError::AgentFailed(format!("failed to parse LM Studio response: {e}")))?;
 
-        parsed
+        let choice = parsed
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
-            .ok_or_else(|| GitziError::AgentFailed("LM Studio returned empty choices".to_string()))
+            .ok_or_else(|| GitziError::AgentFailed("LM Studio returned empty choices".to_string()))?;
+
+        let is_tool_call = choice.finish_reason.as_deref() == Some("tool_calls")
+            || !choice.message.tool_calls.is_empty();
+
+        let raw_assistant = OaiMessage {
+            role: choice.message.role.clone(),
+            content: choice.message.content.clone(),
+            tool_calls: choice.message.tool_calls.clone(),
+            tool_call_id: None,
+        };
+
+        let turn = if is_tool_call {
+            let calls = choice
+                .message
+                .tool_calls
+                .into_iter()
+                .map(|tc| {
+                    let arguments = serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                    ToolCallRequest {
+                        id: tc.id,
+                        name: tc.function.name,
+                        arguments,
+                    }
+                })
+                .collect();
+            ChatTurn::ToolCalls(calls)
+        } else {
+            let text = choice
+                .message
+                .content
+                .unwrap_or_default();
+            ChatTurn::Text(text)
+        };
+
+        Ok((raw_assistant, turn))
+    }
+
+    /// Send a user message and return the model's response (no tool loop — compatibility shim).
+    pub async fn chat(&self, history: &[ChatMessage], message: &str) -> Result<String> {
+        let messages = Self::history_to_messages(history, message);
+        let (_raw, turn) = self.turn(&messages).await?;
+        match turn {
+            ChatTurn::Text(t) => Ok(t),
+            ChatTurn::ToolCalls(_) => Ok(String::new()), // shouldn't happen without loop
+        }
     }
 }
 
