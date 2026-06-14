@@ -11,7 +11,11 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
+use crate::agent::{build_main_agent, MainAgent};
 use crate::config::Config;
+use crate::mcp::auth::TokenStore;
+use crate::state::chat::{self as chat_store, ChatMessage};
+use crate::state::home;
 use crate::state::reader;
 use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind, ReviewAction};
 use crate::state::writer;
@@ -174,6 +178,7 @@ impl AgentRole {
         crate::config::AgentDef {
             role: self.to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
+            base_url: None,
             system_prompt: Some(self.default_system_prompt().to_string()),
         }
     }
@@ -210,7 +215,7 @@ impl std::fmt::Display for AgentRole {
 // ─── Dispatcher ───────────────────────────────────────────────────────────────
 
 /// Central orchestration struct. Owns the event bus, board projection,
-/// review queue, agent pool, and WIP limits. Replaces the polling Scheduler.
+/// review queue, agent pool, WIP limits, and the main chat harness.
 pub struct Dispatcher {
     pub event_bus: Arc<EventBus>,
     pub board: Arc<RwLock<KanbanBoard>>,
@@ -220,6 +225,12 @@ pub struct Dispatcher {
     pub wip_limits: Arc<WipLimits>,
     /// Agents waiting to advance into a full column.
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
+    /// Persistent chat history (in-memory mirror of chat.jsonl).
+    pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
+    /// The main coordination agent that drives the chat interface.
+    pub main_agent: MainAgent,
+    /// Token store for MCP sub-agent authorization.
+    pub token_store: Arc<TokenStore>,
 }
 
 impl Dispatcher {
@@ -252,10 +263,9 @@ impl Dispatcher {
         // Persist task to disk
         {
             let board = self.board.read().await;
-            if let Some(task) = board.task(task_id) {
-                if let Err(e) = writer::write_task(task) {
-                    warn!(%task_id, error = %e, "failed to persist task after approval");
-                }
+            if let Some(task) = board.task(task_id)
+                && let Err(e) = writer::write_task(task) {
+                warn!(%task_id, error = %e, "failed to persist task after approval");
             }
         }
 
@@ -315,10 +325,9 @@ impl Dispatcher {
         // Persist task to disk
         {
             let board = self.board.read().await;
-            if let Some(task) = board.task(task_id) {
-                if let Err(e) = writer::write_task(task) {
-                    warn!(%task_id, error = %e, "failed to persist task after rejection");
-                }
+            if let Some(task) = board.task(task_id)
+                && let Err(e) = writer::write_task(task) {
+                warn!(%task_id, error = %e, "failed to persist task after rejection");
             }
         }
 
@@ -348,16 +357,41 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Answer an agent's question: dequeue the review item and unblock the agent.
+    /// Answer an agent's question: dequeue the review item, persist the answer on the
+    /// review item, and unblock the waiting agent.
     pub async fn answer_question(&self, item_id: &str, answer: String) -> anyhow::Result<()> {
-        // Dequeue the item from the review queue
+        // Dequeue the item from the in-memory review queue
         let item = {
             let mut queue = self.review_queue.lock().await;
             queue.dequeue(item_id)
                 .ok_or_else(|| anyhow::anyhow!("review item '{item_id}' not found in queue"))?
         };
 
-        // Determine which agent role is blocked (from task's current column)
+        // Validate it's a question, not a buffer approval
+        match &item.kind {
+            review_queue::ReviewItemKind::AgentQuestion { .. } => {}
+            review_queue::ReviewItemKind::BufferApproval { .. } => {
+                anyhow::bail!("review item '{item_id}' is a buffer approval, not a question");
+            }
+        }
+
+        // Persist the answer on the review item (not the task)
+        match review::load_review_item(item_id) {
+            Ok(mut persisted) => {
+                persisted.actions.push(ReviewAction::Answer {
+                    at: chrono::Utc::now(),
+                    content: answer.clone(),
+                });
+                if let Err(e) = review::write_review_item(&persisted) {
+                    warn!(%item_id, error = %e, "failed to persist answer to review item");
+                }
+            }
+            Err(e) => {
+                warn!(%item_id, error = %e, "failed to load review item for answer persistence");
+            }
+        }
+
+        // Determine which agent role is blocked (read-only board access)
         let role = {
             let board = self.board.read().await;
             let task = board.task(&item.task_id)
@@ -371,6 +405,148 @@ impl Dispatcher {
         self.agent_pool.unblock(role, answer);
 
         Ok(())
+    }
+
+    // ── gitzi_ management tools ───────────────────────────────────────────────
+
+    pub async fn gitzi_list_epics(&self) -> anyhow::Result<Vec<crate::model::Epic>> {
+        Ok(reader::load_all_epics()?)
+    }
+
+    pub async fn gitzi_list_tasks(&self, epic_id: Option<&str>) -> anyhow::Result<Vec<crate::model::Task>> {
+        let all = reader::load_all_tasks()?;
+        if let Some(id) = epic_id {
+            Ok(all.into_iter().filter(|t| t.epic == id).collect())
+        } else {
+            Ok(all)
+        }
+    }
+
+    pub async fn gitzi_get_adr(&self, id: &str) -> anyhow::Result<PersistedReviewItem> {
+        Ok(review::load_review_item(id)?)
+    }
+
+    pub async fn gitzi_create_epic(
+        &self,
+        title: String,
+        description: Option<String>,
+    ) -> anyhow::Result<crate::model::Epic> {
+        let id = crate::id::new_id(&title);
+        let mut epic = crate::model::Epic::new(&id, &title);
+        epic.description = description;
+        writer::write_epic(&epic)?;
+        Ok(epic)
+    }
+
+    pub async fn gitzi_create_task(
+        &self,
+        epic_id: String,
+        title: String,
+        description: Option<String>,
+        priority: Option<u32>,
+    ) -> anyhow::Result<crate::model::Task> {
+        let id = crate::id::new_id(&title);
+        let mut task = crate::model::Task::new(&id, &epic_id, &title);
+        task.description = description;
+        task.priority = priority.unwrap_or(100);
+        writer::write_task(&task)?;
+
+        // Update parent epic's task list on disk
+        if let Ok(mut epic) = reader::load_epic(&epic_id) {
+            epic.tasks.push(id.clone());
+            if let Err(e) = writer::write_epic(&epic) {
+                warn!(%epic_id, error = %e, "failed to update epic task list after create_task");
+            }
+        }
+
+        // Add to in-memory board and signal the prioritizer
+        {
+            let mut board = self.board.write().await;
+            board.add_task(task.clone());
+        }
+        self.event_bus.emit(DispatchEvent::TaskCreated { task_id: id.clone() });
+
+        Ok(task)
+    }
+
+    pub async fn gitzi_update_task(
+        &self,
+        task_id: &str,
+        title: Option<String>,
+        description: Option<String>,
+    ) -> anyhow::Result<crate::model::Task> {
+        let mut task = reader::load_task(task_id)?;
+        if let Some(t) = title { task.title = t; }
+        if let Some(d) = description { task.description = Some(d); }
+        task.updated_at = chrono::Utc::now();
+        writer::write_task(&task)?;
+
+        // Sync in-memory board entry
+        {
+            let mut board = self.board.write().await;
+            if let Some(t) = board.task_mut(task_id) {
+                *t = task.clone();
+            }
+        }
+
+        Ok(task)
+    }
+
+    pub async fn gitzi_park_task(&self, task_id: &str, reason: String) -> anyhow::Result<()> {
+        let mut task = reader::load_task(task_id)?;
+        task.resume_summary = Some(reason);
+        task.updated_at = chrono::Utc::now();
+        writer::write_task(&task)?;
+
+        // Sync in-memory board entry
+        {
+            let mut board = self.board.write().await;
+            if let Some(t) = board.task_mut(task_id) {
+                t.resume_summary = task.resume_summary.clone();
+                t.updated_at = task.updated_at;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn gitzi_create_adr(
+        &self,
+        task_id: String,
+        question: String,
+        context: Option<String>,
+    ) -> anyhow::Result<PersistedReviewItem> {
+        let full_question = if let Some(ctx) = context {
+            format!("{question}\n\nContext:\n{ctx}")
+        } else {
+            question
+        };
+
+        // Use the same ID for both the persisted file and the in-memory queue item
+        let item_id = crate::id::new_id(&task_id);
+        let now = chrono::Utc::now();
+
+        let persisted = PersistedReviewItem {
+            id: item_id.clone(),
+            task_id: task_id.clone(),
+            kind: PersistedReviewKind::AgentQuestion { question: full_question.clone() },
+            created_at: now,
+            actions: Vec::new(),
+        };
+        review::write_review_item(&persisted)?;
+
+        // Enqueue in-memory with the same ID
+        {
+            let mut q = self.review_queue.lock().await;
+            q.enqueue(review_queue::HumanReviewItem {
+                id: item_id,
+                task_id: task_id.clone(),
+                kind: review_queue::ReviewItemKind::AgentQuestion { question: full_question },
+                created_at: now,
+            });
+        }
+
+        Ok(persisted)
     }
 
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
@@ -427,6 +603,7 @@ impl Dispatcher {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
         // 7. Spawn AgentPool
+        let token_store = Arc::new(TokenStore::new());
         let agent_pool = AgentPool::spawn(
             Arc::clone(&event_bus),
             Arc::clone(&board),
@@ -434,6 +611,7 @@ impl Dispatcher {
             Arc::clone(&wip_limits),
             Arc::clone(&wip_waiting),
             Arc::clone(&review_queue),
+            Arc::clone(&token_store),
         );
 
         // 8. Emit BootComplete
@@ -452,6 +630,18 @@ impl Dispatcher {
             }
         }
 
+        // 10. Load chat history from disk
+        let chat_history = {
+            let path = home::chat_file().unwrap_or_else(|_| std::path::PathBuf::from("/tmp/gitzi-chat.jsonl"));
+            let messages = chat_store::load(&path).unwrap_or_default();
+            info!(messages = messages.len(), "loaded chat history from disk");
+            Arc::new(Mutex::new(messages))
+        };
+
+        // 11. Build main agent from config
+        let main_agent_def = config.resolve_agent("main");
+        let main_agent = build_main_agent(&main_agent_def);
+
         Ok(Self {
             event_bus,
             board,
@@ -460,7 +650,36 @@ impl Dispatcher {
             config,
             wip_limits,
             wip_waiting,
+            chat_history,
+            main_agent,
+            token_store,
         })
+    }
+
+    /// Process a user chat message: run the main agent and persist both turns.
+    pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
+        let history = self.chat_history.lock().await.clone();
+
+        let response = self
+            .main_agent
+            .chat(&history, message)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+        // Persist both turns to disk
+        if let Ok(path) = home::chat_file() {
+            let user_msg = ChatMessage::user(message);
+            let agent_msg = ChatMessage::agent(&response);
+            chat_store::append(&path, &user_msg).ok();
+            chat_store::append(&path, &agent_msg).ok();
+
+            // Mirror in memory
+            let mut hist = self.chat_history.lock().await;
+            hist.push(user_msg);
+            hist.push(agent_msg);
+        }
+
+        Ok(response)
     }
 
     /// Main event loop — subscribes to the bus and reacts to each event variant.

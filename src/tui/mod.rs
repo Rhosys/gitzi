@@ -14,7 +14,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
 use crate::error::Result;
-use app::{App, DaemonCommand, DaemonMessage, Mode, ReviewItemKind};
+use app::{App, DaemonCommand, DaemonMessage, Mode};
 
 /// Run the TUI. Must be called from within a tokio runtime.
 pub async fn run_async() -> Result<()> {
@@ -86,6 +86,12 @@ async fn run_event_loop(
                     app.connected = false;
                     app.status = format!("disconnected: {reason}");
                 }
+                DaemonMessage::ChatHistory(entries) => {
+                    app.apply_chat_history(entries);
+                }
+                DaemonMessage::ChatResponse(response) => {
+                    app.apply_chat_response(response);
+                }
                 DaemonMessage::CommandResult(result) => {
                     match result {
                         Ok(resp) => app.status = resp,
@@ -118,12 +124,14 @@ async fn run_event_loop(
                 KeyCode::Right | KeyCode::Char('l') => app.move_right(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
+                KeyCode::Char('c') => app.begin_chat(),
                 _ => {}
             },
             Mode::Review => match key.code {
                 KeyCode::Char('a') => {
                     // 'a' = approve (buffer) or answer (question)
                     if let Some(ref item) = app.review_item {
+                        use app::ReviewItemKind;
                         match &item.kind {
                             ReviewItemKind::AgentQuestion { .. } => app.begin_answer(),
                             ReviewItemKind::BufferApproval { .. } => app.approve_current(),
@@ -131,6 +139,7 @@ async fn run_event_loop(
                     }
                 }
                 KeyCode::Char('r') => app.begin_reject(),
+                KeyCode::Char('c') => app.begin_chat(),
                 KeyCode::Left | KeyCode::Char('h') => app.move_left(),
                 KeyCode::Right | KeyCode::Char('l') => app.move_right(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
@@ -151,6 +160,14 @@ async fn run_event_loop(
                 KeyCode::Char(c) => app.input.push(c),
                 _ => {}
             },
+            Mode::ChatInput => match key.code {
+                KeyCode::Enter => app.submit_chat(),
+                KeyCode::Esc => app.cancel_chat(),
+                KeyCode::Backspace => { app.chat_input.pop(); }
+                KeyCode::Char(c) => app.chat_input.push(c),
+                _ => {}
+            },
+            Mode::ChatWaiting => {} // no input while waiting for response
         }
     }
 

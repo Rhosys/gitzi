@@ -19,16 +19,16 @@ pub struct TaskWorktree {
 }
 
 impl TaskWorktree {
-    /// Create a linked worktree at `<repo_root>/.gitzi/tasks/<task_id>/worktree`
+    /// Create a linked worktree at `~/.gitzi/<session>/wip/tasks/<task_id>/worktrees/<repo_slug>/`
     /// on `branch_name`, creating the branch off HEAD if it does not yet exist.
     /// Idempotent: if the worktree is already registered, returns it as-is.
-    pub fn create(repo: &Repository, task_id: &str, branch_name: &str) -> Result<Self> {
+    pub fn create(repo: &Repository, task_id: &str, branch_name: &str, repo_slug: &str) -> Result<Self> {
         let repo_root = repo
             .workdir()
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
 
-        let wt_path = crate::state::reader::task_worktree_path(task_id)?;
+        let wt_path = crate::state::reader::task_worktree_path(task_id, repo_slug)?;
         let name = worktree_name(branch_name);
 
         // Idempotent: if already registered (e.g. after restart or partial failure), reuse it.
@@ -56,13 +56,13 @@ impl TaskWorktree {
     }
 
     /// Open an existing worktree by task ID (e.g. after a restart).
-    pub fn open(repo: &Repository, task_id: &str, branch_name: &str) -> Result<Self> {
+    pub fn open(repo: &Repository, task_id: &str, branch_name: &str, repo_slug: &str) -> Result<Self> {
         let repo_root = repo
             .workdir()
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
         let name = worktree_name(branch_name);
-        let path = crate::state::reader::task_worktree_path(task_id)?;
+        let path = crate::state::reader::task_worktree_path(task_id, repo_slug)?;
         Ok(Self { path, name, repo_root })
     }
 

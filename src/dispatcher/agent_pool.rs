@@ -13,6 +13,7 @@ use chrono::Utc;
 
 use crate::agent::{self, AgentBackend, AgentResult, RunContext};
 use crate::config::Config;
+use crate::mcp::auth::TokenStore;
 use crate::dispatcher::event_bus::DispatchEvent;
 use crate::git::ops;
 use crate::id;
@@ -90,6 +91,7 @@ impl AgentPool {
         wip_limits: Arc<WipLimits>,
         wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
         review_queue: Arc<Mutex<HumanReviewQueue>>,
+        token_store: Arc<TokenStore>,
     ) -> Self {
         let mut agents = HashMap::new();
 
@@ -103,8 +105,9 @@ impl AgentPool {
             let wl = Arc::clone(&wip_limits);
             let ww = Arc::clone(&wip_waiting);
             let rq = Arc::clone(&review_queue);
+            let ts = Arc::clone(&token_store);
 
-            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq));
+            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq, ts));
         }
 
         Self { agents }
@@ -158,6 +161,7 @@ impl AgentPool {
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
 
 /// The core loop for a single agent instance. Runs as a tokio task.
+#[allow(clippy::too_many_arguments)]
 async fn agent_loop(
     handle: AgentHandle,
     event_bus: Arc<EventBus>,
@@ -166,6 +170,7 @@ async fn agent_loop(
     wip_limits: Arc<WipLimits>,
     wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     review_queue: Arc<Mutex<HumanReviewQueue>>,
+    token_store: Arc<TokenStore>,
 ) {
     let role = handle.role;
     let column = role.column();
@@ -204,15 +209,43 @@ async fn agent_loop(
 
         info!(%role, task_id = %task.id, "processing task");
 
+        // Determine branch name, creating it if this is the first pick-up.
+        let branch = task.branch.clone().unwrap_or_else(|| task.branch_name());
+
+        // Persist the branch name back to disk and in-memory board if it was
+        // just generated (task.branch was None). resume_context() needs it on
+        // restart; without this it silently falls back to no resume summary.
+        if task.branch.is_none() {
+            {
+                let mut b = board.write().await;
+                if let Some(t) = b.task_mut(&task.id) {
+                    t.branch = Some(branch.clone());
+                }
+            }
+            let mut disk_task = task.clone();
+            disk_task.branch = Some(branch.clone());
+            if let Err(e) = write_task(&disk_task) {
+                warn!(task_id = %task.id, error = %e, "failed to persist branch name");
+            }
+        }
+
+        // Create or reuse the worktree for this task. Each agent runs in its
+        // own checkout so concurrent tasks never share a working tree.
+        let worktree_root = setup_task_worktree(&task.id, &branch);
+
+        // Issue a scoped MCP token for this agent session
+        let mcp_token = token_store.issue(&task.id).await;
+
         // Build prompt context — include agent_feedback if present
-        let ctx = build_run_context(&task, &config);
+        let ctx = build_run_context(&task, worktree_root, branch.clone(), Some(mcp_token.clone()));
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
         let backend = agent::build_agent(&agent_def);
 
-        // Run the agent backend
+        // Run the agent backend, then revoke the token regardless of outcome
         let result = backend.run(&task, &ctx).await;
+        token_store.revoke(&mcp_token).await;
 
         match result {
             Ok(agent_result) => {
@@ -239,6 +272,7 @@ async fn agent_loop(
 }
 
 /// Handle the result from an agent run: scan for tropes, advance or block.
+#[allow(clippy::too_many_arguments)]
 async fn handle_agent_result(
     handle: &AgentHandle,
     event_bus: &Arc<EventBus>,
@@ -325,6 +359,8 @@ async fn handle_agent_result(
                         repo_root: ctx.repo_root.clone(),
                         branch: ctx.branch.clone(),
                         resume_summary: Some(injection.clone()),
+                        mcp_token: ctx.mcp_token.clone(),
+                        answered_questions: ctx.answered_questions.clone(),
                     }
                 }
                 trope_blocker::Directive::RotateSession { ref summary } => {
@@ -340,6 +376,8 @@ async fn handle_agent_result(
                         repo_root: ctx.repo_root.clone(),
                         branch: ctx.branch.clone(),
                         resume_summary: Some(summary.clone()),
+                        mcp_token: ctx.mcp_token.clone(),
+                        answered_questions: ctx.answered_questions.clone(),
                     }
                 }
             };
@@ -469,21 +507,41 @@ async fn escalate_trope_block(
     review_queue.lock().await.enqueue(queue_item);
 }
 
-/// Build the RunContext for an agent invocation.
-/// Includes agent_feedback in the branch field as a signal (the actual prompt
-/// injection happens in the agent backend using the task's agent_feedback field).
-fn build_run_context(task: &Task, _config: &Config) -> RunContext {
-    let branch = task
-        .branch
-        .clone()
-        .unwrap_or_else(|| task.branch_name());
-
+fn build_run_context(task: &Task, worktree_root: std::path::PathBuf, branch: String, mcp_token: Option<String>) -> RunContext {
     let resume_summary = resume_context(task);
+    let answered_questions = crate::state::review::load_answered_for_task(&task.id);
+    RunContext { repo_root: worktree_root, branch, resume_summary, mcp_token, answered_questions }
+}
 
-    RunContext {
-        repo_root: crate::state::home::repo_path(),
-        branch,
-        resume_summary,
+/// Create or reuse the worktree for a task, returning its path.
+/// Falls back to the main repo root if setup fails (no git repo, bare repo, etc.).
+fn setup_task_worktree(task_id: &str, branch_name: &str) -> std::path::PathBuf {
+    let main_repo_root = crate::state::home::repo_path();
+
+    let repo = match ops::open_repo(&main_repo_root) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(task_id, "cannot open repo for worktree setup: {e}");
+            return main_repo_root;
+        }
+    };
+
+    // Derive a stable slug from the repo directory name for the path component.
+    let repo_slug = main_repo_root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("repo")
+        .to_string();
+
+    match ops::TaskWorktree::create(&repo, task_id, branch_name, &repo_slug) {
+        Ok(wt) => {
+            info!(task_id, branch = branch_name, path = %wt.path.display(), "worktree ready");
+            wt.path
+        }
+        Err(e) => {
+            warn!(task_id, branch = branch_name, "worktree setup failed, falling back to main repo: {e}");
+            main_repo_root
+        }
     }
 }
 
@@ -627,8 +685,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
 
         for role in AgentRole::all() {
@@ -645,8 +704,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
 
         for role in AgentRole::all() {
@@ -663,8 +723,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
 
         // Simulate blocked state
@@ -692,8 +753,9 @@ mod tests {
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
+        let token_store = Arc::new(TokenStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
         );
         // All roles exist, so this just tests the method doesn't panic
         pool.signal(AgentRole::Infrarian);
