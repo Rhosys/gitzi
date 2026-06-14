@@ -47,6 +47,7 @@ struct TropeDefinition {
     signals: &'static [&'static str],
     /// Minimum number of signals that must match to trigger.
     threshold: usize,
+    #[allow(dead_code)]
     action: TropeAction,
 }
 

@@ -43,10 +43,9 @@ async fn run_client(
     }
 
     // Read board snapshot response
-    if let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
-            let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
-        }
+    if let Ok(Some(line)) = lines.next_line().await
+        && let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+        let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
     }
 
     // Now open a second connection for subscription (subscribe holds the connection)
@@ -174,10 +173,9 @@ async fn run_client(
                             let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
                             return;
                         }
-                        if let Ok(Some(line)) = lines.next_line().await {
-                            if let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
-                                let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
-                            }
+                        if let Ok(Some(line)) = lines.next_line().await
+                            && let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+                            let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
                         }
                     }
                     DaemonCommand::RefreshReview => {

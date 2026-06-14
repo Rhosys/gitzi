@@ -161,6 +161,7 @@ impl AgentPool {
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
 
 /// The core loop for a single agent instance. Runs as a tokio task.
+#[allow(clippy::too_many_arguments)]
 async fn agent_loop(
     handle: AgentHandle,
     event_bus: Arc<EventBus>,
@@ -271,6 +272,7 @@ async fn agent_loop(
 }
 
 /// Handle the result from an agent run: scan for tropes, advance or block.
+#[allow(clippy::too_many_arguments)]
 async fn handle_agent_result(
     handle: &AgentHandle,
     event_bus: &Arc<EventBus>,
