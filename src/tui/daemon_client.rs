@@ -4,7 +4,8 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use crate::daemon::socket_path;
-use super::app::{BoardColumn, DaemonCommand, DaemonMessage, ReviewItem};
+use crate::state::chat::{ChatMessage as StoredMessage, Role};
+use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, ReviewItem};
 
 /// Spawn the background task that manages the daemon socket connection.
 /// Returns an UnboundedReceiver for incoming messages.
@@ -42,10 +43,9 @@ async fn run_client(
     }
 
     // Read board snapshot response
-    if let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
-            let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
-        }
+    if let Ok(Some(line)) = lines.next_line().await
+        && let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+        let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
     }
 
     // Now open a second connection for subscription (subscribe holds the connection)
@@ -77,6 +77,17 @@ async fn run_client(
             serde_json::from_str(&line).ok()
         };
         let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+    }
+
+    // Load chat history
+    if writer.write_all(b"chat_history\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+    if let Ok(Some(line)) = lines.next_line().await {
+        let stored: Vec<StoredMessage> = serde_json::from_str(&line).unwrap_or_default();
+        let entries = stored_to_entries(stored);
+        let _ = msg_tx.send(DaemonMessage::ChatHistory(entries));
     }
 
     // Main loop: select between subscription events and outgoing commands
@@ -144,15 +155,27 @@ async fn run_client(
                             let _ = msg_tx.send(DaemonMessage::CommandResult(result));
                         }
                     }
+                    DaemonCommand::Chat(message) => {
+                        let encoded = serde_json::to_string(&message).unwrap_or_default();
+                        let cmd = format!("chat {encoded}\n");
+                        if writer.write_all(cmd.as_bytes()).await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await {
+                            let response: String = serde_json::from_str(&line)
+                                .unwrap_or_else(|_| line.clone());
+                            let _ = msg_tx.send(DaemonMessage::ChatResponse(response));
+                        }
+                    }
                     DaemonCommand::RefreshBoard => {
                         if writer.write_all(b"board\n").await.is_err() {
                             let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
                             return;
                         }
-                        if let Ok(Some(line)) = lines.next_line().await {
-                            if let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
-                                let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
-                            }
+                        if let Ok(Some(line)) = lines.next_line().await
+                            && let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+                            let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
                         }
                     }
                     DaemonCommand::RefreshReview => {
@@ -173,4 +196,15 @@ async fn run_client(
             }
         }
     }
+}
+
+fn stored_to_entries(stored: Vec<StoredMessage>) -> Vec<ChatEntry> {
+    stored
+        .into_iter()
+        .filter_map(|m| match m.role {
+            Role::User => Some(ChatEntry { is_user: true, content: m.content }),
+            Role::Agent => Some(ChatEntry { is_user: false, content: m.content }),
+            Role::System => None,
+        })
+        .collect()
 }

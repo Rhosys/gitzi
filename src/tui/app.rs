@@ -28,6 +28,9 @@ pub struct ReviewItem {
     pub id: String,
     pub task_id: String,
     pub kind: ReviewItemKind,
+    /// Human-readable task title looked up by the daemon at serialization time.
+    #[serde(default)]
+    pub task_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +38,14 @@ pub struct ReviewItem {
 pub enum ReviewItemKind {
     AgentQuestion { question: String },
     BufferApproval { buffer_column: String, task_priority: u32 },
+}
+
+// ─── Chat entry (for local display) ──────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct ChatEntry {
+    pub is_user: bool,
+    pub content: String,
 }
 
 // ─── TUI Mode ─────────────────────────────────────────────────────────────────
@@ -49,6 +60,10 @@ pub enum Mode {
     RejectInput,
     /// Typing answer to agent question
     AnswerInput,
+    /// Typing a chat message to the main agent
+    ChatInput,
+    /// Waiting for the main agent to respond
+    ChatWaiting,
 }
 
 // ─── Column abbreviations for compact rendering ───────────────────────────────
@@ -87,8 +102,14 @@ pub struct App {
     /// Current mode
     pub mode: Mode,
 
-    /// Input buffer for reject feedback / answer text
+    /// Input buffer for reject feedback / answer text (review flows)
     pub input: String,
+
+    /// Chat message being composed
+    pub chat_input: String,
+
+    /// Chat history displayed in the left pane
+    pub chat_history: Vec<ChatEntry>,
 
     /// Board navigation: selected column index
     pub board_col: usize,
@@ -112,6 +133,7 @@ pub enum DaemonCommand {
     Approve(String),            // task_id
     Reject(String, String),     // task_id, feedback
     Answer(String, String),     // item_id, answer
+    Chat(String),               // message to main agent
     RefreshBoard,
     RefreshReview,
 }
@@ -121,6 +143,8 @@ pub enum DaemonCommand {
 pub enum DaemonMessage {
     BoardSnapshot(Vec<BoardColumn>),
     ReviewItem(Option<ReviewItem>),
+    ChatHistory(Vec<ChatEntry>),
+    ChatResponse(String),
     Event(String),  // raw JSON line from subscribe stream
     Connected,
     Disconnected(String),
@@ -134,6 +158,8 @@ impl App {
             review_item: None,
             mode: Mode::Idle,
             input: String::new(),
+            chat_input: String::new(),
+            chat_history: Vec::new(),
             board_col: 0,
             board_task: 0,
             status: "connecting…".to_string(),
@@ -233,6 +259,45 @@ impl App {
     pub fn cancel_input(&mut self) {
         self.input.clear();
         self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
+    }
+
+    // ── Chat ──────────────────────────────────────────────────────────────────
+
+    /// Enter chat input mode.
+    pub fn begin_chat(&mut self) {
+        self.mode = Mode::ChatInput;
+    }
+
+    /// Cancel chat input, return to board mode.
+    pub fn cancel_chat(&mut self) {
+        self.chat_input.clear();
+        self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
+    }
+
+    /// Submit the current chat message.
+    pub fn submit_chat(&mut self) {
+        let message = std::mem::take(&mut self.chat_input).trim().to_string();
+        if message.is_empty() {
+            return;
+        }
+        // Show immediately in local history
+        self.chat_history.push(ChatEntry { is_user: true, content: message.clone() });
+        // Send to daemon
+        let _ = self.cmd_tx.send(DaemonCommand::Chat(message));
+        self.mode = Mode::ChatWaiting;
+        self.status = "thinking…".to_string();
+    }
+
+    /// Apply a chat response from the daemon.
+    pub fn apply_chat_response(&mut self, response: String) {
+        self.chat_history.push(ChatEntry { is_user: false, content: response });
+        self.status = String::new();
+        self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
+    }
+
+    /// Apply loaded chat history from the daemon.
+    pub fn apply_chat_history(&mut self, entries: Vec<ChatEntry>) {
+        self.chat_history = entries;
     }
 
     // Navigation

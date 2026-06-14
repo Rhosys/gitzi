@@ -7,6 +7,7 @@ pub mod dashboard;
 pub mod dispatcher;
 pub mod error;
 pub mod git;
+pub mod mcp;
 pub mod model;
 pub mod pipeline;
 pub mod runner;

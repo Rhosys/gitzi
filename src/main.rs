@@ -85,9 +85,15 @@ async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
             .context("Failed to start dispatcher")?
     );
 
+    let token_store = Arc::clone(&dispatcher.token_store);
+
     tokio::select! {
         result = daemon::serve(Arc::clone(&dispatcher)) => {
             error!("Daemon socket server exited: {:?}", result);
+            result
+        }
+        result = gitzi::mcp::serve(Arc::clone(&dispatcher), token_store) => {
+            error!("MCP server exited: {:?}", result);
             result
         }
         result = dispatcher.run() => {
@@ -96,8 +102,8 @@ async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
         }
         _ = shutdown_signal() => {
             info!("Shutdown signal received — exiting");
-            // Clean up socket
             let _ = std::fs::remove_file(daemon::socket_path());
+            let _ = std::fs::remove_file(gitzi::state::home::mcp_socket_path());
             Ok(())
         }
     }

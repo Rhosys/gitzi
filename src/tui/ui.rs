@@ -17,7 +17,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ]).areas(area);
 
     draw_header(frame, app, header_area);
-    draw_body(frame, app, body_area);
+
+    // Two-pane split: 35% chat left, 65% board/review right
+    let [chat_area, right_area] = Layout::horizontal([
+        Constraint::Ratio(35, 100),
+        Constraint::Fill(1),
+    ]).areas(body_area);
+
+    draw_chat_pane(frame, app, chat_area);
+    draw_right_pane(frame, app, right_area);
+
     draw_footer(frame, app, footer_area);
 }
 
@@ -39,11 +48,110 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-// ── Body ──────────────────────────────────────────────────────────────────────
+// ── Chat pane (left, 35%) ─────────────────────────────────────────────────────
 
-fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_chat_pane(frame: &mut Frame, app: &App, area: Rect) {
+    let chat_focused = matches!(app.mode, Mode::ChatInput | Mode::ChatWaiting);
+    let border_color = if chat_focused { Color::Cyan } else { Color::DarkGray };
+    let title = if matches!(app.mode, Mode::ChatWaiting) {
+        " Chat  thinking… "
+    } else if chat_focused {
+        " Chat ● "
+    } else {
+        " Chat  [c] to type "
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Split inner: history fills top, input sits at bottom (3 lines)
+    let [history_area, input_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(3),
+    ]).areas(inner);
+
+    draw_chat_history(frame, app, history_area);
+    draw_chat_input(frame, app, input_area);
+}
+
+fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
+    let width = area.width.saturating_sub(2) as usize;
+    let mut lines: Vec<Line> = Vec::new();
+
+    for entry in &app.chat_history {
+        if entry.is_user {
+            lines.push(Line::from(Span::styled(
+                "You",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "gitzi",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+        }
+
+        // Word-wrap content to fit the pane width
+        for wrapped_line in wrap_text(&entry.content, width) {
+            let style = if entry.is_user {
+                Style::default().fg(Color::White)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            lines.push(Line::from(Span::styled(wrapped_line, style)));
+        }
+        lines.push(Line::from(""));
+    }
+
+    // Scroll to show the bottom of history
+    let visible_height = area.height as usize;
+    let skip = lines.len().saturating_sub(visible_height);
+
+    frame.render_widget(
+        Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()),
+        area,
+    );
+}
+
+fn draw_chat_input(frame: &mut Frame, app: &App, area: Rect) {
+    let active = matches!(app.mode, Mode::ChatInput | Mode::ChatWaiting);
+    let border_color = if active { Color::Cyan } else { Color::DarkGray };
+
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let input_inner = input_block.inner(area);
+    frame.render_widget(input_block, area);
+
+    let cursor = if matches!(app.mode, Mode::ChatWaiting) {
+        "…".to_string()
+    } else if app.chat_input.is_empty() {
+        "▌".to_string()
+    } else {
+        format!("{}▌", app.chat_input)
+    };
+
+    let style = if active {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(cursor, style)),
+        input_inner,
+    );
+}
+
+// ── Right pane (65%) ──────────────────────────────────────────────────────────
+
+fn draw_right_pane(frame: &mut Frame, app: &App, area: Rect) {
     match &app.mode {
-        Mode::Idle => draw_board(frame, app, area),
+        Mode::Idle | Mode::ChatInput | Mode::ChatWaiting => draw_board(frame, app, area),
         Mode::Review => draw_review_with_board(frame, app, area),
         Mode::RejectInput | Mode::AnswerInput => draw_input_panel(frame, app, area),
     }
@@ -136,11 +244,25 @@ fn draw_review_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Task ID
-    lines.push(Line::from(vec![
-        Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&item.task_id, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
-    ]));
+    // Task title (preferred) or ID as fallback
+    if let Some(ref title) = item.task_title {
+        lines.push(Line::from(Span::styled(
+            title.as_str(),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("id: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                item.task_id.get(..8).unwrap_or(&item.task_id),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("Task: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&item.task_id, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]));
+    }
     lines.push(Line::from(""));
 
     match &item.kind {
@@ -236,9 +358,11 @@ fn draw_input_panel(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let controls = match app.mode {
-        Mode::Idle => " [ctrl+q] quit  [←→↑↓] navigate",
-        Mode::Review => " [ctrl+q] quit  [a] approve/answer  [r] reject  [←→↑↓] board",
+        Mode::Idle => " [c] chat  [←→↑↓] board  [ctrl+q] quit",
+        Mode::Review => " [c] chat  [a] approve/answer  [r] reject  [←→↑↓] board  [ctrl+q] quit",
         Mode::RejectInput | Mode::AnswerInput => " [enter] submit  [esc] cancel",
+        Mode::ChatInput => " [enter] send  [esc] cancel",
+        Mode::ChatWaiting => " waiting for response…",
     };
 
     let status = &app.status;
@@ -258,7 +382,38 @@ fn mode_label(mode: &Mode) -> &'static str {
         Mode::Review => "Review",
         Mode::RejectInput => "Reject",
         Mode::AnswerInput => "Answer",
+        Mode::ChatInput => "Chat",
+        Mode::ChatWaiting => "Chat — thinking…",
     }
+}
+
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        let mut current = String::new();
+        for word in paragraph.split_whitespace() {
+            if current.is_empty() {
+                current = word.to_string();
+            } else if current.len() + 1 + word.len() <= width {
+                current.push(' ');
+                current.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut current));
+                current = word.to_string();
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    lines
 }
 
 fn column_title_color(col: &Column) -> Color {

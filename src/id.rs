@@ -126,11 +126,14 @@ mod tests {
     #[test]
     fn new_id_format_is_valid() {
         let id = new_id("test task");
-        let parts: Vec<&str> = id.splitn(2, '-').collect();
-        assert_eq!(parts[0].len(), 22, "base64url prefix must be 22 chars");
+        // The prefix is always the first 22 chars — don't split on '-' since
+        // base64url can produce '-' characters within the prefix itself.
+        let prefix = &id[..22];
+        assert_eq!(prefix.len(), 22, "base64url prefix must be 22 chars");
+        assert_eq!(&id[22..23], "-", "separator must be '-' at position 22");
 
         // Decode the base64url prefix to verify it's 16 bytes
-        let bytes = URL_SAFE_NO_PAD.decode(parts[0]).unwrap();
+        let bytes = URL_SAFE_NO_PAD.decode(prefix).unwrap();
         assert_eq!(bytes.len(), 16);
     }
 

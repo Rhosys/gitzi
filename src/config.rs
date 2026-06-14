@@ -52,6 +52,10 @@ pub struct AgentDef {
     pub role: String,
     #[serde(default = "default_model")]
     pub model: String,
+    /// Base URL of the OpenAI-compatible API endpoint.
+    /// Defaults to `http://localhost:1234/v1` (LM Studio).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
     /// System prompt sent before every task. Falls back to a sensible built-in default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -62,7 +66,27 @@ impl Default for AgentDef {
         Self {
             role: "developer".to_string(),
             model: default_model(),
+            base_url: None,
             system_prompt: None,
+        }
+    }
+}
+
+impl AgentDef {
+    /// Hardcoded default for the `role = "main"` chat harness agent.
+    pub fn default_main() -> Self {
+        Self {
+            role: "main".to_string(),
+            model: "local-model".to_string(),
+            base_url: Some("http://localhost:1234/v1".to_string()),
+            system_prompt: Some(
+                "You are the main coordination agent for gitzi, an AI-driven software \
+                 development pipeline. Help the user manage their project through natural \
+                 conversation. Create and refine epics, tasks, and work items. Surface what \
+                 needs attention. Keep work moving. Never write code directly. \
+                 Ask one question at a time — never more."
+                    .to_string(),
+            ),
         }
     }
 }
@@ -135,7 +159,9 @@ impl Config {
 
     /// Validate config on load. Returns error for unknown role names.
     pub fn validate(&self) -> Result<()> {
-        let valid_roles: Vec<String> = AgentRole::all().iter().map(|r| r.to_string()).collect();
+        let mut valid_roles: Vec<String> =
+            AgentRole::all().iter().map(|r| r.to_string()).collect();
+        valid_roles.push("main".to_string());
         for agent in &self.agents {
             if !valid_roles.contains(&agent.role) {
                 return Err(GitziError::Config(format!(
@@ -154,6 +180,9 @@ impl Config {
             .find(|a| a.role == role)
             .cloned()
             .unwrap_or_else(|| {
+                if role == "main" {
+                    return AgentDef::default_main();
+                }
                 AgentRole::all()
                     .iter()
                     .find(|r| r.to_string() == role)
@@ -193,6 +222,7 @@ mod tests {
                 .map(|(i, (role, _))| AgentDef {
                     role: role.to_string(),
                     model: custom_models[i % custom_models.len()].clone(),
+                    base_url: None,
                     system_prompt: Some(custom_prompts[i % custom_prompts.len()].clone()),
                 })
                 .collect();
@@ -248,10 +278,10 @@ mod tests {
         #[test]
         fn config_role_validation_rejects_unknown_roles(
             role_name in "[a-zA-Z0-9_-]{1,30}"
-                .prop_filter("must not match any valid AgentRole display name", |s| {
+                .prop_filter("must not match any valid role name", |s| {
                     let valid = [
                         "prioritizer", "designer", "coder",
-                        "reviewer", "tester", "auditor", "infrarian",
+                        "reviewer", "tester", "auditor", "infrarian", "main",
                     ];
                     !valid.contains(&s.as_str())
                 })
@@ -260,6 +290,7 @@ mod tests {
                 agents: vec![AgentDef {
                     role: role_name.clone(),
                     model: "claude-sonnet-4-6".to_string(),
+                    base_url: None,
                     system_prompt: None,
                 }],
                 ..Config::default()

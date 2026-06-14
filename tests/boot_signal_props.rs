@@ -165,6 +165,8 @@ proptest! {
             repo_root: std::path::PathBuf::from("."),
             branch: expected_branch.clone(),
             resume_summary: None,
+            mcp_token: None,
+            answered_questions: vec![],
         };
 
         if has_branch {

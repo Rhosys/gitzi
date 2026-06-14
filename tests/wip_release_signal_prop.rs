@@ -72,6 +72,7 @@ proptest! {
             let wip_limits = Arc::new(WipLimits::default());
             let wip_waiting = Arc::new(Mutex::new(waiting));
 
+            let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
             let agent_pool = AgentPool::spawn(
                 Arc::clone(&event_bus),
                 Arc::clone(&board),
@@ -79,7 +80,11 @@ proptest! {
                 Arc::clone(&wip_limits),
                 Arc::clone(&wip_waiting),
                 Arc::clone(&review_queue),
+                Arc::clone(&token_store),
             );
+
+            let main_agent_def = config.resolve_agent("main");
+            let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
 
             let dispatcher = Dispatcher {
                 event_bus: Arc::clone(&event_bus),
@@ -89,6 +94,9 @@ proptest! {
                 config,
                 wip_limits,
                 wip_waiting: Arc::clone(&wip_waiting),
+                chat_history: Arc::new(Mutex::new(vec![])),
+                main_agent,
+                token_store,
             };
 
             // Verify pre-condition: entry exists
@@ -159,6 +167,7 @@ proptest! {
             let wip_limits = Arc::new(WipLimits::default());
             let wip_waiting = Arc::new(Mutex::new(waiting));
 
+            let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
             let agent_pool = AgentPool::spawn(
                 Arc::clone(&event_bus),
                 Arc::clone(&board),
@@ -166,7 +175,11 @@ proptest! {
                 Arc::clone(&wip_limits),
                 Arc::clone(&wip_waiting),
                 Arc::clone(&review_queue),
+                Arc::clone(&token_store),
             );
+
+            let main_agent_def = config.resolve_agent("main");
+            let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
 
             let dispatcher = Dispatcher {
                 event_bus: Arc::clone(&event_bus),
@@ -176,6 +189,9 @@ proptest! {
                 config,
                 wip_limits,
                 wip_waiting: Arc::clone(&wip_waiting),
+                chat_history: Arc::new(Mutex::new(vec![])),
+                main_agent,
+                token_store,
             };
 
             // Spawn run loop
