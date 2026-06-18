@@ -6,9 +6,10 @@ pub mod review_queue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn};
 
 use crate::agent::{build_main_agent, ChatTurn, MainAgent, OaiMessage};
@@ -222,7 +223,7 @@ pub struct Dispatcher {
     pub review_queue: Arc<Mutex<HumanReviewQueue>>,
     pub agent_pool: AgentPool,
     pub config: Arc<Config>,
-    pub wip_limits: Arc<WipLimits>,
+    pub wip_limits: Arc<RwLock<WipLimits>>,
     /// Agents waiting to advance into a full column.
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     /// Persistent chat history (in-memory mirror of chat.jsonl).
@@ -614,8 +615,14 @@ impl Dispatcher {
         }
         let review_queue = Arc::new(Mutex::new(queue));
 
-        // 5. Create WipLimits::default()
-        let wip_limits = Arc::new(WipLimits::default());
+        // 5. Build WipLimits from config overrides layered onto built-in defaults.
+        // `Config::load` already validated the overrides, so this can't fail in
+        // practice — fall back to defaults defensively rather than panic on boot.
+        let wip_limits = WipLimits::from_config(&config.wip_limits.overrides).unwrap_or_else(|e| {
+            warn!(error = %e, "invalid WIP limit overrides in config — using defaults");
+            WipLimits::default()
+        });
+        let wip_limits = Arc::new(RwLock::new(wip_limits));
 
         // 6. Create WIP waiting map (runtime-only, rebuilt on boot)
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
@@ -679,6 +686,67 @@ impl Dispatcher {
         }
 
         Ok(dispatcher)
+    }
+
+    /// Watch `config.toml` for changes and hot-reload WIP limits without
+    /// restarting the daemon — changes take effect on the next tick.
+    ///
+    /// Scope is intentionally narrow: only the per-column WIP overrides are
+    /// swapped in. Other config fields (agent definitions, test command,
+    /// etc.) keep whatever was loaded at boot, since they're captured by
+    /// value at points that aren't safe to hot-swap without a larger
+    /// refactor (e.g. in-flight agent backends).
+    pub async fn watch_config(&self) -> anyhow::Result<()> {
+        let path = home::global_config_file();
+        let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
+            warn!("config file has no parent directory — config hot-reload disabled");
+            return Ok(());
+        };
+        if !dir.exists() {
+            warn!(dir = %dir.display(), "config directory does not exist — config hot-reload disabled");
+            return Ok(());
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+        let watch_path = path.clone();
+        let mut watcher: RecommendedWatcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res
+                    && event.paths.iter().any(|p| p == &watch_path)
+                {
+                    let _ = tx.send(());
+                }
+            })?;
+        watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+        info!(path = %path.display(), "watching config.toml for changes");
+
+        while rx.recv().await.is_some() {
+            // Debounce: editors commonly emit several events (write + rename)
+            // for a single save. Drain anything else that arrived meanwhile.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            while rx.try_recv().is_ok() {}
+
+            match Config::load(std::path::Path::new(".")) {
+                Ok(new_config) => {
+                    match WipLimits::from_config(&new_config.wip_limits.overrides) {
+                        Ok(new_limits) => {
+                            *self.wip_limits.write().await = new_limits;
+                            info!("config.toml changed — WIP limits reloaded");
+                        }
+                        Err(e) => warn!(
+                            error = %e,
+                            "config.toml changed but WIP limits are invalid — keeping previous limits"
+                        ),
+                    }
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "config.toml changed but failed to reload — keeping previous config"
+                ),
+            }
+        }
+
+        Ok(())
     }
 
     /// Process a user chat message through the main agent tool calling loop.

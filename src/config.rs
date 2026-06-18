@@ -4,29 +4,23 @@ use serde::{Deserialize, Serialize};
 use crate::dispatcher::AgentRole;
 use crate::error::{GitziError, Result};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Per-column WIP limit overrides, as configured in `config.toml`:
+///
+/// ```toml
+/// [wip_limits]
+/// coding = 2
+/// coding-buffer = 3
+/// ```
+///
+/// Keys are column names in kebab-case (matching how `Column` serializes).
+/// Columns not listed keep their built-in default — see
+/// `dispatcher::board::WipLimits::default`. Unknown keys are rejected by
+/// `dispatcher::board::WipLimits::from_config` at load time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct WipLimits {
-    #[serde(default = "default_wip_in_progress")]
-    pub in_progress: u32,
-    #[serde(default = "default_wip_waiting")]
-    pub waiting_for_review: u32,
-    #[serde(default = "default_wip_testing")]
-    pub in_testing: u32,
+    pub overrides: HashMap<String, u32>,
 }
-
-impl Default for WipLimits {
-    fn default() -> Self {
-        Self {
-            in_progress: default_wip_in_progress(),
-            waiting_for_review: default_wip_waiting(),
-            in_testing: default_wip_testing(),
-        }
-    }
-}
-
-fn default_wip_in_progress() -> u32 { 1 }
-fn default_wip_waiting() -> u32 { 3 }
-fn default_wip_testing() -> u32 { 3 }
 
 /// An agent definition. Define as many as you like under `[[agents]]`.
 /// The role is the identifier — reference it via `default_agent` or per-task.
@@ -139,13 +133,16 @@ impl Default for Config {
 
 impl Config {
     /// Load from `~/.gitzi/config.toml`. Falls back to defaults if missing.
+    /// Validates the result before returning.
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(&path)?;
-        Ok(toml::from_str(&text)?)
+        let config: Self = toml::from_str(&text)?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn write(&self, _repo_root: &Path) -> Result<()> {
@@ -157,7 +154,8 @@ impl Config {
         atomic_write(&path, &text)
     }
 
-    /// Validate config on load. Returns error for unknown role names.
+    /// Validate config on load. Returns error for unknown role names or
+    /// unknown WIP column overrides.
     pub fn validate(&self) -> Result<()> {
         let mut valid_roles: Vec<String> =
             AgentRole::all().iter().map(|r| r.to_string()).collect();
@@ -170,6 +168,8 @@ impl Config {
                 )));
             }
         }
+        crate::dispatcher::board::WipLimits::from_config(&self.wip_limits.overrides)
+            .map_err(GitziError::Config)?;
         Ok(())
     }
 

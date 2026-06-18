@@ -33,7 +33,7 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
     let config = Arc::new(Config::default());
-    let wip_limits = Arc::new(WipLimits::default());
+    let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
     let agent_pool = AgentPool::spawn(

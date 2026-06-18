@@ -71,7 +71,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(tasks)));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
     let config = Arc::new(Config::default());
-    let wip_limits = Arc::new(WipLimits::default());
+    let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     // Build a minimal agent pool with test handles (spawn real tokio tasks
@@ -266,7 +266,7 @@ async fn wip_release_emits_event_on_approval() {
     {
         let board = dispatcher.board.read().await;
         assert_eq!(board.count(Column::CodingBuffer), 1);
-        assert!(!dispatcher.wip_limits.allows(Column::CodingBuffer, 1));
+        assert!(!dispatcher.wip_limits.read().await.allows(Column::CodingBuffer, 1));
     }
 
     let mut rx = dispatcher.event_bus.subscribe();
