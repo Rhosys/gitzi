@@ -79,6 +79,26 @@ async fn run_client(
         let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
     }
 
+    // Initial epics list (for the Status panel's "Current epic" section)
+    if writer.write_all(b"epics\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+    if let Ok(Some(line)) = lines.next_line().await
+        && let Ok(epics) = serde_json::from_str::<Vec<crate::model::Epic>>(&line) {
+        let _ = msg_tx.send(DaemonMessage::Epics(epics));
+    }
+
+    // Initial clarification-queue count (for the Status panel)
+    if writer.write_all(b"queue_len\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+    if let Ok(Some(line)) = lines.next_line().await
+        && let Ok(count) = line.trim().parse::<usize>() {
+        let _ = msg_tx.send(DaemonMessage::QueueLen(count));
+    }
+
     // Load chat history
     if writer.write_all(b"chat_history\n").await.is_err() {
         let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
@@ -198,6 +218,26 @@ async fn run_client(
                                 serde_json::from_str(&line).ok()
                             };
                             let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+                        }
+                    }
+                    DaemonCommand::RefreshEpics => {
+                        if writer.write_all(b"epics\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await
+                            && let Ok(epics) = serde_json::from_str::<Vec<crate::model::Epic>>(&line) {
+                            let _ = msg_tx.send(DaemonMessage::Epics(epics));
+                        }
+                    }
+                    DaemonCommand::RefreshQueueLen => {
+                        if writer.write_all(b"queue_len\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await
+                            && let Ok(count) = line.trim().parse::<usize>() {
+                            let _ = msg_tx.send(DaemonMessage::QueueLen(count));
                         }
                     }
                 }
