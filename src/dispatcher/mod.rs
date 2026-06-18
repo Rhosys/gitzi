@@ -660,7 +660,7 @@ impl Dispatcher {
         let main_agent_def = config.resolve_agent("main");
         let main_agent = build_main_agent(&main_agent_def);
 
-        Ok(Self {
+        let dispatcher = Self {
             event_bus,
             board,
             review_queue,
@@ -671,7 +671,14 @@ impl Dispatcher {
             chat_history,
             main_agent,
             token_store,
-        })
+        };
+
+        // 12. Proactively surface opening status — once per daemon boot.
+        if let Err(e) = dispatcher.opening_status().await {
+            warn!(error = %e, "failed to generate opening status");
+        }
+
+        Ok(dispatcher)
     }
 
     /// Process a user chat message through the main agent tool calling loop.
@@ -681,6 +688,48 @@ impl Dispatcher {
     /// the LLM message so the agent surfaces it. Only the original user message
     /// (without injected context) is persisted to chat history.
     pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
+        let final_response = self.run_main_agent_turn(message).await?;
+
+        // Persist the original user message (not augmented) and the agent response
+        if let Ok(path) = home::chat_file() {
+            let user_msg = ChatMessage::user(message);
+            let agent_msg = ChatMessage::agent(&final_response);
+            chat_store::append(&path, &user_msg).ok();
+            chat_store::append(&path, &agent_msg).ok();
+
+            let mut hist = self.chat_history.lock().await;
+            hist.push(user_msg);
+            hist.push(agent_msg);
+        }
+
+        Ok(final_response)
+    }
+
+    /// Proactively surface project status at session start, without a user message.
+    /// Runs the same agent turn as `chat()` (review queue peek, panel switch, tool
+    /// loop) but persists only the agent's response — there is no user turn to record.
+    pub async fn opening_status(&self) -> anyhow::Result<String> {
+        let prompt = "Session just started. Proactively surface what needs my attention \
+                      right now: the current epic and its progress, tasks in progress, \
+                      anything waiting for my review or approval, and any open questions. \
+                      Be concise.";
+        let final_response = self.run_main_agent_turn(prompt).await?;
+
+        if let Ok(path) = home::chat_file() {
+            let agent_msg = ChatMessage::agent(&final_response);
+            chat_store::append(&path, &agent_msg).ok();
+
+            let mut hist = self.chat_history.lock().await;
+            hist.push(agent_msg);
+        }
+
+        Ok(final_response)
+    }
+
+    /// Shared agent turn: peek the review queue, switch the panel and inject queue
+    /// context if something is pending, then run the tool-calling loop to completion.
+    /// Does not persist anything to chat history — callers decide what to record.
+    async fn run_main_agent_turn(&self, message: &str) -> anyhow::Result<String> {
         // 1. Peek review queue (lock released immediately after clone)
         let pending_review = {
             let queue = self.review_queue.lock().await;
@@ -709,13 +758,13 @@ impl Dispatcher {
                 }
             };
             format!(
-                "[Review queue] Task \"{task_title}\" needs attention: {kind_summary}\n\nUser: {message}"
+                "[Review queue] Task \"{task_title}\" needs attention: {kind_summary}\n\n{message}"
             )
         } else {
             message.to_string()
         };
 
-        // 4. Build messages from history + (possibly augmented) user message
+        // 4. Build messages from history + (possibly augmented) message
         let history = self.chat_history.lock().await.clone();
         let mut messages = MainAgent::history_to_messages(&history, &llm_message);
 
@@ -748,18 +797,6 @@ impl Dispatcher {
                 }
             }
         };
-
-        // 6. Persist original user message (not augmented) and agent response
-        if let Ok(path) = home::chat_file() {
-            let user_msg = ChatMessage::user(message);
-            let agent_msg = ChatMessage::agent(&final_response);
-            chat_store::append(&path, &user_msg).ok();
-            chat_store::append(&path, &agent_msg).ok();
-
-            let mut hist = self.chat_history.lock().await;
-            hist.push(user_msg);
-            hist.push(agent_msg);
-        }
 
         Ok(final_response)
     }
