@@ -103,8 +103,6 @@ pub struct Config {
 
     #[serde(default = "default_test_command")]
     pub test_command: String,
-    #[serde(default = "default_dashboard_port")]
-    pub dashboard_port: u16,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
 }
@@ -116,7 +114,6 @@ fn default_agents() -> Vec<AgentDef> {
 }
 
 fn default_test_command() -> String { "cargo test".to_string() }
-fn default_dashboard_port() -> u16 { 3000 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -125,7 +122,6 @@ impl Default for Config {
             default_agent: default_agent_name(),
             agents: default_agents(),
             test_command: default_test_command(),
-            dashboard_port: default_dashboard_port(),
             integrations: HashMap::new(),
         }
     }
