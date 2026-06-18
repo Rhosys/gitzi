@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use serde::Deserialize;
 use tracing::warn;
 
 use super::Column;
@@ -183,6 +184,29 @@ impl WipLimits {
         let limit = self.limits.get(&column).copied().unwrap_or(u32::MAX);
         current_count < limit
     }
+
+    /// Build limits from config overrides layered onto the built-in defaults.
+    /// Keys are column names as they serialize on the wire (kebab-case, e.g.
+    /// `"coding-buffer"`). Returns an error naming the offending key if any
+    /// override doesn't match a known column.
+    pub fn from_config(overrides: &HashMap<String, u32>) -> Result<Self, String> {
+        let mut limits = Self::default().limits;
+        for (name, &value) in overrides {
+            let column = parse_column_name(name)
+                .ok_or_else(|| format!("unknown WIP column '{name}' in config"))?;
+            limits.insert(column, value);
+        }
+        Ok(Self { limits })
+    }
+}
+
+/// Parse a column name (as it appears in config, e.g. `"coding-buffer"`) into
+/// a `Column` by reusing its existing kebab-case `Deserialize` impl — keeps
+/// the name mapping in one place instead of duplicating it here.
+fn parse_column_name(name: &str) -> Option<Column> {
+    use serde::de::value::{Error as DeError, StrDeserializer};
+    let deserializer: StrDeserializer<DeError> = StrDeserializer::new(name);
+    Column::deserialize(deserializer).ok()
 }
 
 #[cfg(test)]

@@ -88,7 +88,7 @@ impl AgentPool {
         event_bus: Arc<EventBus>,
         board: Arc<RwLock<KanbanBoard>>,
         config: Arc<Config>,
-        wip_limits: Arc<WipLimits>,
+        wip_limits: Arc<RwLock<WipLimits>>,
         wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
         review_queue: Arc<Mutex<HumanReviewQueue>>,
         token_store: Arc<TokenStore>,
@@ -167,7 +167,7 @@ async fn agent_loop(
     event_bus: Arc<EventBus>,
     board: Arc<RwLock<KanbanBoard>>,
     config: Arc<Config>,
-    wip_limits: Arc<WipLimits>,
+    wip_limits: Arc<RwLock<WipLimits>>,
     wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     review_queue: Arc<Mutex<HumanReviewQueue>>,
     token_store: Arc<TokenStore>,
@@ -281,7 +281,7 @@ async fn handle_agent_result(
     agent_result: AgentResult,
     config: &Arc<Config>,
     ctx: &RunContext,
-    wip_limits: &Arc<WipLimits>,
+    wip_limits: &Arc<RwLock<WipLimits>>,
     wip_waiting: &Arc<Mutex<HashMap<Column, AgentRole>>>,
     review_queue: &Arc<Mutex<HumanReviewQueue>>,
 ) {
@@ -415,7 +415,7 @@ async fn try_advance(
     event_bus: &Arc<EventBus>,
     board: &Arc<RwLock<KanbanBoard>>,
     task: &Task,
-    wip_limits: &Arc<WipLimits>,
+    wip_limits: &Arc<RwLock<WipLimits>>,
     wip_waiting: &Arc<Mutex<HashMap<Column, AgentRole>>>,
 ) {
     let role = handle.role;
@@ -433,7 +433,7 @@ async fn try_advance(
         b.count(target) as u32
     };
 
-    if !wip_limits.allows(target, count) {
+    if !wip_limits.read().await.allows(target, count) {
         // Column at capacity — record waiting agent and sleep
         info!(%role, task_id = %task.id, column = %target, "WIP limit reached — agent sleeping");
         wip_waiting.lock().await.insert(target, role);
@@ -681,7 +681,7 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
-        let wip_limits = Arc::new(WipLimits::default());
+        let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
@@ -700,7 +700,7 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
-        let wip_limits = Arc::new(WipLimits::default());
+        let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
@@ -719,7 +719,7 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
-        let wip_limits = Arc::new(WipLimits::default());
+        let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
@@ -749,7 +749,7 @@ mod tests {
         let event_bus = Arc::new(EventBus::new(16));
         let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
         let config = Arc::new(Config::default());
-        let wip_limits = Arc::new(WipLimits::default());
+        let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 

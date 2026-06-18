@@ -44,7 +44,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(tasks)));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
     let config = Arc::new(Config::default());
-    let wip_limits = Arc::new(WipLimits::default());
+    let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
