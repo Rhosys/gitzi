@@ -143,6 +143,11 @@ impl HumanReviewQueue {
         self.items.iter().any(|i| i.is_question())
     }
 
+    /// Count of agent-question items in the queue — the clarification queue size.
+    pub fn question_count(&self) -> usize {
+        self.items.iter().filter(|i| i.is_question()).count()
+    }
+
     /// True if the queue has no items at all.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()

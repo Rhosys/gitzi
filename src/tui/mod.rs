@@ -75,6 +75,12 @@ async fn run_event_loop(
                 DaemonMessage::ReviewItem(item) => {
                     app.apply_review_item(item);
                 }
+                DaemonMessage::Epics(epics) => {
+                    app.apply_epics(epics);
+                }
+                DaemonMessage::QueueLen(count) => {
+                    app.apply_queue_len(count);
+                }
                 DaemonMessage::Event(json) => {
                     app.handle_event(&json);
                 }
@@ -122,12 +128,21 @@ async fn run_event_loop(
         }
 
         match app.mode {
+            Mode::Status => match key.code {
+                KeyCode::Left | KeyCode::Char('h') => { app.mode = Mode::Idle; app.move_left(); }
+                KeyCode::Right | KeyCode::Char('l') => { app.mode = Mode::Idle; app.move_right(); }
+                KeyCode::Up | KeyCode::Char('k') => { app.mode = Mode::Idle; app.move_up(); }
+                KeyCode::Down | KeyCode::Char('j') => { app.mode = Mode::Idle; app.move_down(); }
+                KeyCode::Char('c') => app.begin_chat(),
+                _ => {}
+            },
             Mode::Idle => match key.code {
                 KeyCode::Left | KeyCode::Char('h') => app.move_left(),
                 KeyCode::Right | KeyCode::Char('l') => app.move_right(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
                 KeyCode::Char('c') => app.begin_chat(),
+                KeyCode::Char('s') => app.mode = Mode::Status,
                 _ => {}
             },
             Mode::Review => match key.code {

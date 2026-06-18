@@ -11,6 +11,8 @@ use crate::dispatcher::Column;
 #[allow(dead_code)]
 pub struct BoardTask {
     pub id: String,
+    #[serde(default)]
+    pub epic: String,
     pub title: String,
     pub priority: u32,
 }
@@ -52,6 +54,8 @@ pub struct ChatEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
+    /// Structured status card — default landing view on open
+    Status,
     /// Board overview — idle, no review items pending
     Idle,
     /// Showing a review item with controls
@@ -90,11 +94,26 @@ pub fn column_abbrev(col: &Column) -> &'static str {
     }
 }
 
+// ─── Status card summary ───────────────────────────────────────────────────────
+
+/// Computed progress for the epic with the most outstanding work.
+pub struct EpicStatus {
+    pub title: String,
+    pub done: usize,
+    pub total: usize,
+}
+
 // ─── App state ────────────────────────────────────────────────────────────────
 
 pub struct App {
     /// Board state: column name → list of tasks
     pub board: HashMap<String, Vec<BoardTask>>,
+
+    /// All epics (id, title, child task IDs) — used by the Status panel.
+    pub epics: Vec<crate::model::Epic>,
+
+    /// Count of pending agent-question review items (clarification queue size).
+    pub question_count: usize,
 
     /// Current topmost review item (from peek_review)
     pub review_item: Option<ReviewItem>,
@@ -136,6 +155,8 @@ pub enum DaemonCommand {
     Chat(String),               // message to main agent
     RefreshBoard,
     RefreshReview,
+    RefreshEpics,
+    RefreshQueueLen,
 }
 
 /// Messages received from the daemon client task into the TUI event loop.
@@ -143,6 +164,8 @@ pub enum DaemonCommand {
 pub enum DaemonMessage {
     BoardSnapshot(Vec<BoardColumn>),
     ReviewItem(Option<ReviewItem>),
+    Epics(Vec<crate::model::Epic>),
+    QueueLen(usize),
     ChatHistory(Vec<ChatEntry>),
     ChatResponse(String),
     Event(String),  // raw JSON line from subscribe stream
@@ -156,8 +179,10 @@ impl App {
     pub fn new(cmd_tx: mpsc::UnboundedSender<DaemonCommand>) -> Self {
         Self {
             board: HashMap::new(),
+            epics: Vec::new(),
+            question_count: 0,
             review_item: None,
-            mode: Mode::Idle,
+            mode: Mode::Status,
             input: String::new(),
             chat_input: String::new(),
             chat_history: Vec::new(),
@@ -183,7 +208,7 @@ impl App {
     pub fn apply_review_item(&mut self, item: Option<ReviewItem>) {
         self.review_item = item;
         // Update mode based on review state
-        if self.review_item.is_some() && self.mode == Mode::Idle {
+        if self.review_item.is_some() && matches!(self.mode, Mode::Idle | Mode::Status) {
             self.mode = Mode::Review;
         } else if self.review_item.is_none() && self.mode == Mode::Review {
             self.mode = Mode::Idle;
@@ -193,17 +218,73 @@ impl App {
     /// Apply a panel switch command from the main agent.
     pub fn apply_panel_switch(&mut self, view: &str) {
         match view {
+            "status" => self.mode = Mode::Status,
             "board" => self.mode = Mode::Idle,
             "review" => self.mode = Mode::Review,
             _ => {} // ignore unknown views
         }
     }
 
-    /// Handle an incoming dispatch event — just refresh board and review.
+    /// Apply a fresh epics list from the daemon.
+    pub fn apply_epics(&mut self, epics: Vec<crate::model::Epic>) {
+        self.epics = epics;
+    }
+
+    /// Apply a fresh clarification-queue count from the daemon.
+    pub fn apply_queue_len(&mut self, count: usize) {
+        self.question_count = count;
+    }
+
+    /// The epic with the most outstanding (non-Done) work, with its progress.
+    /// Used by the Status panel's "Current epic" section.
+    pub fn current_epic_status(&self) -> Option<EpicStatus> {
+        let done_ids: std::collections::HashSet<&str> = self
+            .board
+            .get(&Column::Done.to_string())
+            .map(|tasks| tasks.iter().map(|t| t.id.as_str()).collect())
+            .unwrap_or_default();
+
+        self.epics
+            .iter()
+            .filter(|e| !e.tasks.is_empty())
+            .max_by_key(|e| {
+                let total = e.tasks.len();
+                let done = e.tasks.iter().filter(|id| done_ids.contains(id.as_str())).count();
+                (total - done, total)
+            })
+            .map(|e| {
+                let total = e.tasks.len();
+                let done = e.tasks.iter().filter(|id| done_ids.contains(id.as_str())).count();
+                EpicStatus { title: e.title.clone(), done, total }
+            })
+    }
+
+    /// Tasks currently in a work column (an agent is actively on them).
+    pub fn tasks_in_progress(&self) -> Vec<&BoardTask> {
+        column_order()
+            .iter()
+            .filter(|c| c.agent_role().is_some())
+            .flat_map(|c| self.board.get(&c.to_string()).into_iter().flatten())
+            .collect()
+    }
+
+    /// Tasks sitting in a buffer column awaiting human approval/rejection.
+    pub fn tasks_waiting_for_you(&self) -> Vec<&BoardTask> {
+        column_order()
+            .iter()
+            .filter(|c| c.is_buffer())
+            .flat_map(|c| self.board.get(&c.to_string()).into_iter().flatten())
+            .collect()
+    }
+
+    /// Handle an incoming dispatch event — refresh everything the Status panel
+    /// and board depend on.
     pub fn handle_event(&mut self, _raw_json: &str) {
         // On any event, request fresh state from daemon
         let _ = self.cmd_tx.send(DaemonCommand::RefreshBoard);
         let _ = self.cmd_tx.send(DaemonCommand::RefreshReview);
+        let _ = self.cmd_tx.send(DaemonCommand::RefreshEpics);
+        let _ = self.cmd_tx.send(DaemonCommand::RefreshQueueLen);
     }
 
     /// Get tasks for a given column index.
