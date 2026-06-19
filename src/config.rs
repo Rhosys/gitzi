@@ -12,30 +12,44 @@ pub struct ProviderDef {
     pub api_key: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Per-column WIP limit overrides, as configured in `config.toml`:
+///
+/// ```toml
+/// [wip_limits]
+/// coding = 2
+/// coding-buffer = 3
+/// ```
+///
+/// Keys are column names in kebab-case (matching how `Column` serializes).
+/// Columns not listed keep their built-in default — see
+/// `dispatcher::board::WipLimits::default`. Unknown keys are rejected by
+/// `dispatcher::board::WipLimits::from_config` at load time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct WipLimits {
-    #[serde(default = "default_wip_in_progress")]
-    pub in_progress: u32,
-    #[serde(default = "default_wip_waiting")]
-    pub waiting_for_review: u32,
-    #[serde(default = "default_wip_testing")]
-    pub in_testing: u32,
+    pub overrides: HashMap<String, u32>,
 }
 
-impl Default for WipLimits {
-    fn default() -> Self {
-        Self {
-            in_progress: default_wip_in_progress(),
-            waiting_for_review: default_wip_waiting(),
-            in_testing: default_wip_testing(),
-        }
-    }
-}
-
-fn default_wip_in_progress() -> u32 { 1 }
-fn default_wip_waiting() -> u32 { 3 }
-fn default_wip_testing() -> u32 { 3 }
-
+/// An agent definition. Define as many as you like under `[[agents]]`.
+/// The role is the identifier — reference it via `default_agent` or per-task.
+///
+/// ```toml
+/// [[agents]]
+/// role = "developer"
+/// model = "claude-sonnet-4-6"
+/// system_prompt = """
+/// You are a disciplined coding agent. Make the smallest possible change.
+/// No refactoring, no extras.
+/// """
+///
+/// [[agents]]
+/// role = "planner"
+/// model = "qwen2.5-coder-32b"
+/// provider = "lmstudio"
+/// system_prompt = """
+/// Break the epic into precise, minimal, independently shippable tasks.
+/// """
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDef {
     pub role: String,
@@ -45,6 +59,7 @@ pub struct AgentDef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
     /// Reference a named entry in `[providers]` instead of a direct `api_url`.
+    /// Omit to keep using the local `claude` CLI subprocess (the original behavior).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     /// System prompt sent before every task. Falls back to a sensible built-in default.
@@ -115,8 +130,6 @@ pub struct Config {
 
     #[serde(default = "default_test_command")]
     pub test_command: String,
-    #[serde(default = "default_dashboard_port")]
-    pub dashboard_port: u16,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
 }
@@ -124,7 +137,6 @@ pub struct Config {
 fn default_agent_name() -> String { "developer".to_string() }
 
 fn default_test_command() -> String { "cargo test".to_string() }
-fn default_dashboard_port() -> u16 { 3000 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -134,7 +146,6 @@ impl Default for Config {
             providers: default_providers(),
             agents: Vec::new(),
             test_command: default_test_command(),
-            dashboard_port: default_dashboard_port(),
             integrations: HashMap::new(),
         }
     }
@@ -143,6 +154,7 @@ impl Default for Config {
 impl Config {
     /// Load from `~/.gitzi/config.toml`.
     /// On first run (file absent) writes a fully-commented scaffold and returns its values.
+    /// Validates the result before returning.
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
@@ -161,7 +173,9 @@ impl Config {
             return Ok(config);
         }
         let text = std::fs::read_to_string(&path)?;
-        Ok(toml::from_str(&text)?)
+        let config: Self = toml::from_str(&text)?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn write(&self, _repo_root: &Path) -> Result<()> {
@@ -173,7 +187,8 @@ impl Config {
         atomic_write(&path, &text)
     }
 
-    /// Validate config on load. Returns error for unknown role names.
+    /// Validate config on load. Returns error for unknown role names or
+    /// unknown WIP column overrides.
     pub fn validate(&self) -> Result<()> {
         let mut valid_roles: Vec<String> =
             AgentRole::all().iter().map(|r| r.to_string()).collect();
@@ -185,7 +200,17 @@ impl Config {
                     agent.role, valid_roles
                 )));
             }
+            if let Some(provider) = &agent.provider
+                && !self.providers.contains_key(provider)
+            {
+                return Err(GitziError::Config(format!(
+                    "agent '{}' references unknown provider '{}' — define it under [providers.{}]",
+                    agent.role, provider, provider
+                )));
+            }
         }
+        crate::dispatcher::board::WipLimits::from_config(&self.wip_limits.overrides)
+            .map_err(GitziError::Config)?;
         Ok(())
     }
 
@@ -240,11 +265,11 @@ fn render_scaffold_toml() -> String {
     out.push_str(&format!("default_agent = {}\n\n", toml_str(&default_agent_name())));
 
     // ── wip_limits ────────────────────────────────────────────────────────────
-    out.push_str("[wip_limits]\n");
-    out.push_str("# Maximum tasks allowed in each work column simultaneously.\n");
-    out.push_str(&format!("in_progress       = {}\n", default_wip_in_progress()));
-    out.push_str(&format!("waiting_for_review = {}\n", default_wip_waiting()));
-    out.push_str(&format!("in_testing        = {}\n\n", default_wip_testing()));
+    out.push_str("# Per-column work-in-progress limit overrides. Built-in defaults apply to\n");
+    out.push_str("# any column not listed here (see dispatcher::board::WipLimits::default).\n");
+    out.push_str("# [wip_limits]\n");
+    out.push_str("# coding = 2\n");
+    out.push_str("# coding-buffer = 3\n\n");
 
     // ── providers ─────────────────────────────────────────────────────────────
     out.push_str("# ── Providers ──────────────────────────────────────────────────────────────\n");
@@ -436,5 +461,61 @@ mod tests {
                 role_name, err_msg
             );
         }
+    }
+
+    #[test]
+    fn validate_rejects_agent_referencing_unknown_provider() {
+        let config = Config {
+            agents: vec![AgentDef {
+                role: "coder".to_string(),
+                provider: Some("nonexistent".to_string()),
+                ..AgentDef::default()
+            }],
+            ..Config::default()
+        };
+
+        let err = config.validate().expect_err("unknown provider should be rejected");
+        assert!(err.to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn validate_accepts_agent_referencing_known_provider() {
+        let config = Config {
+            agents: vec![AgentDef {
+                role: "coder".to_string(),
+                provider: Some("lmstudio".to_string()),
+                ..AgentDef::default()
+            }],
+            providers: HashMap::from([(
+                "lmstudio".to_string(),
+                ProviderDef {
+                    api_url: "http://localhost:1234/v1".to_string(),
+                    api_key: String::new(),
+                },
+            )]),
+            ..Config::default()
+        };
+
+        config.validate().expect("known provider reference should be accepted");
+    }
+
+    #[test]
+    fn providers_table_round_trips_through_toml() {
+        let config = Config {
+            providers: HashMap::from([(
+                "lmstudio".to_string(),
+                ProviderDef {
+                    api_url: "http://localhost:1234/v1".to_string(),
+                    api_key: "sk-test".to_string(),
+                },
+            )]),
+            ..Config::default()
+        };
+
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        let provider = parsed.providers.get("lmstudio").unwrap();
+        assert_eq!(provider.api_url, "http://localhost:1234/v1");
+        assert_eq!(provider.api_key, "sk-test");
     }
 }

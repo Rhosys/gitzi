@@ -6,15 +6,21 @@ use serde::{Deserialize, Serialize};
 use crate::config::atomic_write;
 use crate::dispatcher::Column;
 use crate::error::Result;
+use crate::state::chat::Role;
 use crate::state::home::session_dir;
 
-/// An action taken on a review item (approval, rejection, or answer to a question).
+/// An action taken on a review item: a terminal decision (approval, rejection,
+/// answer) or a non-terminal conversational turn (comment) while the human and
+/// main agent discuss what to do.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReviewAction {
     Approval { at: DateTime<Utc> },
     Rejection { at: DateTime<Utc>, feedback: String },
     Answer { at: DateTime<Utc>, content: String },
+    /// A single turn in the rework/explain conversation about this item.
+    /// Does not resolve the item — `is_unresolved` ignores these.
+    Comment { at: DateTime<Utc>, role: Role, content: String },
 }
 
 /// The kind of review item — either an agent question or a buffer approval gate.
@@ -38,8 +44,12 @@ pub struct PersistedReviewItem {
 
 impl PersistedReviewItem {
     /// True if no terminal action (approval/rejection/answer) has been recorded.
+    /// `Comment` turns don't count — discussion can continue indefinitely
+    /// without resolving the item.
     pub fn is_unresolved(&self) -> bool {
-        self.actions.is_empty()
+        !self.actions.iter().any(|a| {
+            matches!(a, ReviewAction::Approval { .. } | ReviewAction::Rejection { .. } | ReviewAction::Answer { .. })
+        })
     }
 }
 
@@ -195,6 +205,10 @@ mod tests {
         })
     }
 
+    fn arb_role() -> impl Strategy<Value = Role> {
+        prop_oneof![Just(Role::User), Just(Role::System), Just(Role::Agent)]
+    }
+
     fn arb_review_action() -> impl Strategy<Value = ReviewAction> {
         prop_oneof![
             arb_datetime()
@@ -206,6 +220,8 @@ mod tests {
                 }),
             (arb_datetime(), "[a-z ]{1,40}")
                 .prop_map(|(at, content)| ReviewAction::Answer { at, content }),
+            (arb_datetime(), arb_role(), "[a-z ]{1,40}")
+                .prop_map(|(at, role, content)| ReviewAction::Comment { at, role, content }),
         ]
     }
 

@@ -6,15 +6,16 @@ pub mod review_queue;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn};
 
 use crate::agent::{build_main_agent, ChatTurn, MainAgent, OaiMessage};
 use crate::config::Config;
 use crate::mcp::auth::TokenStore;
-use crate::state::chat::{self as chat_store, ChatMessage};
+use crate::state::chat::{self as chat_store, ChatMessage, Role};
 use crate::state::home;
 use crate::state::reader;
 use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind, ReviewAction};
@@ -223,7 +224,7 @@ pub struct Dispatcher {
     pub review_queue: Arc<Mutex<HumanReviewQueue>>,
     pub agent_pool: AgentPool,
     pub config: Arc<Config>,
-    pub wip_limits: Arc<WipLimits>,
+    pub wip_limits: Arc<RwLock<WipLimits>>,
     /// Agents waiting to advance into a full column.
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     /// Persistent chat history (in-memory mirror of chat.jsonl).
@@ -280,6 +281,10 @@ impl Dispatcher {
             }
         }
 
+        // Remove the resolved item from the in-memory queue so it stops being
+        // surfaced to the TUI and main agent.
+        self.review_queue.lock().await.dequeue_by_task_id(task_id);
+
         // Emit event
         self.event_bus.emit(DispatchEvent::HumanApprovalReceived {
             task_id: task_id.to_string(),
@@ -294,8 +299,10 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Reject a task in a buffer column: move to previous work column with priority 0,
-    /// store feedback, record history, emit event, and signal the agent.
+    /// Send a task in a buffer column back for rework: move to previous work column
+    /// with priority 0, store feedback, record history, emit event, and signal the
+    /// agent. Invoked via the main agent's `gitzi_request_rework` tool once the
+    /// human and main agent have converged on what feedback to send.
     pub async fn reject(&self, task_id: &str, feedback: String) -> anyhow::Result<()> {
         let prev_col = {
             let board = self.board.read().await;
@@ -342,6 +349,10 @@ impl Dispatcher {
                 warn!(%task_id, error = %e, "failed to persist review item rejection");
             }
         }
+
+        // Remove the resolved item from the in-memory queue so it stops being
+        // surfaced to the TUI and main agent.
+        self.review_queue.lock().await.dequeue_by_task_id(task_id);
 
         // Emit event
         self.event_bus.emit(DispatchEvent::HumanRejectionReceived {
@@ -615,8 +626,14 @@ impl Dispatcher {
         }
         let review_queue = Arc::new(Mutex::new(queue));
 
-        // 5. Create WipLimits::default()
-        let wip_limits = Arc::new(WipLimits::default());
+        // 5. Build WipLimits from config overrides layered onto built-in defaults.
+        // `Config::load` already validated the overrides, so this can't fail in
+        // practice — fall back to defaults defensively rather than panic on boot.
+        let wip_limits = WipLimits::from_config(&config.wip_limits.overrides).unwrap_or_else(|e| {
+            warn!(error = %e, "invalid WIP limit overrides in config — using defaults");
+            WipLimits::default()
+        });
+        let wip_limits = Arc::new(RwLock::new(wip_limits));
 
         // 6. Create WIP waiting map (runtime-only, rebuilt on boot)
         let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
@@ -682,6 +699,67 @@ impl Dispatcher {
         Ok(dispatcher)
     }
 
+    /// Watch `config.toml` for changes and hot-reload WIP limits without
+    /// restarting the daemon — changes take effect on the next tick.
+    ///
+    /// Scope is intentionally narrow: only the per-column WIP overrides are
+    /// swapped in. Other config fields (agent definitions, test command,
+    /// etc.) keep whatever was loaded at boot, since they're captured by
+    /// value at points that aren't safe to hot-swap without a larger
+    /// refactor (e.g. in-flight agent backends).
+    pub async fn watch_config(&self) -> anyhow::Result<()> {
+        let path = home::global_config_file();
+        let Some(dir) = path.parent().map(std::path::Path::to_path_buf) else {
+            warn!("config file has no parent directory — config hot-reload disabled");
+            return Ok(());
+        };
+        if !dir.exists() {
+            warn!(dir = %dir.display(), "config directory does not exist — config hot-reload disabled");
+            return Ok(());
+        }
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<()>();
+        let watch_path = path.clone();
+        let mut watcher: RecommendedWatcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res
+                    && event.paths.iter().any(|p| p == &watch_path)
+                {
+                    let _ = tx.send(());
+                }
+            })?;
+        watcher.watch(&dir, RecursiveMode::NonRecursive)?;
+        info!(path = %path.display(), "watching config.toml for changes");
+
+        while rx.recv().await.is_some() {
+            // Debounce: editors commonly emit several events (write + rename)
+            // for a single save. Drain anything else that arrived meanwhile.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            while rx.try_recv().is_ok() {}
+
+            match Config::load(std::path::Path::new(".")) {
+                Ok(new_config) => {
+                    match WipLimits::from_config(&new_config.wip_limits.overrides) {
+                        Ok(new_limits) => {
+                            *self.wip_limits.write().await = new_limits;
+                            info!("config.toml changed — WIP limits reloaded");
+                        }
+                        Err(e) => warn!(
+                            error = %e,
+                            "config.toml changed but WIP limits are invalid — keeping previous limits"
+                        ),
+                    }
+                }
+                Err(e) => warn!(
+                    error = %e,
+                    "config.toml changed but failed to reload — keeping previous config"
+                ),
+            }
+        }
+
+        Ok(())
+    }
+
     /// Process a user chat message through the main agent tool calling loop.
     ///
     /// On every turn we first peek the review queue. If an item is pending we
@@ -689,6 +767,17 @@ impl Dispatcher {
     /// the LLM message so the agent surfaces it. Only the original user message
     /// (without injected context) is persisted to chat history.
     pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
+        // Capture which buffer-approval item (if any) is under discussion before
+        // the turn runs, so we record this exchange against that item's structured
+        // history even if the turn itself resolves and dequeues it.
+        let discussed_task_id = {
+            let queue = self.review_queue.lock().await;
+            queue.peek().and_then(|item| match item.kind {
+                review_queue::ReviewItemKind::BufferApproval { .. } => Some(item.task_id.clone()),
+                review_queue::ReviewItemKind::AgentQuestion { .. } => None,
+            })
+        };
+
         let final_response = self.run_main_agent_turn(message).await?;
 
         // Persist the original user message (not augmented) and the agent response
@@ -701,6 +790,25 @@ impl Dispatcher {
             let mut hist = self.chat_history.lock().await;
             hist.push(user_msg);
             hist.push(agent_msg);
+        }
+
+        // Record this exchange on the review item's own structured history.
+        if let Some(task_id) = discussed_task_id
+            && let Ok(Some(mut review_item)) = review::find_unresolved_for_task(&task_id) {
+            let now = chrono::Utc::now();
+            review_item.actions.push(ReviewAction::Comment {
+                at: now,
+                role: Role::User,
+                content: message.to_string(),
+            });
+            review_item.actions.push(ReviewAction::Comment {
+                at: now,
+                role: Role::Agent,
+                content: final_response.clone(),
+            });
+            if let Err(e) = review::write_review_item(&review_item) {
+                warn!(%task_id, error = %e, "failed to persist rework discussion comment");
+            }
         }
 
         Ok(final_response)
@@ -755,7 +863,14 @@ impl Dispatcher {
                     format!("agent question: {question}")
                 }
                 review_queue::ReviewItemKind::BufferApproval { buffer_column, .. } => {
-                    format!("needs approval to advance past {buffer_column}")
+                    format!(
+                        "is parked at {buffer_column} awaiting a decision. The user can advance it \
+                        directly from the board without talking to you, so if they're discussing it \
+                        here they have a concern. Do not call gitzi_request_rework until you've \
+                        restated their concern in your own words and they've confirmed you understood \
+                        both WHAT they want changed and HOW strongly they feel about it. Ask one \
+                        clarifying question at a time if anything is unclear."
+                    )
                 }
             };
             format!(
@@ -967,6 +1082,26 @@ impl Dispatcher {
                 }
                 match self.gitzi_get_review_item(&id).await {
                     Ok(item) => serde_json::to_string(&item).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_request_rework" => {
+                let task_id = args
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let feedback = args
+                    .get("feedback")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if task_id.is_empty() || feedback.is_empty() {
+                    return "error: missing required argument: task_id or feedback".to_string();
+                }
+                match self.reject(&task_id, feedback).await {
+                    Ok(()) => "ok: task sent back for rework".to_string(),
                     Err(e) => format!("error: {e}"),
                 }
             }

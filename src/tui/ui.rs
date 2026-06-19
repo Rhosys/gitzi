@@ -154,7 +154,7 @@ fn draw_right_pane(frame: &mut Frame, app: &App, area: Rect) {
         Mode::Status => draw_status(frame, app, area),
         Mode::Idle | Mode::ChatInput | Mode::ChatWaiting => draw_board(frame, app, area),
         Mode::Review => draw_review_with_board(frame, app, area),
-        Mode::RejectInput | Mode::AnswerInput => draw_input_panel(frame, app, area),
+        Mode::AnswerInput => draw_input_panel(frame, app, area),
     }
 }
 
@@ -379,8 +379,8 @@ fn draw_review_panel(frame: &mut Frame, app: &App, area: Rect) {
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("[a] approve  ", Style::default().fg(Color::Green)),
-                Span::styled("[r] reject", Style::default().fg(Color::Red)),
+                Span::styled("[a] advance  ", Style::default().fg(Color::Green)),
+                Span::styled("[c] rework + explain", Style::default().fg(Color::Yellow)),
             ]));
         }
     }
@@ -391,7 +391,7 @@ fn draw_review_panel(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-// ── Input panel (reject feedback / answer) ────────────────────────────────────
+// ── Input panel (answer) ───────────────────────────────────────────────────────
 
 fn draw_input_panel(frame: &mut Frame, app: &App, area: Rect) {
     let [prompt_area, input_area, board_area] = Layout::vertical([
@@ -401,7 +401,6 @@ fn draw_input_panel(frame: &mut Frame, app: &App, area: Rect) {
     ]).areas(area);
 
     let prompt_text = match app.mode {
-        Mode::RejectInput => "Rejection feedback:",
         Mode::AnswerInput => "Answer:",
         _ => "",
     };
@@ -441,8 +440,8 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let controls = match app.mode {
         Mode::Status => " [c] chat  [←→↑↓] board  [ctrl+q] quit",
         Mode::Idle => " [c] chat  [s] status  [←→↑↓] board  [ctrl+q] quit",
-        Mode::Review => " [c] chat  [a] approve/answer  [r] reject  [←→↑↓] board  [ctrl+q] quit",
-        Mode::RejectInput | Mode::AnswerInput => " [enter] submit  [esc] cancel",
+        Mode::Review => " [a] advance/answer  [c] chat to rework+explain  [←→↑↓] board  [ctrl+q] quit",
+        Mode::AnswerInput => " [enter] submit  [esc] cancel",
         Mode::ChatInput => " [enter] send  [esc] cancel",
         Mode::ChatWaiting => " waiting for response…",
     };
@@ -463,7 +462,6 @@ fn mode_label(mode: &Mode) -> &'static str {
         Mode::Status => "Status",
         Mode::Idle => "Board",
         Mode::Review => "Review",
-        Mode::RejectInput => "Reject",
         Mode::AnswerInput => "Answer",
         Mode::ChatInput => "Chat",
         Mode::ChatWaiting => "Chat — thinking…",
