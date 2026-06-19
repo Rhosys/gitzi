@@ -178,7 +178,8 @@ impl AgentRole {
         crate::config::AgentDef {
             role: self.to_string(),
             model: "claude-sonnet-4-20250514".to_string(),
-            base_url: None,
+            api_url: None,
+            provider: None,
             system_prompt: Some(self.default_system_prompt().to_string()),
         }
     }

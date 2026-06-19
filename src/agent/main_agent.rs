@@ -243,7 +243,7 @@ impl MainAgent {
         Self {
             client: Client::new(),
             base_url: def
-                .base_url
+                .api_url
                 .clone()
                 .unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
             model: def.model.clone(),
