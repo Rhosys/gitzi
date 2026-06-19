@@ -241,7 +241,7 @@ async fn agent_loop(
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
-        let backend = agent::build_agent(&agent_def);
+        let backend = agent::build_agent(&config, &agent_def);
 
         // Run the agent backend, then revoke the token regardless of outcome
         let result = backend.run(&task, &ctx).await;
@@ -384,7 +384,7 @@ async fn handle_agent_result(
 
             // ONE retry attempt
             let agent_def = config.resolve_agent(&role.to_string());
-            let backend = agent::build_agent(&agent_def);
+            let backend = agent::build_agent(config, &agent_def);
             let retry_result = backend.run(task, &retry_ctx).await;
 
             let retry_clean = match retry_result {
