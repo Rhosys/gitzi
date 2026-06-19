@@ -337,6 +337,13 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
 - [ ] **Tracing export** — `tracing_subscriber` is initialized but no exporter is
       configured. Add optional OTLP export (behind a feature flag or env var) so the
       scheduler's tick timing and agent durations are observable in production.
+- [ ] **Secure storage for `ProviderDef::api_key`** — today `[providers.*].api_key` is
+      stored in plaintext in `~/.gitzi/config.toml` (see `src/config.rs`). On load,
+      check whether the value is already in gitzi's secure-reference format (e.g.
+      `keyring:<service>/<account>`); if not, move the raw key into the OS keyring /
+      secure enclave (`keyring` crate or platform equivalent) and rewrite the field in
+      config.toml to the secure-reference pointer instead of the plaintext key. Define
+      the exact pointer format and pick the keyring backend per OS before implementing.
 
 ---
 

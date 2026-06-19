@@ -60,8 +60,6 @@ pub enum Mode {
     Idle,
     /// Showing a review item with controls
     Review,
-    /// Typing rejection feedback
-    RejectInput,
     /// Typing answer to agent question
     AnswerInput,
     /// Typing a chat message to the main agent
@@ -150,7 +148,6 @@ pub struct App {
 #[derive(Debug)]
 pub enum DaemonCommand {
     Approve(String),            // task_id
-    Reject(String, String),     // task_id, feedback
     Answer(String, String),     // item_id, answer
     Chat(String),               // message to main agent
     RefreshBoard,
@@ -294,33 +291,11 @@ impl App {
         self.board.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// Approve the current review item.
-    pub fn approve_current(&mut self) {
+    /// Advance the current review item to its next work column.
+    pub fn advance_current(&mut self) {
         if let Some(ref item) = self.review_item {
             let _ = self.cmd_tx.send(DaemonCommand::Approve(item.task_id.clone()));
-            self.status = format!("approving {}…", &item.task_id[..8.min(item.task_id.len())]);
-        }
-    }
-
-    /// Begin reject flow — switch to input mode.
-    pub fn begin_reject(&mut self) {
-        if self.review_item.is_some() {
-            self.mode = Mode::RejectInput;
-            self.input.clear();
-        }
-    }
-
-    /// Submit rejection with feedback.
-    pub fn submit_reject(&mut self) {
-        if let Some(ref item) = self.review_item {
-            let feedback = std::mem::take(&mut self.input);
-            if feedback.trim().is_empty() {
-                self.status = "feedback required".to_string();
-                return;
-            }
-            let _ = self.cmd_tx.send(DaemonCommand::Reject(item.task_id.clone(), feedback));
-            self.status = format!("rejecting {}…", &item.task_id[..8.min(item.task_id.len())]);
-            self.mode = Mode::Review;
+            self.status = format!("advancing {}…", &item.task_id[..8.min(item.task_id.len())]);
         }
     }
 

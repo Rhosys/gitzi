@@ -69,7 +69,7 @@ proptest! {
             let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
             let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
             let config = Arc::new(Config::default());
-            let wip_limits = Arc::new(WipLimits::default());
+            let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
             let wip_waiting = Arc::new(Mutex::new(waiting));
 
             let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
@@ -164,7 +164,7 @@ proptest! {
             let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
             let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
             let config = Arc::new(Config::default());
-            let wip_limits = Arc::new(WipLimits::default());
+            let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
             let wip_waiting = Arc::new(Mutex::new(waiting));
 
             let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());

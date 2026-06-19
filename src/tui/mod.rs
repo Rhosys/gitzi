@@ -147,28 +147,20 @@ async fn run_event_loop(
             },
             Mode::Review => match key.code {
                 KeyCode::Char('a') => {
-                    // 'a' = approve (buffer) or answer (question)
+                    // 'a' = advance (buffer) or answer (question)
                     if let Some(ref item) = app.review_item {
                         use app::ReviewItemKind;
                         match &item.kind {
                             ReviewItemKind::AgentQuestion { .. } => app.begin_answer(),
-                            ReviewItemKind::BufferApproval { .. } => app.approve_current(),
+                            ReviewItemKind::BufferApproval { .. } => app.advance_current(),
                         }
                     }
                 }
-                KeyCode::Char('r') => app.begin_reject(),
                 KeyCode::Char('c') => app.begin_chat(),
                 KeyCode::Left | KeyCode::Char('h') => app.move_left(),
                 KeyCode::Right | KeyCode::Char('l') => app.move_right(),
                 KeyCode::Up | KeyCode::Char('k') => app.move_up(),
                 KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                _ => {}
-            },
-            Mode::RejectInput => match key.code {
-                KeyCode::Enter => app.submit_reject(),
-                KeyCode::Esc => app.cancel_input(),
-                KeyCode::Backspace => { app.input.pop(); }
-                KeyCode::Char(c) => app.input.push(c),
                 _ => {}
             },
             Mode::AnswerInput => match key.code {
