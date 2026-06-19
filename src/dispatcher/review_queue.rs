@@ -138,6 +138,14 @@ impl HumanReviewQueue {
         Some(self.items.remove(pos))
     }
 
+    /// Remove and return the buffer-approval item for the given task, if any.
+    /// Buffer approvals are looked up by task ID rather than item ID since
+    /// callers (approve/reject) only know the task, not the in-memory item ID.
+    pub fn dequeue_by_task_id(&mut self, task_id: &str) -> Option<HumanReviewItem> {
+        let pos = self.items.iter().position(|i| i.task_id == task_id)?;
+        Some(self.items.remove(pos))
+    }
+
     /// True if any agent question items exist (suppresses buffer approvals from peek).
     pub fn has_agent_questions(&self) -> bool {
         self.items.iter().any(|i| i.is_question())
@@ -276,6 +284,18 @@ mod tests {
         q.enqueue(question("t1", "Q?", ts(100)));
         assert!(q.dequeue("nonexistent").is_none());
         assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn dequeue_by_task_id_removes_buffer_approval() {
+        let mut q = HumanReviewQueue::new();
+        q.enqueue(approval("t1", Column::CodingBuffer, 50, ts(100)));
+        q.enqueue(approval("t2", Column::CodingBuffer, 50, ts(200)));
+
+        let removed = q.dequeue_by_task_id("t1").unwrap();
+        assert_eq!(removed.task_id, "t1");
+        assert_eq!(q.len(), 1);
+        assert_eq!(q.peek().unwrap().task_id, "t2");
     }
 
     #[test]

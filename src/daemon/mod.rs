@@ -106,9 +106,6 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
                 let task_id = cmd.strip_prefix("approve ").unwrap().trim();
                 handle_approve(&dispatcher, task_id).await
             }
-            cmd if cmd.starts_with("reject ") => {
-                handle_reject(&dispatcher, cmd.strip_prefix("reject ").unwrap().trim()).await
-            }
             cmd if cmd.starts_with("answer ") => {
                 handle_answer(&dispatcher, cmd.strip_prefix("answer ").unwrap().trim()).await
             }
@@ -236,18 +233,6 @@ async fn handle_queue_len(dispatcher: &Dispatcher) -> String {
 
 async fn handle_approve(dispatcher: &Dispatcher, task_id: &str) -> String {
     match dispatcher.approve(task_id).await {
-        Ok(()) => "ok".to_string(),
-        Err(e) => format!("error: {e}"),
-    }
-}
-
-/// Parse `<task_id> <feedback...>` — first token is task_id, rest is feedback.
-async fn handle_reject(dispatcher: &Dispatcher, args: &str) -> String {
-    let (task_id, feedback) = match args.split_once(' ') {
-        Some((id, fb)) => (id, fb.to_string()),
-        None => return "error: reject requires <task_id> <feedback>".to_string(),
-    };
-    match dispatcher.reject(task_id, feedback).await {
         Ok(()) => "ok".to_string(),
         Err(e) => format!("error: {e}"),
     }
