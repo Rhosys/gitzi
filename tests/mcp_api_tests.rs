@@ -33,7 +33,7 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
     let config = Arc::new(Config::default());
-    let wip_limits = Arc::new(WipLimits::default());
+    let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
     let agent_pool = AgentPool::spawn(
@@ -192,9 +192,9 @@ async fn tools_list_returns_all_seven_tools() {
     for expected in &[
         "gitzi_list_epics",
         "gitzi_list_tasks",
-        "gitzi_get_adr",
+        "gitzi_get_review_item",
         "gitzi_create_task",
-        "gitzi_create_adr",
+        "gitzi_create_review_item",
         "gitzi_update_task",
         "gitzi_park_task",
     ] {
@@ -346,7 +346,7 @@ async fn tools_call_unknown_tool_returns_internal_error() {
 }
 
 #[tokio::test]
-async fn tools_call_scope_mismatch_on_create_adr_is_rejected() {
+async fn tools_call_scope_mismatch_on_create_review_item_is_rejected() {
     let (app, store) = build_test_app().await;
     // Token is scoped to task-a but the request targets task-b
     let token = store.issue("task-a").await;
@@ -356,7 +356,7 @@ async fn tools_call_scope_mismatch_on_create_adr_is_rejected() {
         "id": 22,
         "method": "tools/call",
         "params": {
-            "name": "gitzi_create_adr",
+            "name": "gitzi_create_review_item",
             "arguments": {
                 "task_id": "task-b",
                 "question": "Should we use Redis or Postgres for the queue?"
@@ -426,7 +426,7 @@ async fn tools_call_scope_mismatch_on_park_task_is_rejected() {
 }
 
 #[tokio::test]
-async fn create_adr_missing_question_arg_returns_error() {
+async fn create_review_item_missing_question_arg_returns_error() {
     let (app, store) = build_test_app().await;
     let token = store.issue("task-a").await;
 
@@ -435,7 +435,7 @@ async fn create_adr_missing_question_arg_returns_error() {
         "id": 30,
         "method": "tools/call",
         "params": {
-            "name": "gitzi_create_adr",
+            "name": "gitzi_create_review_item",
             "arguments": {
                 "task_id": "task-a"
                 // "question" missing

@@ -90,18 +90,17 @@ pub fn sub_agent_tools() -> Vec<Tool> {
             }),
         },
         Tool {
-            name: "gitzi_get_adr",
-            description: "Retrieve a single Architecture Decision Record (ADR) by its ID. \
-                          Returns the full persisted review item including the original question, \
-                          any context that was supplied, and all actions taken on it (answers, \
-                          approvals, rejections). Use this to read an ADR before referencing it \
-                          in your work.",
+            name: "gitzi_get_review_item",
+            description: "Retrieve a single review item by its ID. Returns the full record \
+                          including the original question, any context supplied, and all actions \
+                          taken on it (answers, approvals, rejections). Use this to read a \
+                          review item before referencing it in your work.",
             input_schema: json!({
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "The unique ID of the ADR / review item to retrieve."
+                        "description": "The unique ID of the review item to retrieve."
                     }
                 },
                 "required": ["id"]
@@ -137,11 +136,10 @@ pub fn sub_agent_tools() -> Vec<Tool> {
             }),
         },
         Tool {
-            name: "gitzi_create_adr",
-            description: "Create an Architecture Decision Record (ADR) for a task you are \
-                          currently working on. Use this to surface a design question or \
-                          architectural decision that requires human input before you can \
-                          proceed. The task_id must match the task you were assigned (from \
+            name: "gitzi_create_review_item",
+            description: "Create a review item for a task you are currently working on. Use this \
+                          to surface a question or decision that requires human input before you \
+                          can proceed. The task_id must match the task you were assigned (from \
                           your GITZI_MCP_TOKEN). The human reviewer will answer the question \
                           and unblock you.",
             input_schema: json!({
@@ -149,11 +147,11 @@ pub fn sub_agent_tools() -> Vec<Tool> {
                 "properties": {
                     "task_id": {
                         "type": "string",
-                        "description": "The ID of the task this ADR is associated with. Must match the task in your session token."
+                        "description": "The ID of the task this review item is associated with. Must match the task in your session token."
                     },
                     "question": {
                         "type": "string",
-                        "description": "The architectural question or decision that needs human input. Be specific and self-contained."
+                        "description": "The question or decision that needs human input. Be specific and self-contained."
                     },
                     "context": {
                         "type": "string",
@@ -195,7 +193,7 @@ pub fn sub_agent_tools() -> Vec<Tool> {
                           assigned to your session token. Use this when the task is blocked \
                           by an external dependency, missing information, or a prerequisite \
                           task that has not yet completed — not for raising architectural \
-                          questions (use gitzi_create_adr for that).",
+                          questions (use gitzi_create_review_item for that).",
             input_schema: json!({
                 "type": "object",
                 "properties": {
