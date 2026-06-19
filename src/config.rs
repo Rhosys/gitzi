@@ -4,6 +4,14 @@ use serde::{Deserialize, Serialize};
 use crate::dispatcher::AgentRole;
 use crate::error::{GitziError, Result};
 
+/// An LLM provider definition (e.g. LM Studio, Ollama, OpenAI-compatible endpoint).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderDef {
+    pub api_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub api_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WipLimits {
     #[serde(default = "default_wip_in_progress")]
@@ -28,34 +36,17 @@ fn default_wip_in_progress() -> u32 { 1 }
 fn default_wip_waiting() -> u32 { 3 }
 fn default_wip_testing() -> u32 { 3 }
 
-/// An agent definition. Define as many as you like under `[[agents]]`.
-/// The role is the identifier — reference it via `default_agent` or per-task.
-///
-/// ```toml
-/// [[agents]]
-/// role = "developer"
-/// model = "claude-sonnet-4-6"
-/// system_prompt = """
-/// You are a disciplined coding agent. Make the smallest possible change.
-/// No refactoring, no extras.
-/// """
-///
-/// [[agents]]
-/// role = "planner"
-/// model = "claude-opus-4-8"
-/// system_prompt = """
-/// Break the epic into precise, minimal, independently shippable tasks.
-/// """
-/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDef {
     pub role: String,
     #[serde(default = "default_model")]
     pub model: String,
-    /// Base URL of the OpenAI-compatible API endpoint.
-    /// Defaults to `http://localhost:1234/v1` (LM Studio).
+    /// Direct API URL for this agent. Mutually exclusive with `provider`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
+    pub api_url: Option<String>,
+    /// Reference a named entry in `[providers]` instead of a direct `api_url`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// System prompt sent before every task. Falls back to a sensible built-in default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -64,9 +55,10 @@ pub struct AgentDef {
 impl Default for AgentDef {
     fn default() -> Self {
         Self {
-            role: "developer".to_string(),
+            role: String::new(),
             model: default_model(),
-            base_url: None,
+            api_url: None,
+            provider: None,
             system_prompt: None,
         }
     }
@@ -78,7 +70,8 @@ impl AgentDef {
         Self {
             role: "main".to_string(),
             model: "local-model".to_string(),
-            base_url: Some("http://localhost:1234/v1".to_string()),
+            api_url: Some("http://localhost:1234/v1".to_string()),
+            provider: None,
             system_prompt: Some(
                 "You are the main coordination agent for gitzi, an AI-driven software \
                  development pipeline. Help the user manage their project through natural \
@@ -93,6 +86,15 @@ impl AgentDef {
 
 fn default_model() -> String { "claude-sonnet-4-6".to_string() }
 
+fn default_providers() -> HashMap<String, ProviderDef> {
+    HashMap::from([
+        ("lmstudio".to_string(), ProviderDef {
+            api_url: "http://localhost:1234/v1".to_string(),
+            api_key: String::new(),
+        }),
+    ])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -102,9 +104,13 @@ pub struct Config {
     #[serde(default = "default_agent_name")]
     pub default_agent: String,
 
+    /// Named LLM provider endpoints. Reference by name in an agent's `provider` field.
+    #[serde(default = "default_providers")]
+    pub providers: HashMap<String, ProviderDef>,
+
     /// All agent definitions. Referenced by name via `default_agent`
     /// or per-task via the `agent` field on a task.
-    #[serde(default = "default_agents")]
+    #[serde(default)]
     pub agents: Vec<AgentDef>,
 
     #[serde(default = "default_test_command")]
@@ -117,10 +123,6 @@ pub struct Config {
 
 fn default_agent_name() -> String { "developer".to_string() }
 
-fn default_agents() -> Vec<AgentDef> {
-    vec![AgentDef::default()]
-}
-
 fn default_test_command() -> String { "cargo test".to_string() }
 fn default_dashboard_port() -> u16 { 3000 }
 
@@ -129,7 +131,8 @@ impl Default for Config {
         Self {
             wip_limits: WipLimits::default(),
             default_agent: default_agent_name(),
-            agents: default_agents(),
+            providers: default_providers(),
+            agents: Vec::new(),
             test_command: default_test_command(),
             dashboard_port: default_dashboard_port(),
             integrations: HashMap::new(),
@@ -138,11 +141,24 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Load from `~/.gitzi/config.toml`. Falls back to defaults if missing.
+    /// Load from `~/.gitzi/config.toml`.
+    /// On first run (file absent) writes a fully-commented scaffold and returns its values.
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
-            return Ok(Self::default());
+            let text = render_scaffold_toml();
+            let config: Self = toml::from_str(&text).map_err(|e| {
+                GitziError::Config(format!("scaffold TOML failed to parse: {e}"))
+            })?;
+            config.validate()?;
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            match atomic_write(&path, &text) {
+                Ok(()) => tracing::info!(path = %path.display(), "wrote default config.toml"),
+                Err(e) => tracing::warn!(path = %path.display(), error = %e, "could not write default config.toml"),
+            }
+            return Ok(config);
         }
         let text = std::fs::read_to_string(&path)?;
         Ok(toml::from_str(&text)?)
@@ -190,6 +206,11 @@ impl Config {
                     .unwrap_or_else(|| AgentRole::Coder.default_agent_def())
             })
     }
+
+    /// Resolve a provider by name, if it exists.
+    pub fn resolve_provider(&self, name: &str) -> Option<&ProviderDef> {
+        self.providers.get(name)
+    }
 }
 
 pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
@@ -199,10 +220,115 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Build the default config.toml content with explanatory comments.
+/// Pulled dynamically from AgentRole::all() and WipLimits defaults so it
+/// stays in sync with the code automatically.
+fn render_scaffold_toml() -> String {
+    let mut out = String::new();
+
+    out.push_str("# gitzi configuration\n");
+    out.push_str("# ~/.gitzi/config.toml — edit freely, never committed to git\n");
+    out.push_str("#\n");
+    out.push_str("# Most settings have sensible defaults; uncomment what you want to change.\n\n");
+
+    // ── test_command ──────────────────────────────────────────────────────────
+    out.push_str("# Shell command gitzi runs to verify a task after coding.\n");
+    out.push_str(&format!("test_command = {}\n\n", toml_str(&default_test_command())));
+
+    // ── default_agent ─────────────────────────────────────────────────────────
+    out.push_str("# Which agent role handles tasks that don't specify one.\n");
+    out.push_str(&format!("default_agent = {}\n\n", toml_str(&default_agent_name())));
+
+    // ── wip_limits ────────────────────────────────────────────────────────────
+    out.push_str("[wip_limits]\n");
+    out.push_str("# Maximum tasks allowed in each work column simultaneously.\n");
+    out.push_str(&format!("in_progress       = {}\n", default_wip_in_progress()));
+    out.push_str(&format!("waiting_for_review = {}\n", default_wip_waiting()));
+    out.push_str(&format!("in_testing        = {}\n\n", default_wip_testing()));
+
+    // ── providers ─────────────────────────────────────────────────────────────
+    out.push_str("# ── Providers ──────────────────────────────────────────────────────────────\n");
+    out.push_str("# Named LLM endpoints. Reference them in [[agents]] via provider = \"name\".\n");
+    out.push_str("# api_key is stored in plain text here — this file is never committed to git.\n\n");
+
+    for (name, provider) in &default_providers() {
+        out.push_str(&format!("[providers.{name}]\n"));
+        out.push_str(&format!("api_url = {}\n", toml_str(&provider.api_url)));
+        out.push_str("# api_key = \"sk-...\"\n\n");
+    }
+
+    // ── agents ────────────────────────────────────────────────────────────────
+    out.push_str("# ── Agents ─────────────────────────────────────────────────────────────────\n");
+    out.push_str("# Each [[agents]] block overrides the built-in defaults for that role.\n");
+    out.push_str("# Valid roles: ");
+    let role_names: Vec<String> = AgentRole::all().iter().map(|r| r.to_string()).collect();
+    out.push_str(&role_names.join(", "));
+    out.push_str(", main\n");
+    out.push_str("#\n");
+    out.push_str("# Fields:\n");
+    out.push_str("#   model       — model identifier string passed to the API\n");
+    out.push_str("#   api_url     — direct OpenAI-compatible endpoint (overrides provider)\n");
+    out.push_str("#   provider    — name of an entry in [providers] above\n");
+    out.push_str("#   system_prompt — override the built-in system prompt for this role\n\n");
+
+    // main agent
+    {
+        let def = AgentDef::default_main();
+        out.push_str("[[agents]]\n");
+        out.push_str(&format!("role    = {}\n", toml_str(&def.role)));
+        out.push_str(&format!("model   = {}\n", toml_str(&def.model)));
+        if let Some(ref url) = def.api_url {
+            out.push_str(&format!("api_url = {}\n", toml_str(url)));
+        }
+        if let Some(ref prompt) = def.system_prompt {
+            out.push_str(&format!("system_prompt = {}\n", toml_multiline(prompt)));
+        }
+        out.push('\n');
+    }
+
+    // pipeline roles
+    for role in AgentRole::all() {
+        let def = role.default_agent_def();
+        out.push_str("[[agents]]\n");
+        out.push_str(&format!("role    = {}\n", toml_str(&def.role)));
+        out.push_str(&format!("model   = {}\n", toml_str(&def.model)));
+        out.push_str("# provider = \"lmstudio\"  # use a named provider instead of api_url\n");
+        if let Some(ref prompt) = def.system_prompt {
+            out.push_str(&format!("system_prompt = {}\n", toml_multiline(prompt)));
+        }
+        out.push('\n');
+    }
+
+    out
+}
+
+fn toml_str(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+fn toml_multiline(s: &str) -> String {
+    format!("\"\"\"\n{s}\n\"\"\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    #[test]
+    fn scaffold_toml_parses_and_validates() {
+        let text = render_scaffold_toml();
+        let config: Config = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("scaffold failed to parse: {e}\n\n{text}"));
+        config.validate().expect("scaffold config failed validate()");
+        assert!(config.providers.contains_key("lmstudio"));
+        assert!(!config.agents.is_empty(), "scaffold should include agent entries");
+        let roles: Vec<&str> = config.agents.iter().map(|a| a.role.as_str()).collect();
+        assert!(roles.contains(&"main"));
+        for role in AgentRole::all() {
+            assert!(roles.contains(&role.to_string().as_str()), "missing role {role}");
+        }
+    }
 
     // Feature: dispatcher-audit-fixes, Property 12: resolve_agent returns config override or hardcoded default
     // **Validates: Requirements 7.1, 7.3, 7.4**
@@ -222,7 +348,8 @@ mod tests {
                 .map(|(i, (role, _))| AgentDef {
                     role: role.to_string(),
                     model: custom_models[i % custom_models.len()].clone(),
-                    base_url: None,
+                    api_url: None,
+                    provider: None,
                     system_prompt: Some(custom_prompts[i % custom_prompts.len()].clone()),
                 })
                 .collect();
@@ -290,7 +417,8 @@ mod tests {
                 agents: vec![AgentDef {
                     role: role_name.clone(),
                     model: "claude-sonnet-4-6".to_string(),
-                    base_url: None,
+                    api_url: None,
+                    provider: None,
                     system_prompt: None,
                 }],
                 ..Config::default()
