@@ -18,6 +18,7 @@ pub enum DispatchEvent {
     AgentCompleted { task_id: String, agent_role: AgentRole },
     AgentBlocked { task_id: String, agent_role: AgentRole, question: String },
     BootComplete,
+    PanelSwitch { view: String },
 }
 
 // ─── EventBus ─────────────────────────────────────────────────────────────────

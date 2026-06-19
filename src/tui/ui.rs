@@ -151,10 +151,91 @@ fn draw_chat_input(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_right_pane(frame: &mut Frame, app: &App, area: Rect) {
     match &app.mode {
+        Mode::Status => draw_status(frame, app, area),
         Mode::Idle | Mode::ChatInput | Mode::ChatWaiting => draw_board(frame, app, area),
         Mode::Review => draw_review_with_board(frame, app, area),
-        Mode::RejectInput | Mode::AnswerInput => draw_input_panel(frame, app, area),
+        Mode::AnswerInput => draw_input_panel(frame, app, area),
     }
+}
+
+// ── Status card (default landing view) ────────────────────────────────────────
+
+fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Status ")
+        .border_style(Style::default().fg(Color::Blue));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Current epic
+    lines.push(section_header("Current epic"));
+    match app.current_epic_status() {
+        Some(epic) => {
+            lines.push(Line::from(Span::styled(
+                epic.title,
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("{} / {} tasks done", epic.done, epic.total),
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        None => lines.push(Line::from(Span::styled(
+            "No active epic",
+            Style::default().fg(Color::DarkGray),
+        ))),
+    }
+    lines.push(Line::from(""));
+
+    // In progress
+    let in_progress = app.tasks_in_progress();
+    lines.push(section_header(&format!("In progress ({})", in_progress.len())));
+    if in_progress.is_empty() {
+        lines.push(Line::from(Span::styled("Nothing in flight", Style::default().fg(Color::DarkGray))));
+    } else {
+        for task in &in_progress {
+            lines.push(bullet_line(&task.title, Color::Yellow));
+        }
+    }
+    lines.push(Line::from(""));
+
+    // Waiting for you
+    let waiting = app.tasks_waiting_for_you();
+    lines.push(section_header(&format!("Waiting for you ({})", waiting.len())));
+    if waiting.is_empty() {
+        lines.push(Line::from(Span::styled("Nothing pending", Style::default().fg(Color::DarkGray))));
+    } else {
+        for task in &waiting {
+            lines.push(bullet_line(&task.title, Color::Green));
+        }
+    }
+    lines.push(Line::from(""));
+
+    // Clarification queue
+    lines.push(section_header("Clarification queue"));
+    lines.push(Line::from(Span::styled(
+        format!("{} pending", app.question_count),
+        if app.question_count > 0 { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::DarkGray) },
+    )));
+
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn section_header(text: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+    ))
+}
+
+fn bullet_line(text: &str, color: Color) -> Line<'static> {
+    Line::from(Span::styled(format!("  • {text}"), Style::default().fg(color)))
 }
 
 // ── Board rendering (13 columns, compact) ─────────────────────────────────────
@@ -298,8 +379,8 @@ fn draw_review_panel(frame: &mut Frame, app: &App, area: Rect) {
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
-                Span::styled("[a] approve  ", Style::default().fg(Color::Green)),
-                Span::styled("[r] reject", Style::default().fg(Color::Red)),
+                Span::styled("[a] advance  ", Style::default().fg(Color::Green)),
+                Span::styled("[c] rework + explain", Style::default().fg(Color::Yellow)),
             ]));
         }
     }
@@ -310,7 +391,7 @@ fn draw_review_panel(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-// ── Input panel (reject feedback / answer) ────────────────────────────────────
+// ── Input panel (answer) ───────────────────────────────────────────────────────
 
 fn draw_input_panel(frame: &mut Frame, app: &App, area: Rect) {
     let [prompt_area, input_area, board_area] = Layout::vertical([
@@ -320,7 +401,6 @@ fn draw_input_panel(frame: &mut Frame, app: &App, area: Rect) {
     ]).areas(area);
 
     let prompt_text = match app.mode {
-        Mode::RejectInput => "Rejection feedback:",
         Mode::AnswerInput => "Answer:",
         _ => "",
     };
@@ -358,9 +438,10 @@ fn draw_input_panel(frame: &mut Frame, app: &App, area: Rect) {
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let controls = match app.mode {
-        Mode::Idle => " [c] chat  [←→↑↓] board  [ctrl+q] quit",
-        Mode::Review => " [c] chat  [a] approve/answer  [r] reject  [←→↑↓] board  [ctrl+q] quit",
-        Mode::RejectInput | Mode::AnswerInput => " [enter] submit  [esc] cancel",
+        Mode::Status => " [c] chat  [←→↑↓] board  [ctrl+q] quit",
+        Mode::Idle => " [c] chat  [s] status  [←→↑↓] board  [ctrl+q] quit",
+        Mode::Review => " [a] advance/answer  [c] chat to rework+explain  [←→↑↓] board  [ctrl+q] quit",
+        Mode::AnswerInput => " [enter] submit  [esc] cancel",
         Mode::ChatInput => " [enter] send  [esc] cancel",
         Mode::ChatWaiting => " waiting for response…",
     };
@@ -378,9 +459,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
 
 fn mode_label(mode: &Mode) -> &'static str {
     match mode {
+        Mode::Status => "Status",
         Mode::Idle => "Board",
         Mode::Review => "Review",
-        Mode::RejectInput => "Reject",
         Mode::AnswerInput => "Answer",
         Mode::ChatInput => "Chat",
         Mode::ChatWaiting => "Chat — thinking…",

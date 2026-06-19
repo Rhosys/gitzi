@@ -1,62 +1,54 @@
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
-use rig::providers::anthropic;
+use rig::providers::openai;
 use crate::error::{GitziError, Result};
 use crate::model::Task;
 use super::backend::{AgentBackend, AgentResult, RunContext};
+use super::prompt::{build_task_content, DEFAULT_PREAMBLE};
 
-#[allow(dead_code)]
+/// Runs a pipeline agent against an OpenAI-compatible chat-completions endpoint
+/// (LM Studio, or anything else speaking the same wire format) via `rig`.
 pub struct RigAgent {
+    base_url: String,
     api_key: String,
     model: String,
     system_prompt: Option<String>,
 }
 
-#[allow(dead_code)]
 impl RigAgent {
-    pub fn new(api_key: impl Into<String>) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        system_prompt: Option<String>,
+    ) -> Self {
         Self {
+            base_url: base_url.into(),
             api_key: api_key.into(),
-            model: anthropic::completion::CLAUDE_SONNET_4_6.to_string(),
-            system_prompt: None,
+            model: model.into(),
+            system_prompt,
         }
-    }
-
-    pub fn with_model(mut self, model: impl Into<String>) -> Self {
-        self.model = model.into();
-        self
-    }
-
-    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.system_prompt = Some(prompt.into());
-        self
     }
 }
 
 impl AgentBackend for RigAgent {
-    async fn run(&self, task: &Task, _ctx: &RunContext) -> Result<AgentResult> {
-        let client = anthropic::Client::new(&self.api_key)
+    async fn run(&self, task: &Task, ctx: &RunContext) -> Result<AgentResult> {
+        // LM Studio (and most other local model servers) only implement the
+        // traditional Chat Completions wire format, not OpenAI's newer Responses
+        // API — `openai::Client`'s default extension. Use `CompletionsClient`
+        // to target `/chat/completions` instead of `/responses`.
+        let client = openai::CompletionsClient::builder()
+            .api_key(&self.api_key)
+            .base_url(&self.base_url)
+            .build()
             .map_err(|e| GitziError::AgentFailed(e.to_string()))?;
-
-        let preamble = self.system_prompt.as_deref().unwrap_or(
-            "You are a software planning agent. You break down tasks, \
-             analyze requirements, and produce structured output.",
-        );
 
         let agent = client
             .agent(&self.model)
-            .preamble(preamble)
+            .preamble(self.system_prompt.as_deref().unwrap_or(DEFAULT_PREAMBLE))
             .build();
 
-        let mut prompt = format!("Task: {}\n", task.title);
-        if let Some(desc) = &task.description {
-            prompt.push_str(&format!("\nDescription:\n{desc}\n"));
-        }
-        if let Some(feedback) = &task.agent_feedback {
-            prompt.push_str(&format!(
-                "\nPrevious attempt was rejected. Feedback:\n{feedback}\n"
-            ));
-        }
+        let prompt = build_task_content(task, ctx.resume_summary.as_deref(), &ctx.answered_questions);
 
         let response: String = agent
             .prompt(prompt.as_str())

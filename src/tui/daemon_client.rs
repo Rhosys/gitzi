@@ -79,6 +79,26 @@ async fn run_client(
         let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
     }
 
+    // Initial epics list (for the Status panel's "Current epic" section)
+    if writer.write_all(b"epics\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+    if let Ok(Some(line)) = lines.next_line().await
+        && let Ok(epics) = serde_json::from_str::<Vec<crate::model::Epic>>(&line) {
+        let _ = msg_tx.send(DaemonMessage::Epics(epics));
+    }
+
+    // Initial clarification-queue count (for the Status panel)
+    if writer.write_all(b"queue_len\n").await.is_err() {
+        let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+        return;
+    }
+    if let Ok(Some(line)) = lines.next_line().await
+        && let Ok(count) = line.trim().parse::<usize>() {
+        let _ = msg_tx.send(DaemonMessage::QueueLen(count));
+    }
+
     // Load chat history
     if writer.write_all(b"chat_history\n").await.is_err() {
         let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
@@ -97,6 +117,14 @@ async fn run_client(
             sub_result = sub_lines.next_line() => {
                 match sub_result {
                     Ok(Some(line)) => {
+                        // Check for panel_switch events specifically
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str()) == Some("panel_switch")
+                            && let Some(view) = val.get("view").and_then(|v| v.as_str())
+                        {
+                            let _ = msg_tx.send(DaemonMessage::SwitchPanel(view.to_string()));
+                            continue; // don't also send Event(line)
+                        }
                         let _ = msg_tx.send(DaemonMessage::Event(line));
                     }
                     Ok(None) | Err(_) => {
@@ -112,21 +140,6 @@ async fn run_client(
                 match cmd {
                     DaemonCommand::Approve(task_id) => {
                         let msg = format!("approve {task_id}\n");
-                        if writer.write_all(msg.as_bytes()).await.is_err() {
-                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
-                            return;
-                        }
-                        if let Ok(Some(resp)) = lines.next_line().await {
-                            let result = if resp.starts_with("error") {
-                                Err(resp)
-                            } else {
-                                Ok(resp)
-                            };
-                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
-                        }
-                    }
-                    DaemonCommand::Reject(task_id, feedback) => {
-                        let msg = format!("reject {task_id} {feedback}\n");
                         if writer.write_all(msg.as_bytes()).await.is_err() {
                             let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
                             return;
@@ -190,6 +203,26 @@ async fn run_client(
                                 serde_json::from_str(&line).ok()
                             };
                             let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+                        }
+                    }
+                    DaemonCommand::RefreshEpics => {
+                        if writer.write_all(b"epics\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await
+                            && let Ok(epics) = serde_json::from_str::<Vec<crate::model::Epic>>(&line) {
+                            let _ = msg_tx.send(DaemonMessage::Epics(epics));
+                        }
+                    }
+                    DaemonCommand::RefreshQueueLen => {
+                        if writer.write_all(b"queue_len\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await
+                            && let Ok(count) = line.trim().parse::<usize>() {
+                            let _ = msg_tx.send(DaemonMessage::QueueLen(count));
                         }
                     }
                 }

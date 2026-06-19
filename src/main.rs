@@ -100,6 +100,10 @@ async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
             error!("Dispatcher event loop exited: {:?}", result);
             result
         }
+        result = dispatcher.watch_config() => {
+            error!("Config watcher exited: {:?}", result);
+            result
+        }
         _ = shutdown_signal() => {
             info!("Shutdown signal received — exiting");
             let _ = std::fs::remove_file(daemon::socket_path());

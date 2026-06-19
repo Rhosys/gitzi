@@ -15,7 +15,7 @@ by surfacing small, reviewable diffs and driving test-first development.
 The user is never presented with more than one thing requiring their attention at once.
 This applies everywhere without exception:
 
-- Clarification queue → one ADR surfaced at a time
+- Clarification queue → one review item surfaced at a time
 - Attention queue → one background agent request surfaced at a time
 - Diff review → one task reviewed at a time
 - Opening status → surfaces the single most important thing first
@@ -341,7 +341,7 @@ role = "main"
 model = "claude-opus-4-8"
 system_prompt = """
 You are a project coordination agent. You help the user manage their software project
-by creating epics, tasks, and ADRs from natural conversation. You never write code
+by creating epics, tasks, and review items from natural conversation. You never write code
 directly. You surface what needs the user's attention and keep work moving.
 """
 ```
@@ -361,13 +361,16 @@ can call directly in the same turn:
 |------|-------------|
 | `gitzi_create_epic` | Create a new epic |
 | `gitzi_create_task` | Create a task under an epic |
-| `gitzi_create_adr` | Raise a clarification item / pending ADR |
-| `gitzi_resolve_adr` | Record a decision on a pending ADR |
+| `gitzi_create_review_item` | Raise a clarification item / pending review item |
 | `gitzi_update_task` | Edit task title, description, work items |
 | `gitzi_prioritize_task` | Set task priority / order |
 | `gitzi_park_task` | Park a task and record its state |
 | `gitzi_list_epics` / `list_tasks` | Read project state |
-| `gitzi_get_adr` | Fetch ADR details |
+| `gitzi_get_review_item` | Fetch review item details |
+
+Resolving a review item (recording the human's decision) is never an agent-callable
+tool — it only happens through the TUI's review pane, per the one-thing-at-a-time
+principle. Agents raise review items; only the human resolves them.
 
 The LLM reasons about the user's message, calls whatever tools are needed, and responds
 with what it did. "Let's build user authentication" → LLM creates the epic, breaks it
@@ -391,18 +394,17 @@ Review, a notification appears in the status panel) but not their intermediate a
 |------|----------|--------------|
 | `gitzi_create_epic` | ✓ | — |
 | `gitzi_create_task` | ✓ | ✓ (dependency discovery) |
-| `gitzi_create_adr` | ✓ | ✓ (raise clarification items) |
-| `gitzi_resolve_adr` | ✓ | — |
+| `gitzi_create_review_item` | ✓ | ✓ (raise clarification items) |
 | `gitzi_update_task` | ✓ | ✓ (own task only) |
 | `gitzi_park_task` | ✓ | ✓ (own task only) |
 | `gitzi_prioritize_task` | ✓ | — |
 | `gitzi_list_epics` / `list_tasks` | ✓ | ✓ (read project context) |
-| `gitzi_get_adr` | ✓ | ✓ (read decisions) |
+| `gitzi_get_review_item` | ✓ | ✓ (read decisions) |
 | `gitzi_switch_panel` | ✓ | — |
 | `Bash`, `Edit`, `Write`, `Read`, `Glob`, `Grep` | — | ✓ |
 
 Coding agents have enough gitzi access to manage their own work autonomously — creating
-dependencies, surfacing uncertainty as ADRs, parking and resuming — without going back
+dependencies, surfacing uncertainty as review items, parking and resuming — without going back
 through the chat harness for every action.
 
 ### Idle state — proactive planning mode
@@ -506,7 +508,7 @@ Agent prompts are assembled from layers at runtime:
 2. **Role prompt** — defined per agent in `[[agents]]` in config.toml via `system_prompt`
 3. **Dynamic context** (injected at dispatch time):
    - Session summary
-   - All ADRs linked to the current task and its parent epic (both `pending` and `resolved`)
+   - All review items linked to the current task and its parent epic (both `pending` and `resolved`)
    - Current epic context
    - Open clarification items for this task
 
@@ -538,10 +540,10 @@ The clarification item is added to a **clarification queue** with a UUID. If mul
 tasks raise blockers simultaneously, all items accumulate in the queue. The chat then
 walks the user through them **one at a time** in order until every item has a resolution.
 
-The harness walks through pending ADRs **one at a time** in chat. Each message includes
-the ADR UUID so it is visible to the user. The backend tracks which ADR is currently
-awaiting a response; the user's next reply is automatically mapped to it — no explicit
-reference required from the user.
+The harness walks through pending review items **one at a time** in chat. Each message
+includes the review item UUID so it is visible to the user. The backend tracks which
+review item is currently awaiting a response; the user's next reply is automatically
+mapped to it — no explicit reference required from the user.
 
 Each clarification item records:
 - UUID
@@ -569,8 +571,8 @@ The right panel switches between views based on context:
 | **Status** (default on open) | Structured harness-rendered opening card |
 | **Board** | Kanban board across all stages |
 | **Task detail** | Selected task — description, work items, diff, approve/reject |
-| **ADR detail** | Selected ADR — question, options, decision |
-| **Clarification queue** | Pending ADRs awaiting user answers |
+| **Review item detail** | Selected review item — question, options, decision |
+| **Clarification queue** | Pending review items awaiting user answers |
 
 ### Opening status panel
 
@@ -580,7 +582,7 @@ from harness state — not an AI-generated message:
 - **Current epic** — title, progress (tasks done / total)
 - **In progress** — tasks currently being worked on by agents
 - **Waiting for you** — tasks in Waiting for Review (need approval/rejection)
-- **Clarification queue** — count of pending ADRs awaiting your answer
+- **Clarification queue** — count of pending review items awaiting your answer
 - **Followups** — unresolved items carried forward from the previous session summary
 
 The chat pane starts empty and ready for input. The panel is what the user reads first;
@@ -591,14 +593,17 @@ the chat is where they act on it.
 Diff review happens in the **Task detail** view of the right panel.
 The right panel shows the diff; approve/reject controls are there.
 
-### Architecture Decision Records (ADRs)
+### Review items
 
-ADRs are a first-class artifact type, stored separately from tasks and epics.
+A review item is a first-class artifact type, stored separately from tasks and epics.
+It is raised the moment a clarification is needed and carries the full decision record
+once resolved — there is no separate "ADR" concept; the review item is the decision
+record.
 
-Every resolved clarification item produces an ADR. ADRs can also be created directly
-from chat when a significant design decision is made outside of a task context.
+Review items can also be created directly from chat when a significant design decision
+is made outside of a task context.
 
-**Storage:** `~/.gitzi/<session>/adrs/<uuid>.toml`
+**Storage:** `~/.gitzi/<session>/reviews/<uuid>.toml`
 
 **Contents:**
 - UUID
@@ -611,36 +616,35 @@ from chat when a significant design decision is made outside of a task context.
 - Resolution type: `human` | `agent-self-resolved`
 - Author (human or agent) + timestamp raised / timestamp resolved
 
-**Linking:** Tasks and epics carry an `adrs = ["<uuid>", ...]` field.
-The chat surfaces relevant ADRs when working on related tasks.
+**Linking:** Tasks and epics carry a `review_items = ["<uuid>", ...]` field.
+The chat surfaces relevant review items when working on related tasks.
 
-**ADRs are created immediately when a clarification item is raised — before the user
-answers.** The ADR starts in `pending` status with the question, context, and candidate
-options filled in. When the user answers, the ADR is updated to `resolved` with the
-decision and rationale. The clarification item and the ADR are the same thing at
-different points in their lifecycle.
+**A review item is created immediately when a clarification is raised — before the
+user answers.** It starts in `pending` status with the question, context, and candidate
+options filled in. When the user answers, it is updated to `resolved` with the decision
+and rationale.
 
-**ADR lifecycle — two resolution paths:**
+**Review item lifecycle — two resolution paths:**
 
 ```
 Human-resolved (agent needs user input):
   background agent hits uncertainty
-    → creates pending ADR
+    → creates pending review item
     → enqueues in attention queue
     → agent parks and waits
   main agent becomes idle
     → harness pulls next item from attention queue
-    → surfaces ADR to user through chat
+    → surfaces review item to user through chat
   user answers
-    → ADR resolved
+    → review item resolved
     → background agent resumes
 
 Agent self-resolved (agent decides autonomously):
   background agent makes a structural decision (dependency task, park, etc.)
-    → creates ADR with its own reasoning as the answer
+    → creates review item with its own reasoning as the answer
     → marked agent-resolved
     → proceeds immediately
-    → ADR visible in status panel for user to review / override at their own pace
+    → review item visible in status panel for user to review / override at their own pace
 ```
 
 **Key principles:**
@@ -649,28 +653,28 @@ Agent self-resolved (agent decides autonomously):
 - Items are surfaced **one at a time** — always (see Core principle above)
 
 **Attention queue** — stored in harness state, contains:
-- ADR UUID
+- Review item UUID
 - Which task raised it
 - Priority / order raised
 - Status: `waiting` | `surfaced` | `resolved`
 
-**ADRs are always injected into agent context.** When any agent picks up a task, the
-harness fetches all ADRs linked to that task (and its parent epic) and includes them in
-the system prompt:
-- `resolved` ADRs tell the agent what has been decided — implement accordingly
-- `pending` ADRs tell the agent what is still open — do not proceed on those areas
+**Review items are always injected into agent context.** When any agent picks up a task,
+the harness fetches all review items linked to that task (and its parent epic) and
+includes them in the system prompt:
+- `resolved` review items tell the agent what has been decided — implement accordingly
+- `pending` review items tell the agent what is still open — do not proceed on those areas
 
 This ensures agents never re-ask a question that has already been answered, and never
 act on an area where a decision is still pending.
 
-**Every ADR also produces a test.** When a clarification item is resolved, the agent
-generates a unit test that:
+**Every resolved review item also produces a test.** The agent generates a unit test that:
 - Validates that the chosen solution is correctly implemented
 - Carries the problem statement and chosen solution in its doc comment
-- Links to the originating task/issue and the ADR by UUID
+- Links to the originating task/issue and the review item by UUID
 
 This test is the living proof that the decision holds. If the implementation drifts, the
-test fails and the ADR UUID in the failure points directly back to why the decision was made.
+test fails and the review item UUID in the failure points directly back to why the
+decision was made.
 
 ---
 

@@ -4,29 +4,43 @@ use serde::{Deserialize, Serialize};
 use crate::dispatcher::AgentRole;
 use crate::error::{GitziError, Result};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Per-column WIP limit overrides, as configured in `config.toml`:
+///
+/// ```toml
+/// [wip_limits]
+/// coding = 2
+/// coding-buffer = 3
+/// ```
+///
+/// Keys are column names in kebab-case (matching how `Column` serializes).
+/// Columns not listed keep their built-in default — see
+/// `dispatcher::board::WipLimits::default`. Unknown keys are rejected by
+/// `dispatcher::board::WipLimits::from_config` at load time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct WipLimits {
-    #[serde(default = "default_wip_in_progress")]
-    pub in_progress: u32,
-    #[serde(default = "default_wip_waiting")]
-    pub waiting_for_review: u32,
-    #[serde(default = "default_wip_testing")]
-    pub in_testing: u32,
+    pub overrides: HashMap<String, u32>,
 }
 
-impl Default for WipLimits {
-    fn default() -> Self {
-        Self {
-            in_progress: default_wip_in_progress(),
-            waiting_for_review: default_wip_waiting(),
-            in_testing: default_wip_testing(),
-        }
-    }
+/// A named connection to a model API, referenced by `AgentDef::provider`.
+/// Define as many as you like under `[providers.<name>]`.
+///
+/// Only the OpenAI-compatible chat-completions wire format is supported today,
+/// which is what LM Studio (and most local model servers) speak:
+///
+/// ```toml
+/// [providers.lmstudio]
+/// base_url = "http://localhost:1234/v1"
+/// # api_key_env = "LMSTUDIO_API_KEY"  # optional; omit if the server needs no auth
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderDef {
+    pub base_url: String,
+    /// Name of an environment variable to read the API key from at agent start.
+    /// Omit for servers that don't require authentication (e.g. local LM Studio).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
 }
-
-fn default_wip_in_progress() -> u32 { 1 }
-fn default_wip_waiting() -> u32 { 3 }
-fn default_wip_testing() -> u32 { 3 }
 
 /// An agent definition. Define as many as you like under `[[agents]]`.
 /// The role is the identifier — reference it via `default_agent` or per-task.
@@ -42,7 +56,8 @@ fn default_wip_testing() -> u32 { 3 }
 ///
 /// [[agents]]
 /// role = "planner"
-/// model = "claude-opus-4-8"
+/// model = "qwen2.5-coder-32b"
+/// provider = "lmstudio"
 /// system_prompt = """
 /// Break the epic into precise, minimal, independently shippable tasks.
 /// """
@@ -56,6 +71,10 @@ pub struct AgentDef {
     /// Defaults to `http://localhost:1234/v1` (LM Studio).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
+    /// Name of an entry in `[providers]` to talk to the model through.
+    /// Omit to keep using the local `claude` CLI subprocess (the original behavior).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// System prompt sent before every task. Falls back to a sensible built-in default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
@@ -67,6 +86,7 @@ impl Default for AgentDef {
             role: "developer".to_string(),
             model: default_model(),
             base_url: None,
+            provider: None,
             system_prompt: None,
         }
     }
@@ -79,6 +99,7 @@ impl AgentDef {
             role: "main".to_string(),
             model: "local-model".to_string(),
             base_url: Some("http://localhost:1234/v1".to_string()),
+            provider: None,
             system_prompt: Some(
                 "You are the main coordination agent for gitzi, an AI-driven software \
                  development pipeline. Help the user manage their project through natural \
@@ -109,10 +130,12 @@ pub struct Config {
 
     #[serde(default = "default_test_command")]
     pub test_command: String,
-    #[serde(default = "default_dashboard_port")]
-    pub dashboard_port: u16,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
+
+    /// Named model API connections, referenced by `AgentDef::provider`.
+    #[serde(default)]
+    pub providers: HashMap<String, ProviderDef>,
 }
 
 fn default_agent_name() -> String { "developer".to_string() }
@@ -122,7 +145,6 @@ fn default_agents() -> Vec<AgentDef> {
 }
 
 fn default_test_command() -> String { "cargo test".to_string() }
-fn default_dashboard_port() -> u16 { 3000 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -131,21 +153,24 @@ impl Default for Config {
             default_agent: default_agent_name(),
             agents: default_agents(),
             test_command: default_test_command(),
-            dashboard_port: default_dashboard_port(),
             integrations: HashMap::new(),
+            providers: HashMap::new(),
         }
     }
 }
 
 impl Config {
     /// Load from `~/.gitzi/config.toml`. Falls back to defaults if missing.
+    /// Validates the result before returning.
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
             return Ok(Self::default());
         }
         let text = std::fs::read_to_string(&path)?;
-        Ok(toml::from_str(&text)?)
+        let config: Self = toml::from_str(&text)?;
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn write(&self, _repo_root: &Path) -> Result<()> {
@@ -157,7 +182,8 @@ impl Config {
         atomic_write(&path, &text)
     }
 
-    /// Validate config on load. Returns error for unknown role names.
+    /// Validate config on load. Returns error for unknown role names or
+    /// unknown WIP column overrides.
     pub fn validate(&self) -> Result<()> {
         let mut valid_roles: Vec<String> =
             AgentRole::all().iter().map(|r| r.to_string()).collect();
@@ -169,7 +195,17 @@ impl Config {
                     agent.role, valid_roles
                 )));
             }
+            if let Some(provider) = &agent.provider
+                && !self.providers.contains_key(provider)
+            {
+                return Err(GitziError::Config(format!(
+                    "agent '{}' references unknown provider '{}' — define it under [providers.{}]",
+                    agent.role, provider, provider
+                )));
+            }
         }
+        crate::dispatcher::board::WipLimits::from_config(&self.wip_limits.overrides)
+            .map_err(GitziError::Config)?;
         Ok(())
     }
 
@@ -223,6 +259,7 @@ mod tests {
                     role: role.to_string(),
                     model: custom_models[i % custom_models.len()].clone(),
                     base_url: None,
+                    provider: None,
                     system_prompt: Some(custom_prompts[i % custom_prompts.len()].clone()),
                 })
                 .collect();
@@ -291,6 +328,7 @@ mod tests {
                     role: role_name.clone(),
                     model: "claude-sonnet-4-6".to_string(),
                     base_url: None,
+                    provider: None,
                     system_prompt: None,
                 }],
                 ..Config::default()
@@ -308,5 +346,61 @@ mod tests {
                 role_name, err_msg
             );
         }
+    }
+
+    #[test]
+    fn validate_rejects_agent_referencing_unknown_provider() {
+        let config = Config {
+            agents: vec![AgentDef {
+                role: "coder".to_string(),
+                provider: Some("lmstudio".to_string()),
+                ..AgentDef::default()
+            }],
+            ..Config::default()
+        };
+
+        let err = config.validate().expect_err("unknown provider should be rejected");
+        assert!(err.to_string().contains("lmstudio"));
+    }
+
+    #[test]
+    fn validate_accepts_agent_referencing_known_provider() {
+        let config = Config {
+            agents: vec![AgentDef {
+                role: "coder".to_string(),
+                provider: Some("lmstudio".to_string()),
+                ..AgentDef::default()
+            }],
+            providers: HashMap::from([(
+                "lmstudio".to_string(),
+                ProviderDef {
+                    base_url: "http://localhost:1234/v1".to_string(),
+                    api_key_env: None,
+                },
+            )]),
+            ..Config::default()
+        };
+
+        config.validate().expect("known provider reference should be accepted");
+    }
+
+    #[test]
+    fn providers_table_round_trips_through_toml() {
+        let config = Config {
+            providers: HashMap::from([(
+                "lmstudio".to_string(),
+                ProviderDef {
+                    base_url: "http://localhost:1234/v1".to_string(),
+                    api_key_env: Some("LMSTUDIO_API_KEY".to_string()),
+                },
+            )]),
+            ..Config::default()
+        };
+
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        let provider = parsed.providers.get("lmstudio").unwrap();
+        assert_eq!(provider.base_url, "http://localhost:1234/v1");
+        assert_eq!(provider.api_key_env.as_deref(), Some("LMSTUDIO_API_KEY"));
     }
 }

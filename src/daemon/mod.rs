@@ -100,12 +100,11 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             "status" => "running".to_string(),
             "peek_review" => handle_peek_review(&dispatcher).await,
             "board" => handle_board(&dispatcher).await,
+            "epics" => handle_epics(&dispatcher).await,
+            "queue_len" => handle_queue_len(&dispatcher).await,
             cmd if cmd.starts_with("approve ") => {
                 let task_id = cmd.strip_prefix("approve ").unwrap().trim();
                 handle_approve(&dispatcher, task_id).await
-            }
-            cmd if cmd.starts_with("reject ") => {
-                handle_reject(&dispatcher, cmd.strip_prefix("reject ").unwrap().trim()).await
             }
             cmd if cmd.starts_with("answer ") => {
                 handle_answer(&dispatcher, cmd.strip_prefix("answer ").unwrap().trim()).await
@@ -201,6 +200,7 @@ async fn handle_board(dispatcher: &Dispatcher) -> String {
                 .map(|t| {
                     json!({
                         "id": t.id,
+                        "epic": t.epic,
                         "title": t.title,
                         "priority": t.priority,
                     })
@@ -215,20 +215,24 @@ async fn handle_board(dispatcher: &Dispatcher) -> String {
     serde_json::to_string(&columns).unwrap_or_else(|e| format!("error: {e}"))
 }
 
-async fn handle_approve(dispatcher: &Dispatcher, task_id: &str) -> String {
-    match dispatcher.approve(task_id).await {
-        Ok(()) => "ok".to_string(),
+/// Return all epics (id, title, child task IDs) as a JSON array — used by the
+/// TUI's Status panel to compute current-epic progress.
+async fn handle_epics(dispatcher: &Dispatcher) -> String {
+    match dispatcher.gitzi_list_epics().await {
+        Ok(epics) => serde_json::to_string(&epics).unwrap_or_else(|e| format!("error: {e}")),
         Err(e) => format!("error: {e}"),
     }
 }
 
-/// Parse `<task_id> <feedback...>` — first token is task_id, rest is feedback.
-async fn handle_reject(dispatcher: &Dispatcher, args: &str) -> String {
-    let (task_id, feedback) = match args.split_once(' ') {
-        Some((id, fb)) => (id, fb.to_string()),
-        None => return "error: reject requires <task_id> <feedback>".to_string(),
-    };
-    match dispatcher.reject(task_id, feedback).await {
+/// Return the count of pending agent-question review items (the clarification
+/// queue size) as a bare number.
+async fn handle_queue_len(dispatcher: &Dispatcher) -> String {
+    let queue = dispatcher.review_queue.lock().await;
+    queue.question_count().to_string()
+}
+
+async fn handle_approve(dispatcher: &Dispatcher, task_id: &str) -> String {
+    match dispatcher.approve(task_id).await {
         Ok(()) => "ok".to_string(),
         Err(e) => format!("error: {e}"),
     }
