@@ -222,6 +222,21 @@ fn main_agent_tools() -> Vec<OaiTool> {
         OaiTool {
             r#type: "function",
             function: OaiFunctionDef {
+                name: "gitzi_request_rework",
+                description: "Send a task parked in a buffer column back to its previous work column for rework, with feedback for the agent that will redo the work. Only call this once you and the user have explicitly converged on the feedback — you must have restated the user's concern and had them confirm both what they want changed and how strongly they feel about it.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "The ID of the task currently parked in a buffer column." },
+                        "feedback": { "type": "string", "description": "Concrete, actionable feedback for the agent that will rework this task." }
+                    },
+                    "required": ["task_id", "feedback"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
                 name: "gitzi_get_review_item",
                 description: "Retrieve a single review item by its ID. Returns the question, context, and any actions taken on it.",
                 parameters: json!({

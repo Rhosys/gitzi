@@ -15,7 +15,7 @@ use tracing::{info, warn};
 use crate::agent::{build_main_agent, ChatTurn, MainAgent, OaiMessage};
 use crate::config::Config;
 use crate::mcp::auth::TokenStore;
-use crate::state::chat::{self as chat_store, ChatMessage};
+use crate::state::chat::{self as chat_store, ChatMessage, Role};
 use crate::state::home;
 use crate::state::reader;
 use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind, ReviewAction};
@@ -280,6 +280,10 @@ impl Dispatcher {
             }
         }
 
+        // Remove the resolved item from the in-memory queue so it stops being
+        // surfaced to the TUI and main agent.
+        self.review_queue.lock().await.dequeue_by_task_id(task_id);
+
         // Emit event
         self.event_bus.emit(DispatchEvent::HumanApprovalReceived {
             task_id: task_id.to_string(),
@@ -294,8 +298,10 @@ impl Dispatcher {
         Ok(())
     }
 
-    /// Reject a task in a buffer column: move to previous work column with priority 0,
-    /// store feedback, record history, emit event, and signal the agent.
+    /// Send a task in a buffer column back for rework: move to previous work column
+    /// with priority 0, store feedback, record history, emit event, and signal the
+    /// agent. Invoked via the main agent's `gitzi_request_rework` tool once the
+    /// human and main agent have converged on what feedback to send.
     pub async fn reject(&self, task_id: &str, feedback: String) -> anyhow::Result<()> {
         let prev_col = {
             let board = self.board.read().await;
@@ -342,6 +348,10 @@ impl Dispatcher {
                 warn!(%task_id, error = %e, "failed to persist review item rejection");
             }
         }
+
+        // Remove the resolved item from the in-memory queue so it stops being
+        // surfaced to the TUI and main agent.
+        self.review_queue.lock().await.dequeue_by_task_id(task_id);
 
         // Emit event
         self.event_bus.emit(DispatchEvent::HumanRejectionReceived {
@@ -756,6 +766,17 @@ impl Dispatcher {
     /// the LLM message so the agent surfaces it. Only the original user message
     /// (without injected context) is persisted to chat history.
     pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
+        // Capture which buffer-approval item (if any) is under discussion before
+        // the turn runs, so we record this exchange against that item's structured
+        // history even if the turn itself resolves and dequeues it.
+        let discussed_task_id = {
+            let queue = self.review_queue.lock().await;
+            queue.peek().and_then(|item| match item.kind {
+                review_queue::ReviewItemKind::BufferApproval { .. } => Some(item.task_id.clone()),
+                review_queue::ReviewItemKind::AgentQuestion { .. } => None,
+            })
+        };
+
         let final_response = self.run_main_agent_turn(message).await?;
 
         // Persist the original user message (not augmented) and the agent response
@@ -768,6 +789,25 @@ impl Dispatcher {
             let mut hist = self.chat_history.lock().await;
             hist.push(user_msg);
             hist.push(agent_msg);
+        }
+
+        // Record this exchange on the review item's own structured history.
+        if let Some(task_id) = discussed_task_id
+            && let Ok(Some(mut review_item)) = review::find_unresolved_for_task(&task_id) {
+            let now = chrono::Utc::now();
+            review_item.actions.push(ReviewAction::Comment {
+                at: now,
+                role: Role::User,
+                content: message.to_string(),
+            });
+            review_item.actions.push(ReviewAction::Comment {
+                at: now,
+                role: Role::Agent,
+                content: final_response.clone(),
+            });
+            if let Err(e) = review::write_review_item(&review_item) {
+                warn!(%task_id, error = %e, "failed to persist rework discussion comment");
+            }
         }
 
         Ok(final_response)
@@ -822,7 +862,14 @@ impl Dispatcher {
                     format!("agent question: {question}")
                 }
                 review_queue::ReviewItemKind::BufferApproval { buffer_column, .. } => {
-                    format!("needs approval to advance past {buffer_column}")
+                    format!(
+                        "is parked at {buffer_column} awaiting a decision. The user can advance it \
+                        directly from the board without talking to you, so if they're discussing it \
+                        here they have a concern. Do not call gitzi_request_rework until you've \
+                        restated their concern in your own words and they've confirmed you understood \
+                        both WHAT they want changed and HOW strongly they feel about it. Ask one \
+                        clarifying question at a time if anything is unclear."
+                    )
                 }
             };
             format!(
@@ -1034,6 +1081,26 @@ impl Dispatcher {
                 }
                 match self.gitzi_get_review_item(&id).await {
                     Ok(item) => serde_json::to_string(&item).unwrap_or_else(|_| "{}".to_string()),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_request_rework" => {
+                let task_id = args
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let feedback = args
+                    .get("feedback")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if task_id.is_empty() || feedback.is_empty() {
+                    return "error: missing required argument: task_id or feedback".to_string();
+                }
+                match self.reject(&task_id, feedback).await {
+                    Ok(()) => "ok: task sent back for rework".to_string(),
                     Err(e) => format!("error: {e}"),
                 }
             }

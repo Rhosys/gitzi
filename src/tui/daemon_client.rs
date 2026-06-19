@@ -153,21 +153,6 @@ async fn run_client(
                             let _ = msg_tx.send(DaemonMessage::CommandResult(result));
                         }
                     }
-                    DaemonCommand::Reject(task_id, feedback) => {
-                        let msg = format!("reject {task_id} {feedback}\n");
-                        if writer.write_all(msg.as_bytes()).await.is_err() {
-                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
-                            return;
-                        }
-                        if let Ok(Some(resp)) = lines.next_line().await {
-                            let result = if resp.starts_with("error") {
-                                Err(resp)
-                            } else {
-                                Ok(resp)
-                            };
-                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
-                        }
-                    }
                     DaemonCommand::Answer(item_id, answer) => {
                         let msg = format!("answer {item_id} {answer}\n");
                         if writer.write_all(msg.as_bytes()).await.is_err() {
