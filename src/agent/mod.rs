@@ -7,7 +7,7 @@ mod rig_agent;
 
 pub use backend::{AgentBackend, AgentResult, RunContext};
 pub use claude_code::ClaudeCodeCli;
-pub use main_agent::{ChatTurn, MainAgent, OaiMessage, ToolCallRequest};
+pub use main_agent::{ChatTurn, MainAgent, OaiMessage, OaiTool, ToolCallRequest};
 pub use rig_agent::RigAgent;
 
 use crate::config::{AgentDef, Config};

@@ -160,8 +160,7 @@ pub struct App {
     /// Which panel is shown on the right
     pub panel: Panel,
 
-    /// Input buffer for reject feedback / answer text (review flows)
-    pub input: String,
+
 
     /// Chat message being composed
     pub chat_input: String,
@@ -229,7 +228,6 @@ impl App {
             review_item: None,
             chat_pending: false,
             panel: Panel::Status,
-            input: String::new(),
             chat_input: String::new(),
             chat_history: Vec::new(),
             logs: Vec::new(),
@@ -351,38 +349,7 @@ impl App {
         self.board.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
-    /// Advance the current review item to its next work column.
-    pub fn advance_current(&mut self) {
-        if let Some(ref item) = self.review_item {
-            let _ = self.cmd_tx.send(DaemonCommand::Approve(item.task_id.clone()));
-            self.status = format!("advancing {}…", &item.task_id[..8.min(item.task_id.len())]);
-        }
-    }
 
-    /// Begin answer flow.
-    pub fn begin_answer(&mut self) {
-        if self.review_item.is_some() {
-            self.input.clear();
-        }
-    }
-
-    /// Submit answer to agent question.
-    pub fn submit_answer(&mut self) {
-        if let Some(ref item) = self.review_item {
-            let answer = std::mem::take(&mut self.input);
-            if answer.trim().is_empty() {
-                self.status = "answer required".to_string();
-                return;
-            }
-            let _ = self.cmd_tx.send(DaemonCommand::Answer(item.id.clone(), answer));
-            self.status = "answering…".to_string();
-        }
-    }
-
-    /// Cancel input mode.
-    pub fn cancel_input(&mut self) {
-        self.input.clear();
-    }
 
     // ── Chat ──────────────────────────────────────────────────────────────────
 

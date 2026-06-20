@@ -72,6 +72,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         chat_history: Arc::new(Mutex::new(vec![])),
         main_agent,
         token_store,
+        chat_stack: Mutex::new(Vec::new()),
     }
 }
 

@@ -79,6 +79,28 @@ pub fn current_chat_file() -> PathBuf {
     chats_dir().join("current.jsonl")
 }
 
+/// Chat file for a specific fork session.
+pub fn fork_chat_file(fork_id: &str) -> PathBuf {
+    chats_dir().join(format!("{fork_id}.jsonl"))
+}
+
+/// Discover repos from glob patterns. Returns paths to directories containing `.git/`.
+pub fn discover_repos(patterns: &[String]) -> Vec<PathBuf> {
+    let mut repos = Vec::new();
+    for pattern in patterns {
+        if let Ok(entries) = glob::glob(pattern) {
+            for entry in entries.flatten() {
+                if entry.join(".git").is_dir() {
+                    repos.push(entry);
+                }
+            }
+        }
+    }
+    repos.sort();
+    repos.dedup();
+    repos
+}
+
 /// Ensure all required directories exist. Called lazily on daemon startup.
 pub fn ensure_dirs() -> Result<()> {
     std::fs::create_dir_all(plan_dir().join("epics"))?;

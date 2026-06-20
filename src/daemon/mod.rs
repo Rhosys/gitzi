@@ -121,6 +121,7 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
                 "queued".to_string()
             }
             "chat_history" => handle_chat_history(&dispatcher).await,
+            "close_fork" => handle_close_fork(&dispatcher).await,
             other => format!("error: unknown command '{other}'"),
         };
         if writer.write_all(format!("{response}\n").as_bytes()).await.is_err() {
@@ -255,21 +256,11 @@ async fn handle_answer(dispatcher: &Dispatcher, args: &str) -> String {
     }
 }
 
-/// Run the user's chat message through the main agent, return JSON-encoded response.
-async fn handle_chat(dispatcher: &Dispatcher, message: &str) -> String {
-    match dispatcher.chat(message).await {
-        Ok(response) => serde_json::to_string(&response)
-            .unwrap_or_else(|e| format!("\"error serializing: {e}\"")),
-        Err(e) => serde_json::to_string(&format!("Error: {e}"))
-            .unwrap_or_else(|_| "\"error\"".to_string()),
-    }
-}
-
 /// Handle a chat message with interrupt classification.
 /// If no chat is in-flight, starts one. If one IS in-flight, classifies and routes.
 async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String) {
     use crate::agent::classifier::{self, InterruptAction};
-    use crate::dispatcher::{ForkEntry, event_bus::DispatchEvent};
+    use crate::dispatcher::event_bus::DispatchEvent;
 
     // Check if a chat is already in-flight (top of stack)
     let in_flight = {
@@ -370,6 +361,9 @@ async fn start_chat_turn(
 
     let d = Arc::clone(&dispatcher);
     let msg = message.clone();
+    // TODO: When fork_info is Some, chat should persist to fork_chat_file(fork_id)
+    // instead of current_chat_file(). Full isolation requires chat() to accept a
+    // target path or an alternate history vec.
     let handle = tokio::spawn(async move {
         d.chat(&msg).await
     });
@@ -377,6 +371,16 @@ async fn start_chat_turn(
     let (fork_id, fork_name) = fork_info.unwrap_or_else(|| {
         ("main".to_string(), "Main".to_string())
     });
+
+    // Seed fork_history: clone the last 50 entries from the dispatcher's chat history
+    // when this is a named fork; empty for "main" entries.
+    let fork_history = if fork_id != "main" {
+        let hist = dispatcher.chat_history.lock().await;
+        let start = hist.len().saturating_sub(50);
+        hist[start..].to_vec()
+    } else {
+        Vec::new()
+    };
 
     // Push onto the stack
     {
@@ -387,6 +391,7 @@ async fn start_chat_turn(
             pending_message: message,
             abort_handle: handle.abort_handle(),
             turn_active: true,
+            fork_history,
         });
     }
 
@@ -413,6 +418,32 @@ async fn start_chat_turn(
     }
 
     dispatcher.event_bus.emit(DispatchEvent::ChatResponse { content: result });
+}
+
+/// Handle "close_fork" command: pop the top fork (if not main) and emit ForkClosed.
+async fn handle_close_fork(dispatcher: &Dispatcher) -> String {
+    let popped = {
+        let mut guard = dispatcher.chat_stack.lock().await;
+        if guard.last().is_some_and(|e| e.id != "main") {
+            guard.pop()
+        } else {
+            None
+        }
+    };
+    match popped {
+        Some(entry) => {
+            entry.abort_handle.abort();
+            let id = entry.id.clone();
+            dispatcher.event_bus.emit(
+                crate::dispatcher::event_bus::DispatchEvent::ForkClosed {
+                    id: id.clone(),
+                    summary: "Closed by user".to_string(),
+                },
+            );
+            format!("ok: fork {id} closed")
+        }
+        None => "noop: not in a fork".to_string(),
+    }
 }
 
 /// Return the full chat history as a JSON array.

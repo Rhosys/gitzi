@@ -250,6 +250,10 @@ pub struct ForkEntry {
     pub abort_handle: tokio::task::AbortHandle,
     /// Whether this fork has a pending LLM turn (vs waiting for user input).
     pub turn_active: bool,
+    /// Isolated chat history for this fork (seeded from the last 50 main entries).
+    /// TODO: Full isolation requires chat() to accept an optional alternate history
+    /// so fork turns use this instead of the global chat_history.
+    pub fork_history: Vec<crate::state::chat::ChatMessage>,
 }
 
 impl Dispatcher {
@@ -904,11 +908,21 @@ impl Dispatcher {
         let history = self.chat_history.lock().await.clone();
         let mut messages = MainAgent::history_to_messages(&history, &llm_message);
 
-        // 5. Tool-calling loop
+        // 5. Determine tools based on fork context
+        let in_fork = {
+            let guard = self.chat_stack.lock().await;
+            guard.last().is_some_and(|e| e.id != "main")
+        };
+        let tools = crate::agent::main_agent::tools_for_context(
+            in_fork,
+            self.config.fork_auto_close,
+        );
+
+        // 6. Tool-calling loop
         let final_response = loop {
             let (raw_assistant, turn) = self
                 .main_agent
-                .turn(&messages)
+                .turn(&messages, &tools)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
