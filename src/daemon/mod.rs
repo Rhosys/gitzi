@@ -357,16 +357,7 @@ async fn start_chat_turn(
     message: String,
     fork_info: Option<(String, String)>,
 ) {
-    use crate::dispatcher::{ForkEntry, event_bus::DispatchEvent};
-
-    let d = Arc::clone(&dispatcher);
-    let msg = message.clone();
-    // TODO: When fork_info is Some, chat should persist to fork_chat_file(fork_id)
-    // instead of current_chat_file(). Full isolation requires chat() to accept a
-    // target path or an alternate history vec.
-    let handle = tokio::spawn(async move {
-        d.chat(&msg).await
-    });
+    use crate::dispatcher::{ChatContext, ForkEntry, event_bus::DispatchEvent};
 
     let (fork_id, fork_name) = fork_info.unwrap_or_else(|| {
         ("main".to_string(), "Main".to_string())
@@ -381,6 +372,22 @@ async fn start_chat_turn(
     } else {
         Vec::new()
     };
+
+    let ctx = if fork_id != "main" {
+        Some(ChatContext {
+            history: fork_history.clone(),
+            persist_path: crate::state::home::fork_chat_file(&fork_id),
+            fork_id: fork_id.clone(),
+        })
+    } else {
+        None
+    };
+
+    let d = Arc::clone(&dispatcher);
+    let msg = message.clone();
+    let handle = tokio::spawn(async move {
+        d.chat(&msg, ctx).await
+    });
 
     // Push onto the stack
     {
