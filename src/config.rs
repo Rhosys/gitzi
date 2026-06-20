@@ -135,6 +135,10 @@ pub struct Config {
     pub fork_auto_close: bool,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
+    /// Glob patterns for discovering repos managed by gitzi.
+    /// Each pattern is expanded and checked for a `.git/` directory.
+    #[serde(default)]
+    pub repo_paths: Vec<String>,
 }
 
 fn default_agent_name() -> String { "developer".to_string() }
@@ -153,6 +157,7 @@ impl Default for Config {
             test_command: default_test_command(),
             fork_auto_close: default_fork_auto_close(),
             integrations: HashMap::new(),
+            repo_paths: Vec::new(),
         }
     }
 }

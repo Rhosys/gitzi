@@ -97,6 +97,7 @@ proptest! {
                 chat_history: Arc::new(Mutex::new(vec![])),
                 main_agent,
                 token_store,
+                chat_stack: Mutex::new(Vec::new()),
             };
 
             // Verify pre-condition: entry exists
@@ -192,6 +193,7 @@ proptest! {
                 chat_history: Arc::new(Mutex::new(vec![])),
                 main_agent,
                 token_store,
+                chat_stack: Mutex::new(Vec::new()),
             };
 
             // Spawn run loop

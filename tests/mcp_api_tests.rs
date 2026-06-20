@@ -60,6 +60,7 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
         chat_history: Arc::new(Mutex::new(vec![])),
         main_agent,
         token_store: Arc::clone(&token_store),
+        chat_stack: Mutex::new(Vec::new()),
     });
 
     let router = gitzi::mcp::build_router(Arc::clone(&dispatcher), Arc::clone(&token_store));

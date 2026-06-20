@@ -41,16 +41,16 @@ pub struct OaiFunctionBody {
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
-struct OaiTool {
-    r#type: &'static str,
-    function: OaiFunctionDef,
+pub struct OaiTool {
+    pub r#type: &'static str,
+    pub function: OaiFunctionDef,
 }
 
 #[derive(Serialize, Clone)]
-struct OaiFunctionDef {
-    name: &'static str,
-    description: &'static str,
-    parameters: serde_json::Value,
+pub struct OaiFunctionDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub parameters: serde_json::Value,
 }
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -272,6 +272,16 @@ fn main_agent_tools() -> Vec<OaiTool> {
 
 // ── MainAgent ─────────────────────────────────────────────────────────────────
 
+/// Return the tools list appropriate for the current chat context.
+/// Only includes `gitzi_close_fork` when we're in a fork and auto-close is enabled.
+pub fn tools_for_context(in_fork: bool, fork_auto_close: bool) -> Vec<OaiTool> {
+    let mut tools = main_agent_tools();
+    if !(in_fork && fork_auto_close) {
+        tools.retain(|t| t.function.name != "gitzi_close_fork");
+    }
+    tools
+}
+
 impl MainAgent {
     pub fn new(def: &AgentDef) -> Self {
         Self {
@@ -338,7 +348,11 @@ impl MainAgent {
 
     /// Single API call with tools. Prepends the system prompt.
     /// Returns (raw assistant OaiMessage, ChatTurn).
-    pub async fn turn(&self, messages: &[OaiMessage]) -> Result<(OaiMessage, ChatTurn)> {
+    pub async fn turn(
+        &self,
+        messages: &[OaiMessage],
+        tools: &[OaiTool],
+    ) -> Result<(OaiMessage, ChatTurn)> {
         // Prepend system message
         let mut full_messages = vec![OaiMessage {
             role: "system".to_string(),
@@ -352,7 +366,7 @@ impl MainAgent {
         let body = ChatRequest {
             model: self.model.clone(),
             messages: full_messages,
-            tools: main_agent_tools(),
+            tools: tools.to_vec(),
             temperature: None,
         };
 
@@ -423,7 +437,8 @@ impl MainAgent {
     /// Send a user message and return the model's response (no tool loop — compatibility shim).
     pub async fn chat(&self, history: &[ChatMessage], message: &str) -> Result<String> {
         let messages = Self::history_to_messages(history, message);
-        let (_raw, turn) = self.turn(&messages).await?;
+        let tools = main_agent_tools();
+        let (_raw, turn) = self.turn(&messages, &tools).await?;
         match turn {
             ChatTurn::Text(t) => Ok(t),
             ChatTurn::ToolCalls(_) => Ok(String::new()), // shouldn't happen without loop
