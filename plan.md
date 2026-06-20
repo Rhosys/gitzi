@@ -511,6 +511,81 @@ Respond with one word only.
   processes there. TUI shows a visual indicator that a fork is active. When the fork
   response arrives, it is displayed inline (with a separator) and the fork session is
   marked complete. Main session resumes normally.
+
+### Fork sessions
+
+Forks are conversation branches that run in parallel. When the classifier returns `fork`,
+the harness:
+
+1. **Names the fork** — a second quick LLM call generates a 2-4 word topic name from
+   the new message.
+2. **Pushes onto the fork stack** — the stack is unbounded. Each entry has:
+   - `id` (uuid)
+   - `name` (topic label)
+   - `chat_history` (own message list, seeded from last 50 turns of parent)
+   - `abort_handle` (for amend/cancel)
+3. **Routes all subsequent messages to the top of stack** — the classifier always operates
+   against the topmost active entry. This means forks nest: a fork-within-a-fork pushes
+   another entry. No depth limit.
+
+**TUI rendering with active forks:**
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ gitzi ●  -- #3: OAuth Provider Config                                │
+├───┬──────────────────────────┬───────────────────────────────────┬───┤
+│ 1 │                          │                                   │ S │
+│ 2 │   Chat (fork #3 context) │   Right panel                     │ E │
+│[3]│                          │                                   │ K │
+│   │                          │                                   │ T │
+│   ├──────────────────────────┤                                   │ L │
+│   │ > input           [esc]  │                                   │   │
+├───┴──────────────────────────┴───────────────────────────────────┴───┘
+│ [enter] send  [esc] close fork  [arrows] board  [ctrl+q] quit        │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+- **Left strip** (3 chars, between chat and main left edge): numbered fork entries,
+  active one highlighted. Hidden when stack is empty (no forks active).
+- **Header**: shows `#N: Fork Name` to identify the active context.
+- **Esc**: closes the current fork (pops the stack). Always available to the user.
+
+**Fork closure:**
+
+```toml
+# config.toml
+fork_auto_close = true  # default: agent can close forks
+```
+
+- **`fork_auto_close = true`** (default): The main agent receives a `gitzi_close_fork`
+  tool when operating inside a fork. After responding, if the agent believes the thread
+  is resolved, it calls `gitzi_close_fork` with a summary. This pushes a closing message
+  to the fork's chat and pops the stack. If the fork has unresolved ambiguity, the agent
+  doesn't call it and the fork stays open for more user input.
+- **`fork_auto_close = false`**: The agent never receives the `gitzi_close_fork` tool.
+  Only the user can close forks (Esc in TUI, button in web UI).
+- **User can always close**: Esc/button works regardless of the config. Agent close is
+  additive, not exclusive.
+- **Race condition**: If the agent calls `gitzi_close_fork` but the user has already
+  submitted a new message, the close is a noop — the user's new message takes priority.
+
+**`gitzi_close_fork` tool:**
+```json
+{
+  "name": "gitzi_close_fork",
+  "description": "Close the current fork session. Call this when the forked topic is resolved.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "summary": { "type": "string", "description": "One-sentence summary of what was decided." }
+    },
+    "required": ["summary"]
+  }
+}
+```
+
+**Storage:** Each fork's chat lives at `~/.gitzi/chats/<fork-uuid>.jsonl`. On close,
+the fork file is kept (for audit/history) but marked complete via a final system message.
 From the user's perspective the chat is **one infinite thread** — there are no visible
 session boundaries.
 

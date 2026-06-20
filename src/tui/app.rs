@@ -50,6 +50,15 @@ pub struct ChatEntry {
     pub content: String,
 }
 
+// ─── Fork info (received from daemon events) ─────────────────────────────────
+
+/// Display info for an active fork (received from daemon events).
+#[derive(Debug, Clone)]
+pub struct ForkInfo {
+    pub id: String,
+    pub name: String,
+}
+
 // ─── TUI Mode ─────────────────────────────────────────────────────────────────
 // No Mode enum — chat input is always active. Arrow keys navigate the board,
 // printable chars go to chat, Enter submits, Backspace deletes, Ctrl+Q quits.
@@ -130,6 +139,9 @@ pub struct EpicStatus {
 // ─── App state ────────────────────────────────────────────────────────────────
 
 pub struct App {
+    /// Active fork stack — empty means we're in the main session.
+    pub fork_stack: Vec<ForkInfo>,
+
     /// Board state: column name → list of tasks
     pub board: HashMap<String, Vec<BoardTask>>,
 
@@ -182,6 +194,7 @@ pub enum DaemonCommand {
     Approve(String),            // task_id
     Answer(String, String),     // item_id, answer
     Chat(String),               // message to main agent
+    CloseFork,
     RefreshBoard,
     RefreshReview,
     RefreshEpics,
@@ -197,6 +210,8 @@ pub enum DaemonMessage {
     QueueLen(usize),
     ChatHistory(Vec<ChatEntry>),
     ChatResponse(String),
+    ForkCreated { id: String, name: String },
+    ForkClosed { id: String },
     Event(String),  // raw JSON line from subscribe stream
     SwitchPanel(String),
     Connected,
@@ -207,6 +222,7 @@ pub enum DaemonMessage {
 impl App {
     pub fn new(cmd_tx: mpsc::UnboundedSender<DaemonCommand>) -> Self {
         Self {
+            fork_stack: Vec::new(),
             board: HashMap::new(),
             epics: Vec::new(),
             question_count: 0,
@@ -392,6 +408,25 @@ impl App {
     /// Apply loaded chat history from the daemon.
     pub fn apply_chat_history(&mut self, entries: Vec<ChatEntry>) {
         self.chat_history = entries;
+    }
+
+    // ── Forks ─────────────────────────────────────────────────────────────────
+
+    /// Push a new fork onto the stack.
+    pub fn apply_fork_created(&mut self, id: String, name: String) {
+        self.fork_stack.push(ForkInfo { id, name });
+    }
+
+    /// Remove a fork from the stack by id.
+    pub fn apply_fork_closed(&mut self, id: &str) {
+        self.fork_stack.retain(|f| f.id != id);
+    }
+
+    /// Request the daemon close the current (topmost) fork.
+    pub fn close_current_fork(&mut self) {
+        if !self.fork_stack.is_empty() {
+            let _ = self.cmd_tx.send(DaemonCommand::CloseFork);
+        }
     }
 
     // Navigation

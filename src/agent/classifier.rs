@@ -106,3 +106,57 @@ struct ClassifierChoice {
 struct ClassifierMessage {
     content: Option<String>,
 }
+
+
+/// Generate a short 2-4 word topic name for a fork from the user's message.
+/// Falls back to the first few words of the message on failure.
+pub async fn name_fork(base_url: &str, model: &str, message: &str) -> String {
+    let body = json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "Generate a 2-4 word topic label for this message. \
+                            Respond with only the label, no punctuation, no quotes."
+            },
+            { "role": "user", "content": message },
+        ],
+        "max_tokens": 10,
+        "temperature": 0.3,
+    });
+
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    let result = Client::new()
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    let response = match result {
+        Ok(r) => r,
+        Err(_) => return fallback_name(message),
+    };
+
+    let parsed: ClassifierResponse = match response.json().await {
+        Ok(r) => r,
+        Err(_) => return fallback_name(message),
+    };
+
+    parsed
+        .choices
+        .first()
+        .and_then(|c| c.message.content.as_deref())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.len() < 50)
+        .unwrap_or_else(|| fallback_name(message))
+}
+
+fn fallback_name(message: &str) -> String {
+    message
+        .split_whitespace()
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
