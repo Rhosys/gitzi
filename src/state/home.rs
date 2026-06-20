@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use crate::error::{GitziError, Result};
+use crate::error::Result;
 
-/// Root of the global gitzi state repo: `~/.gitzi/`
+/// Root of the global gitzi state: `~/.gitzi/`
 pub fn gitzi_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -12,74 +12,80 @@ pub fn global_config_file() -> PathBuf {
     gitzi_home().join("config.toml")
 }
 
-/// Unix socket path for the MCP HTTP server: `~/.gitzi/mcp.sock`.
+/// Board state file: `~/.gitzi/board.toml`
+pub fn board_file() -> PathBuf {
+    gitzi_home().join("board.toml")
+}
+
+/// Plan directory: `~/.gitzi/plan/`
+pub fn plan_dir() -> PathBuf {
+    gitzi_home().join("plan")
+}
+
+/// Reviews directory: `~/.gitzi/plan/reviews/`
+pub fn reviews_dir() -> PathBuf {
+    plan_dir().join("reviews")
+}
+
+/// Chat sessions directory: `~/.gitzi/chats/`
+pub fn chats_dir() -> PathBuf {
+    gitzi_home().join("chats")
+}
+
+/// Tmp directory: `~/.gitzi/tmp/`
+pub fn tmp_dir() -> PathBuf {
+    gitzi_home().join("tmp")
+}
+
+/// Unix socket path for the daemon: `~/.gitzi/tmp/daemon.sock`
+pub fn daemon_socket_path() -> PathBuf {
+    tmp_dir().join("daemon.sock")
+}
+
+/// Unix socket path for the MCP HTTP server: `~/.gitzi/tmp/mcp.sock`
 pub fn mcp_socket_path() -> PathBuf {
-    gitzi_home().join("mcp.sock")
+    tmp_dir().join("mcp.sock")
 }
 
-/// Path to the file that records the active session ID.
-pub fn current_session_file() -> PathBuf {
-    gitzi_home().join("current")
+/// Repo cache directory: `~/.gitzi/tmp/cache/repos/`
+pub fn repo_cache_dir() -> PathBuf {
+    tmp_dir().join("cache").join("repos")
 }
 
-/// Read the active session ID from `~/.gitzi/current`.
-/// Returns an error if `gitzi init` hasn't been run yet.
-pub fn session_id() -> Result<String> {
-    let path = current_session_file();
-    if !path.exists() {
-        return Err(GitziError::Config(
-            "No active session. Run `gitzi init` first.".into(),
-        ));
-    }
-    Ok(std::fs::read_to_string(&path)?.trim().to_string())
+/// Per-task tmp directory: `~/.gitzi/tmp/tasks/<id>/`
+pub fn task_tmp_dir(task_id: &str) -> PathBuf {
+    tmp_dir().join("tasks").join(task_id)
 }
 
-/// State directory for the active session: `~/.gitzi/<session-id>/`
-pub fn session_dir() -> Result<PathBuf> {
-    Ok(gitzi_home().join(session_id()?))
+/// Agent log for a task: `~/.gitzi/tmp/tasks/<id>/agent.log`
+pub fn task_log_path(task_id: &str) -> PathBuf {
+    task_tmp_dir(task_id).join("agent.log")
 }
 
-/// Create a new session ID, write it to `~/.gitzi/current`, return it.
-/// Does NOT overwrite an existing session — use `new_session()` explicitly for that.
-pub fn init_session() -> Result<String> {
-    let path = current_session_file();
-    if path.exists() {
-        return session_id();
-    }
-    new_session()
+/// Worktree path for a task + repo: `~/.gitzi/tmp/tasks/<id>/worktrees/<repo_slug>/`
+pub fn task_worktree_path(task_id: &str, repo_slug: &str) -> PathBuf {
+    task_tmp_dir(task_id).join("worktrees").join(repo_slug)
 }
 
-/// Always generate a fresh session ID and make it active.
-pub fn new_session() -> Result<String> {
-    let id = uuid::Uuid::new_v4().to_string();
-    let path = current_session_file();
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, &id)?;
-    Ok(id)
-}
-
-pub fn chat_file() -> Result<PathBuf> {
-    Ok(session_dir()?.join("chat.jsonl"))
-}
-
-/// Read the repo path from `~/.gitzi/<session>/repo`.
-/// Falls back to the current working directory if not set.
+/// Default repo path — falls back to current working directory.
+/// TODO: Replace with multi-repo discovery from config.toml `repo_paths` globs.
 pub fn repo_path() -> PathBuf {
-    session_dir()
-        .ok()
-        .map(|d| d.join("repo"))
-        .filter(|p| p.exists())
-        .and_then(|p| std::fs::read_to_string(&p).ok())
-        .map(|s| PathBuf::from(s.trim()))
-        .unwrap_or_else(|| PathBuf::from("."))
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-/// Persist the repo path into the session state: `~/.gitzi/<session>/repo`.
-pub fn write_repo_path(repo_root: &std::path::Path) -> Result<()> {
-    let dir = session_dir()?;
-    std::fs::create_dir_all(&dir)?;
-    let canonical = std::fs::canonicalize(repo_root)
-        .unwrap_or_else(|_| repo_root.to_path_buf());
-    std::fs::write(dir.join("repo"), canonical.to_string_lossy().as_bytes())?;
+/// Current chat session file. For now uses a single `current.jsonl` in the chats dir.
+/// Future: multiple named sessions.
+pub fn current_chat_file() -> PathBuf {
+    chats_dir().join("current.jsonl")
+}
+
+/// Ensure all required directories exist. Called lazily on daemon startup.
+pub fn ensure_dirs() -> Result<()> {
+    std::fs::create_dir_all(plan_dir().join("epics"))?;
+    std::fs::create_dir_all(plan_dir().join("tasks"))?;
+    std::fs::create_dir_all(reviews_dir())?;
+    std::fs::create_dir_all(chats_dir())?;
+    std::fs::create_dir_all(tmp_dir())?;
+    std::fs::create_dir_all(repo_cache_dir())?;
     Ok(())
 }

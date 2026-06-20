@@ -19,6 +19,8 @@ pub enum DispatchEvent {
     AgentBlocked { task_id: String, agent_role: AgentRole, question: String },
     BootComplete,
     PanelSwitch { view: String },
+    /// Chat response from the main agent (delivered async via event bus).
+    ChatResponse { content: String },
 }
 
 // ─── EventBus ─────────────────────────────────────────────────────────────────

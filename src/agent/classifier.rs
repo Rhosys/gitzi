@@ -1,0 +1,108 @@
+//! Lightweight interrupt classifier — determines what to do when the user sends
+//! a message while the main agent is already processing one.
+
+use reqwest::Client;
+use serde::Deserialize;
+use serde_json::json;
+use tracing::warn;
+
+/// The three possible interrupt dispositions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptAction {
+    /// Cancel the in-flight request, merge messages, retry as one turn.
+    Amend,
+    /// Hold the new message until the current response arrives, then deliver.
+    Queue,
+    /// Fork a new chat session, process the new message independently.
+    Fork,
+}
+
+const SYSTEM_PROMPT: &str = "\
+You are a message router. Given a conversation context, a pending message \
+currently being processed, and a new message from the user, classify the new message. \
+Respond with exactly one word: amend, queue, or fork.\n\n\
+- amend: the new message updates, corrects, or supersedes the pending message\n\
+- queue: the new message is related and can wait until the current response finishes\n\
+- fork: the new message is a completely different thought unrelated to the pending topic\n\n\
+Respond with one word only.";
+
+/// Classify an interrupt message against the currently in-flight message.
+/// Falls back to `Queue` on any error.
+pub async fn classify(
+    base_url: &str,
+    model: &str,
+    context_turns: &[String],
+    pending_message: &str,
+    new_message: &str,
+) -> InterruptAction {
+    let user_content = format!(
+        "Recent context:\n{}\n\nPending message (currently being processed):\n{}\n\nNew message:\n{}",
+        context_turns.join("\n"),
+        pending_message,
+        new_message,
+    );
+
+    let body = json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": SYSTEM_PROMPT },
+            { "role": "user", "content": user_content },
+        ],
+        "max_tokens": 5,
+        "temperature": 0.0,
+    });
+
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+
+    let result = Client::new()
+        .post(&url)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await;
+
+    let response = match result {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("interrupt classifier request failed: {e}");
+            return InterruptAction::Queue;
+        }
+    };
+
+    let parsed: ClassifierResponse = match response.json().await {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("interrupt classifier parse failed: {e}");
+            return InterruptAction::Queue;
+        }
+    };
+
+    let word = parsed
+        .choices
+        .first()
+        .and_then(|c| c.message.content.as_deref())
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+
+    match word.as_str() {
+        "amend" => InterruptAction::Amend,
+        "fork" => InterruptAction::Fork,
+        _ => InterruptAction::Queue,
+    }
+}
+
+#[derive(Deserialize)]
+struct ClassifierResponse {
+    choices: Vec<ClassifierChoice>,
+}
+
+#[derive(Deserialize)]
+struct ClassifierChoice {
+    message: ClassifierMessage,
+}
+
+#[derive(Deserialize)]
+struct ClassifierMessage {
+    content: Option<String>,
+}

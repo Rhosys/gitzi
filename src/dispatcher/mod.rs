@@ -233,6 +233,17 @@ pub struct Dispatcher {
     pub main_agent: MainAgent,
     /// Token store for MCP sub-agent authorization.
     pub token_store: Arc<TokenStore>,
+    /// Tracks the currently in-flight chat turn for interrupt classification.
+    /// A stack — each fork pushes a new entry. Classifier operates against the top.
+    pub chat_stack: Mutex<Vec<ChatInflight>>,
+}
+
+/// State of an in-flight chat turn — used for interrupt classification.
+pub struct ChatInflight {
+    /// The user message currently being processed.
+    pub pending_message: String,
+    /// Abort handle to cancel the in-flight LLM request.
+    pub abort_handle: tokio::task::AbortHandle,
 }
 
 impl Dispatcher {
@@ -668,7 +679,7 @@ impl Dispatcher {
 
         // 10. Load chat history from disk
         let chat_history = {
-            let path = home::chat_file().unwrap_or_else(|_| std::path::PathBuf::from("/tmp/gitzi-chat.jsonl"));
+            let path = home::current_chat_file();
             let messages = chat_store::load(&path).unwrap_or_default();
             info!(messages = messages.len(), "loaded chat history from disk");
             Arc::new(Mutex::new(messages))
@@ -689,6 +700,7 @@ impl Dispatcher {
             chat_history,
             main_agent,
             token_store,
+            chat_stack: Mutex::new(Vec::new()),
         };
 
         // 12. Proactively surface opening status — once per daemon boot.
@@ -781,7 +793,8 @@ impl Dispatcher {
         let final_response = self.run_main_agent_turn(message).await?;
 
         // Persist the original user message (not augmented) and the agent response
-        if let Ok(path) = home::chat_file() {
+        {
+            let path = home::current_chat_file();
             let user_msg = ChatMessage::user(message);
             let agent_msg = ChatMessage::agent(&final_response);
             chat_store::append(&path, &user_msg).ok();
@@ -824,7 +837,8 @@ impl Dispatcher {
                       Be concise.";
         let final_response = self.run_main_agent_turn(prompt).await?;
 
-        if let Ok(path) = home::chat_file() {
+        {
+            let path = home::current_chat_file();
             let agent_msg = ChatMessage::agent(&final_response);
             chat_store::append(&path, &agent_msg).ok();
 
@@ -1218,6 +1232,10 @@ impl Dispatcher {
 
                 DispatchEvent::PanelSwitch { .. } => {
                     // TUI-only event — no-op in dispatcher run loop.
+                }
+
+                DispatchEvent::ChatResponse { .. } => {
+                    // TUI-only event — delivered to subscribers, no-op in run loop.
                 }
             }
         }

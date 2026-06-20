@@ -17,9 +17,6 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize .gitzi/ in the current repo
-    Init,
-
     /// Show current WIP snapshot
     Status,
 

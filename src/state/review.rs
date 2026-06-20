@@ -7,7 +7,7 @@ use crate::config::atomic_write;
 use crate::dispatcher::Column;
 use crate::error::Result;
 use crate::state::chat::Role;
-use crate::state::home::session_dir;
+use crate::state::home;
 
 /// An action taken on a review item: a terminal decision (approval, rejection,
 /// answer) or a non-terminal conversational turn (comment) while the human and
@@ -31,7 +31,7 @@ pub enum PersistedReviewKind {
     BufferApproval { buffer_column: Column, task_priority: u32 },
 }
 
-/// A persisted review item stored as TOML in `~/.gitzi/<session>/reviews/{id}.toml`.
+/// A persisted review item stored as TOML in `~/.gitzi/plan/reviews/{id}.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PersistedReviewItem {
     pub id: String,
@@ -55,29 +55,30 @@ impl PersistedReviewItem {
 
 // ── Persistence functions ─────────────────────────────────────────────────────
 
-/// Directory for review item files: `~/.gitzi/<session>/reviews/`
-pub fn reviews_dir() -> Result<PathBuf> {
-    let dir = session_dir()?.join("reviews");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// Directory for review item files: `~/.gitzi/plan/reviews/`
+pub fn reviews_dir() -> PathBuf {
+    let dir = home::reviews_dir();
+    // Best-effort create; callers handle errors on actual I/O.
+    let _ = std::fs::create_dir_all(&dir);
+    dir
 }
 
 /// Persist a review item to disk atomically.
 pub fn write_review_item(item: &PersistedReviewItem) -> Result<()> {
-    let path = reviews_dir()?.join(format!("{}.toml", item.id));
+    let path = reviews_dir().join(format!("{}.toml", item.id));
     atomic_write(&path, &toml::to_string_pretty(item)?)
 }
 
 /// Load a single review item by ID.
 pub fn load_review_item(id: &str) -> Result<PersistedReviewItem> {
-    let path = reviews_dir()?.join(format!("{id}.toml"));
+    let path = reviews_dir().join(format!("{id}.toml"));
     let text = std::fs::read_to_string(&path)?;
     Ok(toml::from_str(&text)?)
 }
 
 /// Find an unresolved review item for the given task ID.
 pub fn find_unresolved_for_task(task_id: &str) -> Result<Option<PersistedReviewItem>> {
-    let dir = session_dir()?.join("reviews");
+    let dir = reviews_dir();
     if !dir.exists() {
         return Ok(None);
     }
@@ -99,10 +100,7 @@ pub fn find_unresolved_for_task(task_id: &str) -> Result<Option<PersistedReviewI
 /// Used to inject prior decisions into an agent's prompt so it never re-asks
 /// a question the human has already answered.
 pub fn load_answered_for_task(task_id: &str) -> Vec<(String, String)> {
-    let dir = match session_dir().map(|d| d.join("reviews")) {
-        Ok(d) => d,
-        Err(_) => return Vec::new(),
-    };
+    let dir = reviews_dir();
     if !dir.exists() {
         return Vec::new();
     }
@@ -143,7 +141,7 @@ pub fn load_answered_for_task(task_id: &str) -> Vec<(String, String)> {
 
 /// Load all review items that have no terminal action recorded.
 pub fn load_all_unresolved() -> Result<Vec<PersistedReviewItem>> {
-    let dir = session_dir()?.join("reviews");
+    let dir = reviews_dir();
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -258,7 +256,6 @@ mod tests {
             })
     }
 
-    /// Write a review item to a path inside a given directory.
     fn write_item_to(dir: &Path, item: &PersistedReviewItem) {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join(format!("{}.toml", item.id));
@@ -266,26 +263,21 @@ mod tests {
         std::fs::write(&path, &content).unwrap();
     }
 
-    /// Read a review item from a path inside a given directory.
     fn read_item_from(dir: &Path, id: &str) -> PersistedReviewItem {
         let path = dir.join(format!("{id}.toml"));
         let text = std::fs::read_to_string(&path).unwrap();
         toml::from_str(&text).unwrap()
     }
 
-    // Feature: dispatcher-audit-fixes, Property 1: Review item persistence round-trip
-    // **Validates: Requirements 1.1, 1.4**
     proptest! {
         #[test]
         fn review_item_round_trip(item in arb_persisted_review_item()) {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join(format!("{}.toml", &item.id));
 
-            // Serialize and write
             let serialized = toml::to_string_pretty(&item).unwrap();
             std::fs::write(&path, &serialized).unwrap();
 
-            // Read back and deserialize
             let read_back = std::fs::read_to_string(&path).unwrap();
             let deserialized: PersistedReviewItem =
                 toml::from_str(&read_back).unwrap();
@@ -294,8 +286,6 @@ mod tests {
         }
     }
 
-    // Feature: dispatcher-audit-fixes, Property 2: Approval/rejection action persistence
-    // **Validates: Requirements 1.2, 1.3, 1.5**
     proptest! {
         #[test]
         fn prop_action_append_persistence(
@@ -305,20 +295,16 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let dir = tmp.path();
 
-            // Write initial item with empty actions
             write_item_to(dir, &item);
 
-            // Append actions one by one, persisting after each
             let mut current = item.clone();
             for action in &actions {
                 current.actions.push(action.clone());
                 write_item_to(dir, &current);
             }
 
-            // Read back from disk
             let loaded = read_item_from(dir, &current.id);
 
-            // Verify all actions present in order
             prop_assert_eq!(loaded.actions.len(), actions.len());
             for (i, (loaded_action, original_action)) in
                 loaded.actions.iter().zip(actions.iter()).enumerate()
@@ -329,7 +315,6 @@ mod tests {
                 );
             }
 
-            // Verify the rest of the item is intact
             prop_assert_eq!(&loaded.id, &item.id);
             prop_assert_eq!(&loaded.task_id, &item.task_id);
             prop_assert_eq!(&loaded.kind, &item.kind);

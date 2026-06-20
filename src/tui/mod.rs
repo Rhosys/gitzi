@@ -14,7 +14,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
 use crate::error::Result;
-use app::{App, DaemonCommand, DaemonMessage, Mode};
+use app::{App, DaemonCommand, DaemonMessage};
 
 /// Run the TUI. Must be called from within a tokio runtime.
 pub async fn run_async() -> Result<()> {
@@ -37,19 +37,14 @@ pub async fn run_async() -> Result<()> {
 
 /// Legacy synchronous entry point — spawns a tokio runtime internally.
 pub fn run(_repo_root: std::path::PathBuf) -> Result<()> {
-    // If we're already in a tokio runtime, use block_in_place
     let rt = tokio::runtime::Handle::try_current();
     match rt {
         Ok(handle) => {
-            // Already in a runtime — use block_on from a new thread
             std::thread::scope(|s| {
-                s.spawn(|| {
-                    handle.block_on(run_async())
-                }).join().unwrap()
+                s.spawn(|| handle.block_on(run_async())).join().unwrap()
             })
         }
         Err(_) => {
-            // No runtime — create one
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run_async())
         }
@@ -82,6 +77,7 @@ async fn run_event_loop(
                     app.apply_queue_len(count);
                 }
                 DaemonMessage::Event(json) => {
+                    app.push_log(json.clone());
                     app.handle_event(&json);
                 }
                 DaemonMessage::SwitchPanel(view) => {
@@ -106,7 +102,6 @@ async fn run_event_loop(
                         Ok(resp) => app.status = resp,
                         Err(e) => app.status = e,
                     }
-                    // After a command, refresh state
                     let _ = app.cmd_tx.send(DaemonCommand::RefreshBoard);
                     let _ = app.cmd_tx.send(DaemonCommand::RefreshReview);
                 }
@@ -123,61 +118,23 @@ async fn run_event_loop(
         }
 
         // Ctrl+Q always quits
-        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('q')
+        {
             break;
         }
 
-        match app.mode {
-            Mode::Status => match key.code {
-                KeyCode::Left | KeyCode::Char('h') => { app.mode = Mode::Idle; app.move_left(); }
-                KeyCode::Right | KeyCode::Char('l') => { app.mode = Mode::Idle; app.move_right(); }
-                KeyCode::Up | KeyCode::Char('k') => { app.mode = Mode::Idle; app.move_up(); }
-                KeyCode::Down | KeyCode::Char('j') => { app.mode = Mode::Idle; app.move_down(); }
-                KeyCode::Char('c') => app.begin_chat(),
-                _ => {}
-            },
-            Mode::Idle => match key.code {
-                KeyCode::Left | KeyCode::Char('h') => app.move_left(),
-                KeyCode::Right | KeyCode::Char('l') => app.move_right(),
-                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                KeyCode::Char('c') => app.begin_chat(),
-                KeyCode::Char('s') => app.mode = Mode::Status,
-                _ => {}
-            },
-            Mode::Review => match key.code {
-                KeyCode::Char('a') => {
-                    // 'a' = advance (buffer) or answer (question)
-                    if let Some(ref item) = app.review_item {
-                        use app::ReviewItemKind;
-                        match &item.kind {
-                            ReviewItemKind::AgentQuestion { .. } => app.begin_answer(),
-                            ReviewItemKind::BufferApproval { .. } => app.advance_current(),
-                        }
-                    }
-                }
-                KeyCode::Char('c') => app.begin_chat(),
-                KeyCode::Left | KeyCode::Char('h') => app.move_left(),
-                KeyCode::Right | KeyCode::Char('l') => app.move_right(),
-                KeyCode::Up | KeyCode::Char('k') => app.move_up(),
-                KeyCode::Down | KeyCode::Char('j') => app.move_down(),
-                _ => {}
-            },
-            Mode::AnswerInput => match key.code {
-                KeyCode::Enter => app.submit_answer(),
-                KeyCode::Esc => app.cancel_input(),
-                KeyCode::Backspace => { app.input.pop(); }
-                KeyCode::Char(c) => app.input.push(c),
-                _ => {}
-            },
-            Mode::ChatInput => match key.code {
-                KeyCode::Enter => app.submit_chat(),
-                KeyCode::Esc => app.cancel_chat(),
-                KeyCode::Backspace => { app.chat_input.pop(); }
-                KeyCode::Char(c) => app.chat_input.push(c),
-                _ => {}
-            },
-            Mode::ChatWaiting => {} // no input while waiting for response
+        match key.code {
+            // Chat input — always active
+            KeyCode::Enter => app.submit_chat(),
+            KeyCode::Backspace => { app.chat_input.pop(); }
+            KeyCode::Char(c) => app.chat_input.push(c),
+            // Board navigation via arrow keys
+            KeyCode::Left => app.move_left(),
+            KeyCode::Right => app.move_right(),
+            KeyCode::Up => app.move_up(),
+            KeyCode::Down => app.move_down(),
+            _ => {}
         }
     }
 
