@@ -251,9 +251,17 @@ pub struct ForkEntry {
     /// Whether this fork has a pending LLM turn (vs waiting for user input).
     pub turn_active: bool,
     /// Isolated chat history for this fork (seeded from the last 50 main entries).
-    /// TODO: Full isolation requires chat() to accept an optional alternate history
-    /// so fork turns use this instead of the global chat_history.
     pub fork_history: Vec<crate::state::chat::ChatMessage>,
+}
+
+/// Context for a chat turn — determines which history and persistence path to use.
+pub struct ChatContext {
+    /// Which chat history to use for this turn.
+    pub history: Vec<ChatMessage>,
+    /// Where to persist messages from this turn.
+    pub persist_path: std::path::PathBuf,
+    /// Fork ID (or "main" for the main session).
+    pub fork_id: String,
 }
 
 impl Dispatcher {
@@ -788,7 +796,7 @@ impl Dispatcher {
     /// switch the side panel to the review view and inject queue context into
     /// the LLM message so the agent surfaces it. Only the original user message
     /// (without injected context) is persisted to chat history.
-    pub async fn chat(&self, message: &str) -> anyhow::Result<String> {
+    pub async fn chat(&self, message: &str, ctx: Option<ChatContext>) -> anyhow::Result<String> {
         // Capture which buffer-approval item (if any) is under discussion before
         // the turn runs, so we record this exchange against that item's structured
         // history even if the turn itself resolves and dequeues it.
@@ -800,19 +808,40 @@ impl Dispatcher {
             })
         };
 
-        let final_response = self.run_main_agent_turn(message).await?;
+        let history = if let Some(ref ctx) = ctx {
+            ctx.history.clone()
+        } else {
+            self.chat_history.lock().await.clone()
+        };
+        let final_response = self.run_main_agent_turn(message, &history).await?;
 
         // Persist the original user message (not augmented) and the agent response
-        {
-            let path = home::current_chat_file();
+        let persist_path = ctx.as_ref()
+            .map(|c| c.persist_path.clone())
+            .unwrap_or_else(home::current_chat_file);
+
+        if ctx.is_none() || ctx.as_ref().is_some_and(|c| c.fork_id == "main") {
             let user_msg = ChatMessage::user(message);
             let agent_msg = ChatMessage::agent(&final_response);
-            chat_store::append(&path, &user_msg).ok();
-            chat_store::append(&path, &agent_msg).ok();
+            chat_store::append(&persist_path, &user_msg).ok();
+            chat_store::append(&persist_path, &agent_msg).ok();
 
             let mut hist = self.chat_history.lock().await;
             hist.push(user_msg);
             hist.push(agent_msg);
+        } else {
+            let user_msg = ChatMessage::user(message);
+            let agent_msg = ChatMessage::agent(&final_response);
+            chat_store::append(&persist_path, &user_msg).ok();
+            chat_store::append(&persist_path, &agent_msg).ok();
+
+            if let Some(ref ctx) = ctx {
+                let mut guard = self.chat_stack.lock().await;
+                if let Some(entry) = guard.iter_mut().find(|e| e.id == ctx.fork_id) {
+                    entry.fork_history.push(user_msg);
+                    entry.fork_history.push(agent_msg);
+                }
+            }
         }
 
         // Record this exchange on the review item's own structured history.
@@ -845,7 +874,8 @@ impl Dispatcher {
                       right now: the current epic and its progress, tasks in progress, \
                       anything waiting for my review or approval, and any open questions. \
                       Be concise.";
-        let final_response = self.run_main_agent_turn(prompt).await?;
+        let history = self.chat_history.lock().await.clone();
+        let final_response = self.run_main_agent_turn(prompt, &history).await?;
 
         {
             let path = home::current_chat_file();
@@ -862,7 +892,7 @@ impl Dispatcher {
     /// Shared agent turn: peek the review queue, switch the panel and inject queue
     /// context if something is pending, then run the tool-calling loop to completion.
     /// Does not persist anything to chat history — callers decide what to record.
-    async fn run_main_agent_turn(&self, message: &str) -> anyhow::Result<String> {
+    async fn run_main_agent_turn(&self, message: &str, history: &[ChatMessage]) -> anyhow::Result<String> {
         // 1. Peek review queue (lock released immediately after clone)
         let pending_review = {
             let queue = self.review_queue.lock().await;
@@ -905,8 +935,7 @@ impl Dispatcher {
         };
 
         // 4. Build messages from history + (possibly augmented) message
-        let history = self.chat_history.lock().await.clone();
-        let mut messages = MainAgent::history_to_messages(&history, &llm_message);
+        let mut messages = MainAgent::history_to_messages(history, &llm_message);
 
         // 5. Determine tools based on fork context
         let in_fork = {
