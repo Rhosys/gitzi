@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -10,7 +9,7 @@ use gitzi::daemon;
 use gitzi::id::new_id;
 use gitzi::model::{Epic, Stage, Task};
 use gitzi::pipeline::Orchestrator;
-use gitzi::state::{reader, writer};
+use gitzi::state::{reader, writer, home};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -22,7 +21,6 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let repo_root = PathBuf::from(".");
 
     if cli.uninstall {
         info!("Unregistering gitzi daemon service...");
@@ -32,14 +30,15 @@ async fn main() -> Result<()> {
     }
 
     if cli.daemon {
-        return cmd_daemon(&repo_root).await;
+        return cmd_daemon().await;
     }
 
     match cli.command {
-        None => cmd_default(repo_root).await?,
-        Some(Commands::Init) => cmd_init(&repo_root)?,
+        None => cmd_default().await?,
         Some(Commands::Status) => cmd_status()?,
-        Some(Commands::Advance { task_id, stage, note }) => cmd_advance(&repo_root, &task_id, &stage, note)?,
+        Some(Commands::Advance { task_id, stage, note }) => {
+            cmd_advance(&task_id, &stage, note)?;
+        }
         Some(Commands::Task { command: TaskCommands::Create { epic, title, priority, description } }) => {
             cmd_task_create(&epic, &title, priority, description)?;
         }
@@ -52,7 +51,10 @@ async fn main() -> Result<()> {
 }
 
 /// Default command: ensure daemon is running, then launch TUI.
-async fn cmd_default(repo_root: PathBuf) -> Result<()> {
+async fn cmd_default() -> Result<()> {
+    // Ensure state directories exist
+    home::ensure_dirs()?;
+
     // Ensure daemon is running (registers systemd service on first run)
     daemon::ensure_running().await?;
     info!("Daemon is running");
@@ -60,12 +62,10 @@ async fn cmd_default(repo_root: PathBuf) -> Result<()> {
     // Launch TUI
     #[cfg(feature = "tui")]
     {
-        let _ = repo_root;
         gitzi::tui::run_async().await?;
     }
     #[cfg(not(feature = "tui"))]
     {
-        let _ = repo_root;
         anyhow::bail!("TUI not available — build with --features tui");
     }
 
@@ -74,10 +74,40 @@ async fn cmd_default(repo_root: PathBuf) -> Result<()> {
 
 /// Run the daemon process: dispatcher event loop + unix socket server.
 /// Invoked by systemd, not directly by the user.
-async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
+async fn cmd_daemon() -> Result<()> {
     info!("gitzi daemon starting");
 
-    let config = Config::load(repo_root).context("Failed to load config")?;
+    // Ensure all state directories exist before loading anything
+    home::ensure_dirs()?;
+
+    // Attempt to start LM Studio if not reachable
+    {
+        let lms_path = dirs::home_dir()
+            .map(|h| h.join(".lmstudio/bin/lms"))
+            .filter(|p| p.exists());
+        if let Some(lms) = lms_path {
+            match reqwest::Client::new()
+                .get("http://localhost:1234/v1/models")
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(_) => info!("LM Studio reachable"),
+                Err(_) => {
+                    info!("LM Studio not reachable — running `lms server start`");
+                    let _ = std::process::Command::new(&lms)
+                        .args(["server", "start"])
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                }
+            }
+        }
+    }
+
+    let gitzi_home = home::gitzi_home();
+    let config = Config::load(&gitzi_home).context("Failed to load config")?;
 
     let dispatcher = Arc::new(
         gitzi::dispatcher::Dispatcher::start(config)
@@ -107,46 +137,10 @@ async fn cmd_daemon(repo_root: &std::path::Path) -> Result<()> {
         _ = shutdown_signal() => {
             info!("Shutdown signal received — exiting");
             let _ = std::fs::remove_file(daemon::socket_path());
-            let _ = std::fs::remove_file(gitzi::state::home::mcp_socket_path());
+            let _ = std::fs::remove_file(home::mcp_socket_path());
             Ok(())
         }
     }
-}
-
-fn cmd_init(repo_root: &std::path::Path) -> Result<()> {
-    use gitzi::state::home;
-
-    let gitzi_home = home::gitzi_home();
-    let session_id = home::init_session()?;
-    let session_dir = home::session_dir()?;
-
-    // Ensure ~/.gitzi/ exists and is a git repo
-    std::fs::create_dir_all(&gitzi_home)?;
-    if !gitzi_home.join(".git").exists() {
-        git2::Repository::init(&gitzi_home)
-            .map_err(|e| anyhow::anyhow!("Failed to init ~/.gitzi repo: {e}"))?;
-    }
-
-    // Create session state directories
-    std::fs::create_dir_all(session_dir.join("plan").join("epics"))?;
-    std::fs::create_dir_all(session_dir.join("plan").join("tasks"))?;
-    std::fs::create_dir_all(session_dir.join("wip").join("tasks"))?;
-
-    // Persist the repo root so the daemon can locate git operations
-    home::write_repo_path(repo_root)?;
-
-    // Write global config if not already present
-    let config_path = home::global_config_file();
-    if !config_path.exists() {
-        Config::default().write(repo_root)?;
-    }
-
-    writer::write_wip(&[])?;
-
-    println!("Initialized gitzi");
-    println!("  home:    {}", gitzi_home.display());
-    println!("  session: {session_id}");
-    Ok(())
 }
 
 fn cmd_status() -> Result<()> {
@@ -157,11 +151,12 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-fn cmd_advance(repo_root: &std::path::Path, task_id: &str, stage_str: &str, note: Option<String>) -> Result<()> {
+fn cmd_advance(task_id: &str, stage_str: &str, note: Option<String>) -> Result<()> {
     let stage = parse_stage(stage_str)?;
-    let config = Arc::new(Config::load(repo_root)?);
+    let gitzi_home = home::gitzi_home();
+    let config = Arc::new(Config::load(&gitzi_home)?);
     let (tx, _) = broadcast::channel(8);
-    let orch = Orchestrator::new(repo_root.to_path_buf(), config, tx);
+    let orch = Orchestrator::new(gitzi_home, config, tx);
     orch.advance_task(task_id, stage, note)?;
     println!("Task {task_id} advanced to {stage_str}");
     Ok(())

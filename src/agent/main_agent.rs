@@ -269,6 +269,16 @@ impl MainAgent {
         }
     }
 
+    /// The LLM endpoint base URL (for reuse by the classifier).
+    pub fn base_url(&self) -> String {
+        self.base_url.clone()
+    }
+
+    /// The model identifier (for reuse by the classifier).
+    pub fn model(&self) -> String {
+        self.model.clone()
+    }
+
     /// Convert stored chat history + a new user message into OaiMessage format.
     pub fn history_to_messages(history: &[ChatMessage], user_message: &str) -> Vec<OaiMessage> {
         let mut messages = Vec::new();

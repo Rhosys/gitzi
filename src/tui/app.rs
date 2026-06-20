@@ -51,21 +51,47 @@ pub struct ChatEntry {
 }
 
 // ─── TUI Mode ─────────────────────────────────────────────────────────────────
+// No Mode enum — chat input is always active. Arrow keys navigate the board,
+// printable chars go to chat, Enter submits, Backspace deletes, Ctrl+Q quits.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Mode {
-    /// Structured status card — default landing view on open
+/// Which panel is displayed on the right side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Panel {
     Status,
-    /// Board overview — idle, no review items pending
-    Idle,
-    /// Showing a review item with controls
-    Review,
-    /// Typing answer to agent question
-    AnswerInput,
-    /// Typing a chat message to the main agent
-    ChatInput,
-    /// Waiting for the main agent to respond
-    ChatWaiting,
+    Epic,
+    Kanban,
+    Task,
+    Logs,
+}
+
+impl Panel {
+    pub const ALL: &[Panel] = &[
+        Panel::Status,
+        Panel::Epic,
+        Panel::Kanban,
+        Panel::Task,
+        Panel::Logs,
+    ];
+
+    pub fn key(self) -> char {
+        match self {
+            Panel::Status => 'S',
+            Panel::Epic => 'E',
+            Panel::Kanban => 'K',
+            Panel::Task => 'T',
+            Panel::Logs => 'L',
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Panel::Status => "Status",
+            Panel::Epic => "Epic",
+            Panel::Kanban => "Kanban",
+            Panel::Task => "Task",
+            Panel::Logs => "Logs",
+        }
+    }
 }
 
 // ─── Column abbreviations for compact rendering ───────────────────────────────
@@ -116,8 +142,11 @@ pub struct App {
     /// Current topmost review item (from peek_review)
     pub review_item: Option<ReviewItem>,
 
-    /// Current mode
-    pub mode: Mode,
+    /// True while waiting for a chat response from the main agent.
+    pub chat_pending: bool,
+
+    /// Which panel is shown on the right
+    pub panel: Panel,
 
     /// Input buffer for reject feedback / answer text (review flows)
     pub input: String,
@@ -127,6 +156,9 @@ pub struct App {
 
     /// Chat history displayed in the left pane
     pub chat_history: Vec<ChatEntry>,
+
+    /// Log entries for the Logs panel (daemon events, agent activity)
+    pub logs: Vec<String>,
 
     /// Board navigation: selected column index
     pub board_col: usize,
@@ -179,10 +211,12 @@ impl App {
             epics: Vec::new(),
             question_count: 0,
             review_item: None,
-            mode: Mode::Status,
+            chat_pending: false,
+            panel: Panel::Status,
             input: String::new(),
             chat_input: String::new(),
             chat_history: Vec::new(),
+            logs: Vec::new(),
             board_col: 0,
             board_task: 0,
             status: "connecting…".to_string(),
@@ -204,20 +238,16 @@ impl App {
     /// Apply a review item update.
     pub fn apply_review_item(&mut self, item: Option<ReviewItem>) {
         self.review_item = item;
-        // Update mode based on review state
-        if self.review_item.is_some() && matches!(self.mode, Mode::Idle | Mode::Status) {
-            self.mode = Mode::Review;
-        } else if self.review_item.is_none() && self.mode == Mode::Review {
-            self.mode = Mode::Idle;
-        }
     }
 
     /// Apply a panel switch command from the main agent.
     pub fn apply_panel_switch(&mut self, view: &str) {
         match view {
-            "status" => self.mode = Mode::Status,
-            "board" => self.mode = Mode::Idle,
-            "review" => self.mode = Mode::Review,
+            "status" => self.panel = Panel::Status,
+            "epic" => self.panel = Panel::Epic,
+            "board" | "kanban" => self.panel = Panel::Kanban,
+            "task" => self.panel = Panel::Task,
+            "logs" => self.panel = Panel::Logs,
             _ => {} // ignore unknown views
         }
     }
@@ -284,6 +314,20 @@ impl App {
         let _ = self.cmd_tx.send(DaemonCommand::RefreshQueueLen);
     }
 
+    /// Get the currently selected task from the board (board_col + board_task).
+    pub fn selected_board_task(&self) -> Option<&BoardTask> {
+        let tasks = self.tasks_in_column(self.board_col);
+        tasks.get(self.board_task)
+    }
+
+    /// Append a log entry (capped at 500 lines).
+    pub fn push_log(&mut self, line: String) {
+        self.logs.push(line);
+        if self.logs.len() > 500 {
+            self.logs.drain(..self.logs.len() - 500);
+        }
+    }
+
     /// Get tasks for a given column index.
     pub fn tasks_in_column(&self, col_idx: usize) -> &[BoardTask] {
         let col = &column_order()[col_idx];
@@ -299,10 +343,9 @@ impl App {
         }
     }
 
-    /// Begin answer flow — switch to input mode.
+    /// Begin answer flow.
     pub fn begin_answer(&mut self) {
         if self.review_item.is_some() {
-            self.mode = Mode::AnswerInput;
             self.input.clear();
         }
     }
@@ -317,28 +360,15 @@ impl App {
             }
             let _ = self.cmd_tx.send(DaemonCommand::Answer(item.id.clone(), answer));
             self.status = "answering…".to_string();
-            self.mode = Mode::Review;
         }
     }
 
-    /// Cancel input mode, return to review.
+    /// Cancel input mode.
     pub fn cancel_input(&mut self) {
         self.input.clear();
-        self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
     }
 
     // ── Chat ──────────────────────────────────────────────────────────────────
-
-    /// Enter chat input mode.
-    pub fn begin_chat(&mut self) {
-        self.mode = Mode::ChatInput;
-    }
-
-    /// Cancel chat input, return to board mode.
-    pub fn cancel_chat(&mut self) {
-        self.chat_input.clear();
-        self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
-    }
 
     /// Submit the current chat message.
     pub fn submit_chat(&mut self) {
@@ -346,19 +376,17 @@ impl App {
         if message.is_empty() {
             return;
         }
-        // Show immediately in local history
         self.chat_history.push(ChatEntry { is_user: true, content: message.clone() });
-        // Send to daemon
         let _ = self.cmd_tx.send(DaemonCommand::Chat(message));
-        self.mode = Mode::ChatWaiting;
+        self.chat_pending = true;
         self.status = "thinking…".to_string();
     }
 
     /// Apply a chat response from the daemon.
     pub fn apply_chat_response(&mut self, response: String) {
         self.chat_history.push(ChatEntry { is_user: false, content: response });
+        self.chat_pending = false;
         self.status = String::new();
-        self.mode = if self.review_item.is_some() { Mode::Review } else { Mode::Idle };
     }
 
     /// Apply loaded chat history from the daemon.

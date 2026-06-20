@@ -123,7 +123,15 @@ async fn run_client(
                             && let Some(view) = val.get("view").and_then(|v| v.as_str())
                         {
                             let _ = msg_tx.send(DaemonMessage::SwitchPanel(view.to_string()));
-                            continue; // don't also send Event(line)
+                            continue;
+                        }
+                        // Check for chat_response events
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str()) == Some("chat_response")
+                            && let Some(content) = val.get("content").and_then(|v| v.as_str())
+                        {
+                            let _ = msg_tx.send(DaemonMessage::ChatResponse(content.to_string()));
+                            continue;
                         }
                         let _ = msg_tx.send(DaemonMessage::Event(line));
                     }

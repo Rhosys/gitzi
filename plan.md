@@ -102,42 +102,82 @@ Raise the limit deliberately when confidence is high.
 
 ---
 
-## State: Files in Git
+## State: `~/.gitzi/` (global, no init required)
 
-All pipeline state lives as TOML files. The harness uses **three distinct branch types**,
-none of which block or stomp on each other:
+All pipeline state lives as TOML files in the user's home directory. There is no
+`gitzi init` — the daemon and CLI create directories lazily on first access.
 
-| Branch | Purpose | Who merges |
-|--------|---------|------------|
-| `main` (or default) | Source of truth; production code | Human, via PR |
-| `gitzi/state` | All `.gitzi/` TOML state changes (tasks, epics, wip) | Human, via PR into main |
-| `gitzi/<task-id>-<slug>` | One per task; agent code changes in a worktree | Human, via PR into main |
-
-The harness **never commits to main directly**. Every write goes to a branch the human
-reviews first. `config.state_branch` (default: `"gitzi/state"`) is configurable.
-
-**Git mechanics:**
-- State commits use direct git object writes (blob → tree → commit onto the branch ref)
-  — the main working tree's index is never touched.
-- Task branches use linked git worktrees in `.gitzi/worktrees/<name>/` — the agent
-  subprocess runs there; the main workspace stays clean.
+There are no sessions or UUIDs — one global set of epics, tasks, and board state
+shared across all repos and agents.
 
 ```
-.gitzi/
-  config.toml          # harness config (WIP limits, state_branch, agent defaults)
-  epics/
-    <epic-id>.toml     # epic metadata + child task list
-  tasks/
-    <task-id>.toml     # task metadata, stage, assigned agent, history
-  wip.toml             # current stage snapshot (auto-generated)
-  worktrees/
-    gitzi-<task-id>-<slug>/   # linked worktree per active task (temp)
+~/.gitzi/
+├── config.toml              # harness config (WIP limits, agents, repo_paths)
+├── board.toml               # derived: which task is in which column
+├── plan/
+│   ├── epics/<id>.toml      # epic metadata + child task list
+│   ├── tasks/<id>.toml      # task metadata, stage, assigned agent, history
+│   └── reviews/<uuid>.toml  # review items (clarifications, decisions)
+├── chats/
+│   └── <id>.jsonl           # one file per chat session (user ↔ main agent)
+└── tmp/
+    ├── daemon.sock          # unix socket for TUI ↔ daemon IPC
+    ├── mcp.sock             # unix socket for MCP HTTP server
+    ├── cache/
+    │   └── repos/<slug>.toml  # repo summaries, labels, commit counter
+    └── tasks/<id>/
+        ├── worktrees/       # git linked worktrees per active task
+        └── agent.log        # raw agent output for this task
 ```
+
+### Lazy initialization
+
+Every path helper (`plan_dir()`, `board_file()`, etc.) calls `create_dir_all` on the
+parent before reading or writing. If `~/.gitzi/` doesn't exist, the first operation
+creates it. No explicit init step exists.
+
+### Repo discovery
+
+Repos are discovered dynamically from glob patterns in `config.toml`:
+
+```toml
+repo_paths = [
+    "/home/warren/git/claude/*",
+    "/home/warren/projects/side-*",
+]
+```
+
+On startup (and periodically via `watch_config`), the daemon:
+1. Expands each glob pattern
+2. Filters to directories containing a `.git/` directory
+3. Loads cached summaries from `tmp/cache/repos/`
+4. For new or stale repos, generates a summary:
+   - **Heuristics first:** reads package.json, Cargo.toml, README first line, directory name
+   - **LLM fallback:** for repos where heuristics produce insufficient labels
+5. Writes cache entries
+
+**Repo cache entry (`tmp/cache/repos/<slug>.toml`):**
+```toml
+path = "/home/warren/git/claude/email-catcher/backend"
+slug = "email-catcher-backend"
+summary = "TypeScript Lambda API using Hono, processes incoming emails"
+labels = ["typescript", "aws", "hono", "email"]
+commits_by_gitzi = 12
+last_scanned = 2026-06-20T10:00:00Z
+```
+
+`commits_by_gitzi` is incremented per repo after each completed task that touched it.
+
+### Task branches
 
 Each task gets its own branch: `gitzi/<task-id>-<slug>` (e.g. `gitzi/task-001-add-login`).
-Branches are created by the harness when the task enters In Progress and merged/deleted on Done.
+Tasks may span multiple repos. The harness creates linked worktrees in
+`tmp/tasks/<id>/worktrees/<repo-slug>/` — one per repo the task touches.
 
-**Task file shape (sketch):**
+The harness **never commits to main directly**. Every write goes to a branch the human
+reviews first.
+
+**Task file shape:**
 ```toml
 id = "task-001"
 epic = "epic-001"
@@ -145,6 +185,7 @@ title = "Add login endpoint"
 stage = "in-progress"
 agent = "claude-code"
 branch = "gitzi/task-001-add-login"
+repos = ["email-catcher-backend", "email-catcher-infrastructure"]
 wip_limit_blocked = false
 created_at = "2026-06-01T00:00:00Z"
 updated_at = "2026-06-01T00:00:00Z"
@@ -427,6 +468,49 @@ at a time — never a ranked list.
 
 
 
+### Interrupt classification (message sent while LLM is processing)
+
+The chat input is never blocked. When the user submits a message while the main agent
+is mid-turn, a lightweight classifier determines what to do:
+
+```
+User sends message while chat_pending == true
+    │
+    ▼
+Classifier call (same LLM endpoint, minimal prompt, single-word response):
+  Input: the pending user message, the new message, last 5 turns of context
+  Output: one of { amend, queue, fork }
+    │
+    ├─ amend → cancel in-flight request, concatenate both messages, retry as one turn
+    ├─ queue → hold new message, deliver it after the current response arrives
+    └─ fork  → spawn a new chat session (clone last 50 turns), process new message
+               there, pop back to main session when the fork completes
+```
+
+**Classifier prompt:**
+
+```
+System: You are a message router. Given a conversation context, a pending message
+currently being processed, and a new message from the user, classify the new message.
+Respond with exactly one word: amend, queue, or fork.
+
+- amend: the new message updates, corrects, or supersedes the pending message
+- queue: the new message is related and can wait until the current response finishes
+- fork: the new message is a completely different thought unrelated to the pending topic
+
+Respond with one word only.
+```
+
+**Implementation details:**
+- Uses the same LLM provider as the main agent (no separate model needed)
+- No reasoning tokens, no tool use — prompt designed for minimal output
+- If the classifier fails or times out, default to `queue` (safest)
+- `amend`: requires cancellation support on the in-flight HTTP request (use
+  `tokio::select!` with a cancel token or `reqwest` request abort)
+- `fork`: creates a new file in `~/.gitzi/chats/<uuid>.jsonl`, copies last 50 turns,
+  processes there. TUI shows a visual indicator that a fork is active. When the fork
+  response arrives, it is displayed inline (with a separator) and the fork session is
+  marked complete. Main session resumes normally.
 From the user's perspective the chat is **one infinite thread** — there are no visible
 session boundaries.
 
@@ -562,17 +646,41 @@ just a transient message.
 
 ### TUI layout
 
-Two-pane split: **35% chat left / 65% right panel.**
+Three-region split: **chat (left) / right panel (center-right) / sidebar (far right).**
 
-The right panel switches between views based on context:
+```
+┌─────────────────────────┬──────────────────────────────────────┬───┐
+│                         │                                      │ S │
+│   Chat (35%)            │   Right panel (62%)                  │ E │
+│   - main agent dialog   │   - system state display             │ K │
+│   - all decisions       │   - mostly read-only                 │ T │
+│   - questions/approvals │   - Epic/Task editable               │ L │
+│                         │                                      │   │
+└─────────────────────────┴──────────────────────────────────────┴───┘
+```
 
-| View | When shown |
-|------|-----------|
-| **Status** (default on open) | Structured harness-rendered opening card |
-| **Board** | Kanban board across all stages |
-| **Task detail** | Selected task — description, work items, diff, approve/reject |
-| **Review item detail** | Selected review item — question, options, decision |
-| **Clarification queue** | Pending review items awaiting user answers |
+**Left side = interaction.** All questions, approvals, decisions, and conversation happen
+through the main agent in chat. The agent drives the review queue, surfaces items one at
+a time, and asks the user directly.
+
+**Right side = state of system.** Shows context for what's being discussed. The main agent
+switches the panel programmatically to show relevant state. The user can also switch
+manually via sidebar keys.
+
+**Sidebar** — vertical strip (3 chars wide) on the far right. Each panel has a
+single-letter box. Active panel is highlighted. User presses the letter key to switch:
+
+| Key | Panel | Content |
+|-----|-------|---------|
+| **S** | Status | Overview: current epic, in-flight tasks, queue counts |
+| **E** | Epic | Selected epic detail, task list, progress |
+| **K** | Kanban | Board columns with tasks |
+| **T** | Task | Selected task: description, diff, branch, stage history |
+| **L** | Logs | Daemon activity, agent runs, errors |
+
+**Epic and Task panels are editable** — when the right panel shows an epic or task, the
+user can directly edit text fields (title, description) in place. All other panels are
+read-only state displays.
 
 ### Opening status panel
 
@@ -590,8 +698,8 @@ the chat is where they act on it.
 
 ### Diff review
 
-Diff review happens in the **Task detail** view of the right panel.
-The right panel shows the diff; approve/reject controls are there.
+Diff review happens in the **Task detail** panel. The right panel shows the diff; the
+chat asks the user to approve/reject inline via conversation.
 
 ### Review items
 
@@ -603,7 +711,7 @@ record.
 Review items can also be created directly from chat when a significant design decision
 is made outside of a task context.
 
-**Storage:** `~/.gitzi/<session>/reviews/<uuid>.toml`
+**Storage:** `~/.gitzi/plan/reviews/<uuid>.toml`
 
 **Contents:**
 - UUID

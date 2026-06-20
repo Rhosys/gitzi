@@ -13,7 +13,7 @@ use crate::state::home;
 
 /// Unix socket the daemon listens on.
 pub fn socket_path() -> PathBuf {
-    home::gitzi_home().join("daemon.sock")
+    home::daemon_socket_path()
 }
 
 /// Marker file indicating the systemd service has been registered.
@@ -113,7 +113,12 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
                 let encoded = cmd.strip_prefix("chat ").unwrap().trim();
                 let message: String = serde_json::from_str(encoded)
                     .unwrap_or_else(|_| encoded.to_string());
-                handle_chat(&dispatcher, &message).await
+                // Spawn chat processing with interrupt classification support.
+                let d = Arc::clone(&dispatcher);
+                tokio::spawn(async move {
+                    handle_chat_with_interrupt(d, message).await;
+                });
+                "queued".to_string()
             }
             "chat_history" => handle_chat_history(&dispatcher).await,
             other => format!("error: unknown command '{other}'"),
@@ -258,6 +263,125 @@ async fn handle_chat(dispatcher: &Dispatcher, message: &str) -> String {
         Err(e) => serde_json::to_string(&format!("Error: {e}"))
             .unwrap_or_else(|_| "\"error\"".to_string()),
     }
+}
+
+/// Handle a chat message with interrupt classification.
+/// If no chat is in-flight, starts one. If one IS in-flight, classifies and routes.
+async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String) {
+    use crate::agent::classifier::{self, InterruptAction};
+    use crate::dispatcher::{ChatInflight, event_bus::DispatchEvent};
+
+    // Check if a chat is already in-flight (top of stack)
+    let in_flight = {
+        let guard = dispatcher.chat_stack.lock().await;
+        guard.last().map(|f| f.pending_message.clone())
+    };
+
+    if let Some(pending_message) = in_flight {
+        // A chat is in-flight — classify the interrupt
+        let context_turns: Vec<String> = {
+            let hist = dispatcher.chat_history.lock().await;
+            hist.iter()
+                .rev()
+                .take(5)
+                .map(|m| format!("{}: {}", match m.role {
+                    crate::state::chat::Role::User => "user",
+                    crate::state::chat::Role::Agent => "agent",
+                    crate::state::chat::Role::System => "system",
+                }, &m.content))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect()
+        };
+
+        let base_url = dispatcher.main_agent.base_url();
+        let model = dispatcher.main_agent.model();
+
+        let action = classifier::classify(
+            &base_url,
+            &model,
+            &context_turns,
+            &pending_message,
+            &message,
+        ).await;
+
+        info!(?action, "interrupt classified");
+
+        match action {
+            InterruptAction::Amend => {
+                // Cancel the top-of-stack request
+                {
+                    let mut guard = dispatcher.chat_stack.lock().await;
+                    if let Some(inflight) = guard.pop() {
+                        inflight.abort_handle.abort();
+                    }
+                }
+                // Merge messages and retry at the same stack level
+                let merged = format!("{}\n\n[amended]: {}", pending_message, message);
+                start_chat_turn(dispatcher, merged).await;
+            }
+            InterruptAction::Queue => {
+                // Wait for the top-of-stack turn to finish, then process
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let guard = dispatcher.chat_stack.lock().await;
+                    if guard.is_empty() {
+                        break;
+                    }
+                }
+                start_chat_turn(dispatcher, message).await;
+            }
+            InterruptAction::Fork => {
+                // Push a new entry onto the stack — the original continues in background.
+                // This is recursive: if the user interrupts the fork, it classifies
+                // against the fork's message (top of stack).
+                start_chat_turn(dispatcher, message).await;
+            }
+        }
+    } else {
+        // Nothing in-flight — start a new turn
+        start_chat_turn(dispatcher, message).await;
+    }
+}
+
+/// Start a chat turn, pushing it onto the stack for interrupt tracking.
+/// When the turn completes, it pops itself from the stack.
+async fn start_chat_turn(dispatcher: Arc<Dispatcher>, message: String) {
+    use crate::dispatcher::{ChatInflight, event_bus::DispatchEvent};
+
+    let d = Arc::clone(&dispatcher);
+    let msg = message.clone();
+    let handle = tokio::spawn(async move {
+        d.chat(&msg).await
+    });
+
+    // Push onto the stack
+    {
+        let mut guard = dispatcher.chat_stack.lock().await;
+        guard.push(ChatInflight {
+            pending_message: message,
+            abort_handle: handle.abort_handle(),
+        });
+    }
+
+    // Await result
+    let result = match handle.await {
+        Ok(Ok(response)) => response,
+        Ok(Err(e)) => format!("Error: {e}"),
+        Err(_) => {
+            // Aborted (amend case) — the amend handler already popped us
+            return;
+        }
+    };
+
+    // Pop ourselves from the stack
+    {
+        let mut guard = dispatcher.chat_stack.lock().await;
+        guard.pop();
+    }
+
+    dispatcher.event_bus.emit(DispatchEvent::ChatResponse { content: result });
 }
 
 /// Return the full chat history as a JSON array.
