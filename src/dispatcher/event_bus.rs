@@ -21,6 +21,10 @@ pub enum DispatchEvent {
     PanelSwitch { view: String },
     /// Chat response from the main agent (delivered async via event bus).
     ChatResponse { content: String },
+    /// A new fork was created (for TUI fork stack display).
+    ForkCreated { id: String, name: String },
+    /// A fork was closed (popped from stack).
+    ForkClosed { id: String, summary: String },
 }
 
 // ─── EventBus ─────────────────────────────────────────────────────────────────

@@ -248,6 +248,25 @@ fn main_agent_tools() -> Vec<OaiTool> {
                 }),
             },
         },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_close_fork",
+                description: "Close the current fork session. Call this when the forked topic \
+                              is resolved and no further discussion is needed. Only available \
+                              inside a fork.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "summary": {
+                            "type": "string",
+                            "description": "One-sentence summary of what was decided in this fork."
+                        }
+                    },
+                    "required": ["summary"]
+                }),
+            },
+        },
     ]
 }
 

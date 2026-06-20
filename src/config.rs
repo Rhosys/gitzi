@@ -130,6 +130,9 @@ pub struct Config {
 
     #[serde(default = "default_test_command")]
     pub test_command: String,
+    /// When true (default), the main agent can auto-close forks via `gitzi_close_fork`.
+    #[serde(default = "default_fork_auto_close")]
+    pub fork_auto_close: bool,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
 }
@@ -137,6 +140,8 @@ pub struct Config {
 fn default_agent_name() -> String { "developer".to_string() }
 
 fn default_test_command() -> String { "cargo test".to_string() }
+
+fn default_fork_auto_close() -> bool { true }
 
 impl Default for Config {
     fn default() -> Self {
@@ -146,6 +151,7 @@ impl Default for Config {
             providers: default_providers(),
             agents: Vec::new(),
             test_command: default_test_command(),
+            fork_auto_close: default_fork_auto_close(),
             integrations: HashMap::new(),
         }
     }

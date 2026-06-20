@@ -133,6 +133,28 @@ async fn run_client(
                             let _ = msg_tx.send(DaemonMessage::ChatResponse(content.to_string()));
                             continue;
                         }
+                        // Check for fork_created events
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str()) == Some("fork_created")
+                            && let Some(id) = val.get("id").and_then(|v| v.as_str())
+                            && let Some(name) = val.get("name").and_then(|v| v.as_str())
+                        {
+                            let _ = msg_tx.send(DaemonMessage::ForkCreated {
+                                id: id.to_string(),
+                                name: name.to_string(),
+                            });
+                            continue;
+                        }
+                        // Check for fork_closed events
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str()) == Some("fork_closed")
+                            && let Some(id) = val.get("id").and_then(|v| v.as_str())
+                        {
+                            let _ = msg_tx.send(DaemonMessage::ForkClosed {
+                                id: id.to_string(),
+                            });
+                            continue;
+                        }
                         let _ = msg_tx.send(DaemonMessage::Event(line));
                     }
                     Ok(None) | Err(_) => {
@@ -232,6 +254,9 @@ async fn run_client(
                             && let Ok(count) = line.trim().parse::<usize>() {
                             let _ = msg_tx.send(DaemonMessage::QueueLen(count));
                         }
+                    }
+                    DaemonCommand::CloseFork => {
+                        let _ = writer.write_all(b"close_fork\n").await;
                     }
                 }
             }

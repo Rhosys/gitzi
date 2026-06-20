@@ -17,19 +17,64 @@ pub fn draw(frame: &mut Frame, app: &App) {
     ]).areas(area);
 
     draw_header(frame, app, header_area);
-
-    // Three-part split: 35% chat | fill right panel | 3-char sidebar
-    let [chat_area, right_area, sidebar_area] = Layout::horizontal([
-        Constraint::Ratio(35, 100),
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ]).areas(body_area);
-
-    draw_chat_pane(frame, app, chat_area);
-    draw_right_panel(frame, app, right_area);
-    draw_sidebar(frame, app, sidebar_area);
-
+    draw_body(frame, app, body_area);
     draw_footer(frame, app, footer_area);
+}
+
+// -- Body (conditionally includes fork strip) -------------------------------
+
+fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
+    if app.fork_stack.is_empty() {
+        let [chat_area, right_area, sidebar_area] = Layout::horizontal([
+            Constraint::Ratio(35, 100),
+            Constraint::Fill(1),
+            Constraint::Length(3),
+        ]).areas(area);
+        draw_chat_pane(frame, app, chat_area);
+        draw_right_panel(frame, app, right_area);
+        draw_sidebar(frame, app, sidebar_area);
+    } else {
+        let [fork_strip, chat_area, right_area, sidebar_area] = Layout::horizontal([
+            Constraint::Length(3),
+            Constraint::Ratio(33, 100),
+            Constraint::Fill(1),
+            Constraint::Length(3),
+        ]).areas(area);
+        draw_fork_strip(frame, app, fork_strip);
+        draw_chat_pane(frame, app, chat_area);
+        draw_right_panel(frame, app, right_area);
+        draw_sidebar(frame, app, sidebar_area);
+    }
+}
+
+// -- Fork strip (3-char wide, left edge when forks active) -------------------
+
+fn draw_fork_strip(frame: &mut Frame, app: &App, area: Rect) {
+    let total = app.fork_stack.len();
+    let mut constraints: Vec<Constraint> = Vec::new();
+    constraints.push(Constraint::Fill(1)); // top padding
+    for _ in 0..total {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Fill(1)); // bottom padding
+    let rows = Layout::vertical(constraints).split(area);
+
+    for (i, _fork) in app.fork_stack.iter().enumerate() {
+        let active = i == total - 1;
+        let style = if active {
+            Style::default()
+                .bg(Color::Magenta)
+                .fg(Color::Black)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        let label = format!(" {} ", i + 1);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, style)),
+            rows[i + 1],
+        );
+    }
 }
 
 // -- Header -----------------------------------------------------------------
@@ -38,17 +83,26 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let connected_indicator = if app.connected { "●" } else { "○" };
     let conn_color = if app.connected { Color::Green } else { Color::Red };
 
+    let mut spans = vec![
+        Span::styled(
+            " gitzi",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  ", Style::default()),
+        Span::styled(connected_indicator, Style::default().fg(conn_color)),
+        Span::styled("  --  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(app.panel.label(), Style::default().fg(Color::White)),
+    ];
+
+    if let Some(fork) = app.fork_stack.last() {
+        spans.push(Span::styled(
+            format!("  #{}: {}", app.fork_stack.len(), fork.name),
+            Style::default().fg(Color::Magenta),
+        ));
+    }
+
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                " gitzi",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(connected_indicator, Style::default().fg(conn_color)),
-            Span::styled("  --  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(app.panel.label(), Style::default().fg(Color::White)),
-        ])),
+        Paragraph::new(Line::from(spans)),
         area,
     );
 }
@@ -545,7 +599,11 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
 // -- Footer -----------------------------------------------------------------
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let controls = " [enter] send  [arrows] board  [ctrl+q] quit";
+    let controls = if !app.fork_stack.is_empty() {
+        " [enter] send  [esc] close fork  [arrows] board  [ctrl+q] quit"
+    } else {
+        " [enter] send  [arrows] board  [ctrl+q] quit"
+    };
 
     let status = &app.status;
     let footer = format!("{controls}  | {status}");

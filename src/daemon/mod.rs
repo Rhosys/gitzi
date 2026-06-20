@@ -269,7 +269,7 @@ async fn handle_chat(dispatcher: &Dispatcher, message: &str) -> String {
 /// If no chat is in-flight, starts one. If one IS in-flight, classifies and routes.
 async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String) {
     use crate::agent::classifier::{self, InterruptAction};
-    use crate::dispatcher::{ChatInflight, event_bus::DispatchEvent};
+    use crate::dispatcher::{ForkEntry, event_bus::DispatchEvent};
 
     // Check if a chat is already in-flight (top of stack)
     let in_flight = {
@@ -313,13 +313,13 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
                 // Cancel the top-of-stack request
                 {
                     let mut guard = dispatcher.chat_stack.lock().await;
-                    if let Some(inflight) = guard.pop() {
-                        inflight.abort_handle.abort();
+                    if let Some(entry) = guard.pop() {
+                        entry.abort_handle.abort();
                     }
                 }
                 // Merge messages and retry at the same stack level
                 let merged = format!("{}\n\n[amended]: {}", pending_message, message);
-                start_chat_turn(dispatcher, merged).await;
+                start_chat_turn(dispatcher, merged, None).await;
             }
             InterruptAction::Queue => {
                 // Wait for the top-of-stack turn to finish, then process
@@ -330,25 +330,43 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
                         break;
                     }
                 }
-                start_chat_turn(dispatcher, message).await;
+                start_chat_turn(dispatcher, message, None).await;
             }
             InterruptAction::Fork => {
-                // Push a new entry onto the stack — the original continues in background.
-                // This is recursive: if the user interrupts the fork, it classifies
-                // against the fork's message (top of stack).
-                start_chat_turn(dispatcher, message).await;
+                // Name the fork
+                let fork_name = classifier::name_fork(&base_url, &model, &message).await;
+                let fork_id = uuid::Uuid::new_v4().to_string();
+                info!(fork_id = %fork_id, fork_name = %fork_name, "creating fork");
+
+                // Emit fork created event for TUI
+                dispatcher.event_bus.emit(DispatchEvent::ForkCreated {
+                    id: fork_id.clone(),
+                    name: fork_name.clone(),
+                });
+
+                // Push a new entry onto the stack and start the turn
+                start_chat_turn(
+                    dispatcher,
+                    message,
+                    Some((fork_id, fork_name)),
+                ).await;
             }
         }
     } else {
         // Nothing in-flight — start a new turn
-        start_chat_turn(dispatcher, message).await;
+        start_chat_turn(dispatcher, message, None).await;
     }
 }
 
 /// Start a chat turn, pushing it onto the stack for interrupt tracking.
 /// When the turn completes, it pops itself from the stack.
-async fn start_chat_turn(dispatcher: Arc<Dispatcher>, message: String) {
-    use crate::dispatcher::{ChatInflight, event_bus::DispatchEvent};
+/// If `fork_info` is Some, this is a new fork with the given id and name.
+async fn start_chat_turn(
+    dispatcher: Arc<Dispatcher>,
+    message: String,
+    fork_info: Option<(String, String)>,
+) {
+    use crate::dispatcher::{ForkEntry, event_bus::DispatchEvent};
 
     let d = Arc::clone(&dispatcher);
     let msg = message.clone();
@@ -356,12 +374,19 @@ async fn start_chat_turn(dispatcher: Arc<Dispatcher>, message: String) {
         d.chat(&msg).await
     });
 
+    let (fork_id, fork_name) = fork_info.unwrap_or_else(|| {
+        ("main".to_string(), "Main".to_string())
+    });
+
     // Push onto the stack
     {
         let mut guard = dispatcher.chat_stack.lock().await;
-        guard.push(ChatInflight {
+        guard.push(ForkEntry {
+            id: fork_id,
+            name: fork_name,
             pending_message: message,
             abort_handle: handle.abort_handle(),
+            turn_active: true,
         });
     }
 
@@ -375,10 +400,16 @@ async fn start_chat_turn(dispatcher: Arc<Dispatcher>, message: String) {
         }
     };
 
-    // Pop ourselves from the stack
+    // Mark turn as inactive (fork stays on stack until user/agent closes)
     {
         let mut guard = dispatcher.chat_stack.lock().await;
-        guard.pop();
+        if let Some(entry) = guard.last_mut() {
+            entry.turn_active = false;
+        }
+        // If this is the "main" entry (not a named fork), pop it immediately
+        if guard.last().is_some_and(|e| e.id == "main") {
+            guard.pop();
+        }
     }
 
     dispatcher.event_bus.emit(DispatchEvent::ChatResponse { content: result });

@@ -97,6 +97,12 @@ async fn run_event_loop(
                 DaemonMessage::ChatResponse(response) => {
                     app.apply_chat_response(response);
                 }
+                DaemonMessage::ForkCreated { id, name } => {
+                    app.apply_fork_created(id, name);
+                }
+                DaemonMessage::ForkClosed { id } => {
+                    app.apply_fork_closed(&id);
+                }
                 DaemonMessage::CommandResult(result) => {
                     match result {
                         Ok(resp) => app.status = resp,
@@ -126,6 +132,7 @@ async fn run_event_loop(
 
         match key.code {
             // Chat input — always active
+            KeyCode::Esc => app.close_current_fork(),
             KeyCode::Enter => app.submit_chat(),
             KeyCode::Backspace => { app.chat_input.pop(); }
             KeyCode::Char(c) => app.chat_input.push(c),
