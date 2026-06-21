@@ -230,32 +230,6 @@ async fn cmd_daemon() -> Result<()> {
     // Ensure all state directories exist before loading anything
     home::ensure_dirs()?;
 
-    // Attempt to start LM Studio if not reachable
-    {
-        let lms_path = dirs::home_dir()
-            .map(|h| h.join(".lmstudio/bin/lms"))
-            .filter(|p| p.exists());
-        if let Some(lms) = lms_path {
-            match reqwest::Client::new()
-                .get("http://localhost:1234/v1/models")
-                .timeout(std::time::Duration::from_secs(2))
-                .send()
-                .await
-            {
-                Ok(_) => info!("LM Studio reachable"),
-                Err(_) => {
-                    info!("LM Studio not reachable — running `lms server start`");
-                    let _ = std::process::Command::new(&lms)
-                        .args(["server", "start"])
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn();
-                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
-                }
-            }
-        }
-    }
-
     let gitzi_home = home::gitzi_home();
     let config = Config::load(&gitzi_home).context("Failed to load config")?;
 
