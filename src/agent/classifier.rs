@@ -54,28 +54,14 @@ pub async fn classify(
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
-    let result = Client::new()
-        .post(&url)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
-
-    let response = match result {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("interrupt classifier request failed: {e}");
-            return InterruptAction::Queue;
-        }
-    };
-
-    let parsed: ClassifierResponse = match response.json().await {
-        Ok(r) => r,
-        Err(e) => {
-            warn!("interrupt classifier parse failed: {e}");
-            return InterruptAction::Queue;
-        }
-    };
+    let parsed: ClassifierResponse =
+        match crate::agent::llm_client::post_with_retry(&Client::new(), &url, &body).await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("interrupt classifier failed: {e}");
+                return InterruptAction::Queue;
+            }
+        };
 
     let word = parsed
         .choices
@@ -127,22 +113,11 @@ pub async fn name_fork(base_url: &str, model: &str, message: &str) -> String {
 
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
 
-    let result = Client::new()
-        .post(&url)
-        .json(&body)
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await;
-
-    let response = match result {
-        Ok(r) => r,
-        Err(_) => return fallback_name(message),
-    };
-
-    let parsed: ClassifierResponse = match response.json().await {
-        Ok(r) => r,
-        Err(_) => return fallback_name(message),
-    };
+    let parsed: ClassifierResponse =
+        match crate::agent::llm_client::post_with_retry(&Client::new(), &url, &body).await {
+            Ok(r) => r,
+            Err(_) => return fallback_name(message),
+        };
 
     parsed
         .choices

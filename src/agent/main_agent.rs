@@ -370,26 +370,10 @@ impl MainAgent {
             temperature: None,
         };
 
-        let resp = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| GitziError::AgentFailed(format!("LM Studio request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(GitziError::AgentFailed(format!(
-                "LM Studio returned {status}: {text}"
-            )));
-        }
-
-        let parsed: ChatResponse = resp
-            .json()
-            .await
-            .map_err(|e| GitziError::AgentFailed(format!("failed to parse LM Studio response: {e}")))?;
+        let parsed: ChatResponse =
+            crate::agent::llm_client::post_with_retry(&self.client, &url, &body)
+                .await
+                .map_err(|e| GitziError::AgentFailed(format!("LLM call failed: {e}")))?;
 
         let choice = parsed
             .choices
