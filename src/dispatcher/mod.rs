@@ -398,6 +398,75 @@ impl Dispatcher {
         Ok(())
     }
 
+    /// Attempt to merge a completed task's branch into its target branch.
+    async fn attempt_merge(&self, task_id: &str) {
+        use crate::git::ops::{merge_task_branch, MergeOutcome};
+
+        let task = match reader::load_task(task_id) {
+            Ok(t) => t,
+            Err(e) => {
+                warn!(%task_id, error = %e, "cannot load task for merge");
+                return;
+            }
+        };
+
+        let branch = match &task.branch {
+            Some(b) => b.clone(),
+            None => {
+                info!(%task_id, "task has no branch — skipping merge");
+                return;
+            }
+        };
+
+        let repo_path = home::repo_path();
+        let slug = repo_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("default")
+            .to_string();
+
+        let repo_config = self.config.repo_config(&slug);
+
+        match merge_task_branch(
+            &repo_path,
+            &branch,
+            &repo_config.main_branch,
+            &repo_config.merge_strategy,
+        ) {
+            Ok(MergeOutcome::Merged) => {
+                info!(
+                    %task_id,
+                    branch = %branch,
+                    "merged into {}",
+                    repo_config.main_branch
+                );
+                crate::state::repo_cache::increment_commits(&slug);
+            }
+            Ok(MergeOutcome::Skipped(reason)) => {
+                info!(%task_id, %reason, "merge skipped");
+            }
+            Ok(MergeOutcome::FfFailed(reason)) => {
+                warn!(%task_id, %reason, "ff-merge failed — creating review item");
+                let item = review_queue::HumanReviewItem::new(
+                    task_id,
+                    review_queue::ReviewItemKind::AgentQuestion {
+                        question: format!(
+                            "Task '{}' is done but cannot be fast-forward \
+                             merged: {}. What should I do? (rebase the \
+                             branch, force merge, or leave it)",
+                            task.title, reason
+                        ),
+                    },
+                );
+                let mut q = self.review_queue.lock().await;
+                q.enqueue(item);
+            }
+            Err(e) => {
+                warn!(%task_id, error = %e, "merge attempt failed");
+            }
+        }
+    }
+
     /// Answer an agent's question: dequeue the review item, persist the answer on the
     /// review item, and unblock the waiting agent.
     pub async fn answer_question(&self, item_id: &str, answer: String) -> anyhow::Result<()> {
@@ -1290,6 +1359,11 @@ impl Dispatcher {
                         let mut q = self.review_queue.lock().await;
                         q.enqueue(item);
                         info!(%task_id, column = %to, "buffer entry — review item created and persisted");
+                    }
+
+                    // If task reached Done, attempt merge
+                    if to == Column::Done {
+                        self.attempt_merge(&task_id).await;
                     }
                 }
 
