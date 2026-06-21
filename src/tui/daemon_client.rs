@@ -5,7 +5,7 @@ use tracing::warn;
 
 use crate::daemon::socket_path;
 use crate::state::chat::{ChatMessage as StoredMessage, Role};
-use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, ReviewItem};
+use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage};
 
 /// Spawn the background task that manages the daemon socket connection.
 /// Returns an UnboundedReceiver for incoming messages.
@@ -71,12 +71,8 @@ async fn run_client(
         return;
     }
     if let Ok(Some(line)) = lines.next_line().await {
-        let item: Option<ReviewItem> = if line.trim() == "null" {
-            None
-        } else {
-            serde_json::from_str(&line).ok()
-        };
-        let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+        let pending = line.trim() != "null";
+        let _ = msg_tx.send(DaemonMessage::ReviewPending(pending));
     }
 
     // Initial epics list (for the Status panel's "Current epic" section)
@@ -168,36 +164,6 @@ async fn run_client(
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { return };
                 match cmd {
-                    DaemonCommand::Approve(task_id) => {
-                        let msg = format!("approve {task_id}\n");
-                        if writer.write_all(msg.as_bytes()).await.is_err() {
-                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
-                            return;
-                        }
-                        if let Ok(Some(resp)) = lines.next_line().await {
-                            let result = if resp.starts_with("error") {
-                                Err(resp)
-                            } else {
-                                Ok(resp)
-                            };
-                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
-                        }
-                    }
-                    DaemonCommand::Answer(item_id, answer) => {
-                        let msg = format!("answer {item_id} {answer}\n");
-                        if writer.write_all(msg.as_bytes()).await.is_err() {
-                            let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
-                            return;
-                        }
-                        if let Ok(Some(resp)) = lines.next_line().await {
-                            let result = if resp.starts_with("error") {
-                                Err(resp)
-                            } else {
-                                Ok(resp)
-                            };
-                            let _ = msg_tx.send(DaemonMessage::CommandResult(result));
-                        }
-                    }
                     DaemonCommand::Chat(message) => {
                         let encoded = serde_json::to_string(&message).unwrap_or_default();
                         let cmd = format!("chat {encoded}\n");
@@ -227,12 +193,8 @@ async fn run_client(
                             return;
                         }
                         if let Ok(Some(line)) = lines.next_line().await {
-                            let item: Option<ReviewItem> = if line.trim() == "null" {
-                                None
-                            } else {
-                                serde_json::from_str(&line).ok()
-                            };
-                            let _ = msg_tx.send(DaemonMessage::ReviewItem(item));
+                            let pending = line.trim() != "null";
+                            let _ = msg_tx.send(DaemonMessage::ReviewPending(pending));
                         }
                     }
                     DaemonCommand::RefreshEpics => {

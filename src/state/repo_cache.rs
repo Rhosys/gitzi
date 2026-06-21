@@ -101,64 +101,62 @@ fn generate_summary(repo_path: &Path) -> (String, Vec<String>) {
 
     // Check package.json
     let pkg_json = repo_path.join("package.json");
-    if pkg_json.exists() {
-        if let Ok(text) = std::fs::read_to_string(&pkg_json) {
-            if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&text) {
-                labels.push("node".to_string());
+    if pkg_json.exists()
+        && let Ok(text) = std::fs::read_to_string(&pkg_json)
+        && let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&text)
+    {
+        labels.push("node".to_string());
 
-                if let Some(desc) = pkg.get("description").and_then(|v| v.as_str()) {
-                    summary_parts.push(desc.to_string());
-                }
+        if let Some(desc) = pkg.get("description").and_then(|v| v.as_str()) {
+            summary_parts.push(desc.to_string());
+        }
 
-                if let Some(deps) = pkg.get("dependencies").and_then(|v| v.as_object()) {
-                    if deps.contains_key("hono") { labels.push("hono".to_string()); }
-                    if deps.contains_key("react") { labels.push("react".to_string()); }
-                    if deps.contains_key("vue") { labels.push("vue".to_string()); }
-                    if deps.contains_key("express") { labels.push("express".to_string()); }
-                    if deps.contains_key("next") { labels.push("next".to_string()); }
-                    if deps.contains_key("@aws-sdk/client-s3")
-                        || deps.contains_key("@aws-sdk/client-dynamodb")
-                    {
-                        labels.push("aws".to_string());
-                    }
-                }
+        if let Some(deps) = pkg.get("dependencies").and_then(|v| v.as_object()) {
+            if deps.contains_key("hono") { labels.push("hono".to_string()); }
+            if deps.contains_key("react") { labels.push("react".to_string()); }
+            if deps.contains_key("vue") { labels.push("vue".to_string()); }
+            if deps.contains_key("express") { labels.push("express".to_string()); }
+            if deps.contains_key("next") { labels.push("next".to_string()); }
+            if deps.contains_key("@aws-sdk/client-s3")
+                || deps.contains_key("@aws-sdk/client-dynamodb")
+            {
+                labels.push("aws".to_string());
+            }
+        }
 
-                if let Some(dev_deps) =
-                    pkg.get("devDependencies").and_then(|v| v.as_object())
-                {
-                    if dev_deps.contains_key("typescript") {
-                        labels.push("typescript".to_string());
-                    }
-                    if dev_deps.contains_key("vitest") {
-                        labels.push("vitest".to_string());
-                    }
-                }
+        if let Some(dev_deps) =
+            pkg.get("devDependencies").and_then(|v| v.as_object())
+        {
+            if dev_deps.contains_key("typescript") {
+                labels.push("typescript".to_string());
+            }
+            if dev_deps.contains_key("vitest") {
+                labels.push("vitest".to_string());
             }
         }
     }
 
     // Check Cargo.toml
     let cargo_toml = repo_path.join("Cargo.toml");
-    if cargo_toml.exists() {
-        if let Ok(text) = std::fs::read_to_string(&cargo_toml) {
-            if let Ok(cargo) = toml::from_str::<toml::Value>(&text) {
-                labels.push("rust".to_string());
+    if cargo_toml.exists()
+        && let Ok(text) = std::fs::read_to_string(&cargo_toml)
+        && let Ok(cargo) = toml::from_str::<toml::Value>(&text)
+    {
+        labels.push("rust".to_string());
 
-                if let Some(desc) = cargo
-                    .get("package")
-                    .and_then(|p| p.get("description"))
-                    .and_then(|v| v.as_str())
-                {
-                    summary_parts.push(desc.to_string());
-                }
+        if let Some(desc) = cargo
+            .get("package")
+            .and_then(|p| p.get("description"))
+            .and_then(|v| v.as_str())
+        {
+            summary_parts.push(desc.to_string());
+        }
 
-                if let Some(deps) = cargo.get("dependencies").and_then(|v| v.as_table()) {
-                    if deps.contains_key("tokio") { labels.push("tokio".to_string()); }
-                    if deps.contains_key("axum") { labels.push("axum".to_string()); }
-                    if deps.contains_key("ratatui") { labels.push("tui".to_string()); }
-                    if deps.contains_key("reqwest") { labels.push("http".to_string()); }
-                }
-            }
+        if let Some(deps) = cargo.get("dependencies").and_then(|v| v.as_table()) {
+            if deps.contains_key("tokio") { labels.push("tokio".to_string()); }
+            if deps.contains_key("axum") { labels.push("axum".to_string()); }
+            if deps.contains_key("ratatui") { labels.push("tui".to_string()); }
+            if deps.contains_key("reqwest") { labels.push("http".to_string()); }
         }
     }
 
@@ -178,15 +176,15 @@ fn generate_summary(repo_path: &Path) -> (String, Vec<String>) {
     // Fall back to README first line for summary
     if summary_parts.is_empty() {
         let readme = repo_path.join("README.md");
-        if readme.exists() {
-            if let Ok(text) = std::fs::read_to_string(&readme) {
-                if let Some(first_line) =
-                    text.lines().find(|l| !l.is_empty() && !l.starts_with('#'))
-                {
-                    summary_parts.push(first_line.trim().to_string());
-                } else if let Some(heading) = text.lines().find(|l| l.starts_with("# ")) {
-                    summary_parts.push(heading.trim_start_matches("# ").to_string());
-                }
+        if readme.exists()
+            && let Ok(text) = std::fs::read_to_string(&readme)
+        {
+            if let Some(first_line) =
+                text.lines().find(|l| !l.is_empty() && !l.starts_with('#'))
+            {
+                summary_parts.push(first_line.trim().to_string());
+            } else if let Some(heading) = text.lines().find(|l| l.starts_with("# ")) {
+                summary_parts.push(heading.trim_start_matches("# ").to_string());
             }
         }
     }
