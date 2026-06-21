@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use git2::{Repository, Signature};
+use crate::config::MergeStrategy;
 use crate::error::{GitziError, Result};
 
 pub fn open_repo(path: &Path) -> Result<Repository> {
@@ -156,4 +157,137 @@ fn signature(repo: &Repository) -> Result<Signature<'static>> {
         .get_string("user.email")
         .unwrap_or_else(|_| "gitzi@localhost".to_string());
     Ok(Signature::now(&name, &email)?)
+}
+
+// ── Merge ─────────────────────────────────────────────────────────────────────
+
+/// Outcome of a merge attempt.
+#[derive(Debug)]
+pub enum MergeOutcome {
+    /// Branch was successfully merged (or pushed).
+    Merged,
+    /// Merge was intentionally skipped (strategy does not target main).
+    Skipped(String),
+    /// Fast-forward not possible — needs human intervention.
+    FfFailed(String),
+}
+
+/// Merge a task branch into the main branch according to the configured strategy.
+pub fn merge_task_branch(
+    repo_path: &Path,
+    task_branch: &str,
+    main_branch: &str,
+    strategy: &MergeStrategy,
+) -> Result<MergeOutcome> {
+    match strategy {
+        MergeStrategy::FfOnly => merge_ff_only(repo_path, task_branch, main_branch),
+        MergeStrategy::GitziBranch => Ok(MergeOutcome::Skipped(
+            "gitzi-branch: no merge to main".to_string(),
+        )),
+        MergeStrategy::MergeCommit => {
+            merge_with_commit(repo_path, task_branch, main_branch)
+        }
+        MergeStrategy::PullRequest => Ok(MergeOutcome::Skipped(
+            "pull-request: branch pushed, create PR manually".to_string(),
+        )),
+        MergeStrategy::PushToRemote => push_to_remote(repo_path, task_branch),
+    }
+}
+
+fn merge_ff_only(
+    repo_path: &Path,
+    task_branch: &str,
+    main_branch: &str,
+) -> Result<MergeOutcome> {
+    let repo = Repository::discover(repo_path)?;
+
+    let task_ref = format!("refs/heads/{task_branch}");
+    let task_commit = repo
+        .find_reference(&task_ref)
+        .map_err(GitziError::Git)?
+        .peel_to_commit()
+        .map_err(GitziError::Git)?;
+
+    let main_ref = format!("refs/heads/{main_branch}");
+    let main_commit = repo
+        .find_reference(&main_ref)
+        .map_err(GitziError::Git)?
+        .peel_to_commit()
+        .map_err(GitziError::Git)?;
+
+    // FF is possible when task_branch is a descendant of main (main's tip is
+    // an ancestor of task_branch's tip).
+    let can_ff = repo
+        .graph_descendant_of(task_commit.id(), main_commit.id())
+        .unwrap_or(false);
+
+    if !can_ff {
+        return Ok(MergeOutcome::FfFailed(format!(
+            "branch '{task_branch}' cannot be fast-forwarded onto \
+             '{main_branch}'"
+        )));
+    }
+
+    // Move main's ref to task_commit (safe — it's a strict fast-forward).
+    repo.reference(
+        &main_ref,
+        task_commit.id(),
+        true,
+        &format!("gitzi: ff-merge {task_branch} into {main_branch}"),
+    )
+    .map_err(GitziError::Git)?;
+
+    Ok(MergeOutcome::Merged)
+}
+
+fn merge_with_commit(
+    repo_path: &Path,
+    task_branch: &str,
+    main_branch: &str,
+) -> Result<MergeOutcome> {
+    let status = std::process::Command::new("git")
+        .args([
+            "merge",
+            "--no-ff",
+            task_branch,
+            "-m",
+            &format!("Merge {task_branch} into {main_branch}"),
+        ])
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => Ok(MergeOutcome::Merged),
+        Ok(_) => Ok(MergeOutcome::FfFailed(format!(
+            "merge of '{task_branch}' into '{main_branch}' failed \
+             — conflicts likely"
+        ))),
+        Err(e) => Err(GitziError::AgentFailed(format!(
+            "git merge failed: {e}"
+        ))),
+    }
+}
+
+fn push_to_remote(
+    repo_path: &Path,
+    task_branch: &str,
+) -> Result<MergeOutcome> {
+    let status = std::process::Command::new("git")
+        .args(["push", "-u", "origin", task_branch])
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match status {
+        Ok(s) if s.success() => Ok(MergeOutcome::Merged),
+        Ok(_) => Ok(MergeOutcome::FfFailed(format!(
+            "push of '{task_branch}' to remote failed"
+        ))),
+        Err(e) => Err(GitziError::AgentFailed(format!(
+            "git push failed: {e}"
+        ))),
+    }
 }
