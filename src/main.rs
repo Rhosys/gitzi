@@ -109,6 +109,12 @@ async fn cmd_daemon() -> Result<()> {
     let gitzi_home = home::gitzi_home();
     let config = Config::load(&gitzi_home).context("Failed to load config")?;
 
+    // Populate repo cache from config globs
+    if !config.repo_paths.is_empty() {
+        let repos = gitzi::state::repo_cache::populate(&config.repo_paths);
+        info!("discovered {} repos", repos.len());
+    }
+
     let dispatcher = Arc::new(
         gitzi::dispatcher::Dispatcher::start(config)
             .await
