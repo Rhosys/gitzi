@@ -1,6 +1,8 @@
 pub mod backend;
 pub mod classifier;
 pub mod claude_code;
+pub mod coding_agent;
+pub mod coding_tools;
 pub mod llm_client;
 pub mod main_agent;
 mod prompt;
