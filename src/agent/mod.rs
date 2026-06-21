@@ -23,6 +23,8 @@ pub enum PipelineAgent {
     ClaudeCode(ClaudeCodeCli),
     /// Talks directly to a `[providers.*]` entry over its OpenAI-compatible API (e.g. LM Studio).
     Rig(RigAgent),
+    /// Direct LLM tool-calling loop with sandboxed filesystem tools.
+    CodingLoop(AgentDef),
 }
 
 impl AgentBackend for PipelineAgent {
@@ -30,6 +32,19 @@ impl AgentBackend for PipelineAgent {
         match self {
             PipelineAgent::ClaudeCode(b) => b.run(task, ctx).await,
             PipelineAgent::Rig(b) => b.run(task, ctx).await,
+            PipelineAgent::CodingLoop(def) => {
+                let task_prompt = format!(
+                    "Task: {}\n\nDescription: {}\n\nWork in the current directory. \
+                     Read existing code first, then make changes. Run tests when done.",
+                    task.title,
+                    task.description.as_deref().unwrap_or("No description provided."),
+                );
+
+                match coding_agent::run(def, &task_prompt, &ctx.repo_root).await {
+                    Ok(output) => Ok(AgentResult::Success { output }),
+                    Err(e) => Ok(AgentResult::Failure { output: e.to_string() }),
+                }
+            }
         }
     }
 }
@@ -47,10 +62,7 @@ pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
                 def.system_prompt.clone(),
             ))
         }
-        None => PipelineAgent::ClaudeCode(ClaudeCodeCli::new(
-            Some(def.model.clone()),
-            def.system_prompt.clone(),
-        )),
+        None => PipelineAgent::CodingLoop(def.clone()),
     }
 }
 
@@ -66,11 +78,11 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
-    fn build_agent_without_provider_uses_claude_code_cli() {
+    fn build_agent_without_provider_uses_coding_loop() {
         let config = Config::default();
         let def = AgentDef { provider: None, ..AgentDef::default() };
 
-        assert!(matches!(build_agent(&config, &def), PipelineAgent::ClaudeCode(_)));
+        assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
     }
 
     #[test]
@@ -91,10 +103,10 @@ mod tests {
     }
 
     #[test]
-    fn build_agent_with_unconfigured_provider_falls_back_to_claude_code_cli() {
+    fn build_agent_with_unconfigured_provider_falls_back_to_coding_loop() {
         let config = Config::default();
         let def = AgentDef { provider: Some("nonexistent".to_string()), ..AgentDef::default() };
 
-        assert!(matches!(build_agent(&config, &def), PipelineAgent::ClaudeCode(_)));
+        assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
     }
 }
