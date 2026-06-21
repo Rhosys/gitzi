@@ -181,15 +181,11 @@ pub fn merge_task_branch(
 ) -> Result<MergeOutcome> {
     match strategy {
         MergeStrategy::FfOnly => merge_ff_only(repo_path, task_branch, main_branch),
-        MergeStrategy::GitziBranch => Ok(MergeOutcome::Skipped(
-            "gitzi-branch: no merge to main".to_string(),
-        )),
+        MergeStrategy::GitziBranch => merge_into_gitzi_branch(repo_path, task_branch),
         MergeStrategy::MergeCommit => {
             merge_with_commit(repo_path, task_branch, main_branch)
         }
-        MergeStrategy::PullRequest => Ok(MergeOutcome::Skipped(
-            "pull-request: branch pushed, create PR manually".to_string(),
-        )),
+        MergeStrategy::PullRequest => create_pull_request(repo_path, task_branch, main_branch),
         MergeStrategy::PushToRemote => push_to_remote(repo_path, task_branch),
     }
 }
@@ -290,4 +286,160 @@ fn push_to_remote(
             "git push failed: {e}"
         ))),
     }
+}
+
+fn merge_into_gitzi_branch(repo_path: &Path, task_branch: &str) -> Result<MergeOutcome> {
+    let repo = Repository::discover(repo_path)?;
+    let gitzi_branch = "gitzi";
+
+    let task_ref = format!("refs/heads/{task_branch}");
+    let task_commit = repo
+        .find_reference(&task_ref)
+        .map_err(GitziError::Git)?
+        .peel_to_commit()
+        .map_err(GitziError::Git)?;
+
+    let gitzi_ref = format!("refs/heads/{gitzi_branch}");
+
+    // If gitzi branch doesn't exist, create it at the task commit
+    if repo.find_reference(&gitzi_ref).is_err() {
+        repo.reference(
+            &gitzi_ref,
+            task_commit.id(),
+            false,
+            &format!("gitzi: create gitzi branch from {task_branch}"),
+        )
+        .map_err(GitziError::Git)?;
+        return Ok(MergeOutcome::Merged);
+    }
+
+    // gitzi branch exists — try ff
+    let gitzi_commit = repo
+        .find_reference(&gitzi_ref)
+        .map_err(GitziError::Git)?
+        .peel_to_commit()
+        .map_err(GitziError::Git)?;
+
+    let can_ff = repo
+        .graph_descendant_of(task_commit.id(), gitzi_commit.id())
+        .unwrap_or(false);
+
+    if can_ff {
+        repo.reference(
+            &gitzi_ref,
+            task_commit.id(),
+            true,
+            &format!("gitzi: ff-merge {task_branch} into gitzi"),
+        )
+        .map_err(GitziError::Git)?;
+        return Ok(MergeOutcome::Merged);
+    }
+
+    // Can't ff — use git CLI for merge commit
+    let status = std::process::Command::new("git")
+        .args(["checkout", gitzi_branch])
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    if status.is_err() || !status.unwrap().success() {
+        return Ok(MergeOutcome::FfFailed(
+            "could not checkout gitzi branch for merge".to_string(),
+        ));
+    }
+
+    let merge_status = std::process::Command::new("git")
+        .args([
+            "merge",
+            "--no-ff",
+            task_branch,
+            "-m",
+            &format!("Merge {task_branch} into gitzi"),
+        ])
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    // Checkout back to previous branch
+    let _ = std::process::Command::new("git")
+        .args(["checkout", "-"])
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match merge_status {
+        Ok(s) if s.success() => Ok(MergeOutcome::Merged),
+        _ => Ok(MergeOutcome::FfFailed(format!(
+            "merge of '{task_branch}' into gitzi branch failed — conflicts likely"
+        ))),
+    }
+}
+
+fn create_pull_request(
+    repo_path: &Path,
+    task_branch: &str,
+    main_branch: &str,
+) -> Result<MergeOutcome> {
+    // Push the branch to remote
+    let push_status = std::process::Command::new("git")
+        .args(["push", "-u", "origin", task_branch])
+        .current_dir(repo_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    match push_status {
+        Ok(s) if !s.success() => {
+            return Ok(MergeOutcome::FfFailed(format!(
+                "failed to push '{task_branch}' to remote"
+            )));
+        }
+        Err(e) => {
+            return Err(GitziError::AgentFailed(format!("git push failed: {e}")));
+        }
+        _ => {}
+    }
+
+    // Try gh pr create (GitHub CLI)
+    let gh_result = std::process::Command::new("gh")
+        .args([
+            "pr", "create", "--fill", "--head", task_branch, "--base", main_branch,
+        ])
+        .current_dir(repo_path)
+        .output();
+
+    if let Ok(output) = gh_result {
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            tracing::info!(url = %url, "PR created via gh CLI");
+            return Ok(MergeOutcome::Merged);
+        }
+    }
+
+    // Try glab mr create (GitLab CLI)
+    let glab_result = std::process::Command::new("glab")
+        .args([
+            "mr", "create", "--fill", "--source-branch", task_branch,
+            "--target-branch", main_branch,
+        ])
+        .current_dir(repo_path)
+        .output();
+
+    if let Ok(output) = glab_result {
+        if output.status.success() {
+            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            tracing::info!(url = %url, "MR created via glab CLI");
+            return Ok(MergeOutcome::Merged);
+        }
+    }
+
+    // Neither CLI available — branch is pushed, user can create PR manually
+    tracing::info!(
+        branch = %task_branch,
+        "branch pushed to remote — create PR manually (gh/glab not available or failed)"
+    );
+    Ok(MergeOutcome::Merged)
 }
