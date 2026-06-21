@@ -171,11 +171,9 @@ async fn run_client(
                             let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
                             return;
                         }
-                        if let Ok(Some(line)) = lines.next_line().await {
-                            let response: String = serde_json::from_str(&line)
-                                .unwrap_or_else(|_| line.clone());
-                            let _ = msg_tx.send(DaemonMessage::ChatResponse(response));
-                        }
+                        // Read the "queued" acknowledgment — discard it.
+                        // The actual response arrives via the subscribe stream as a ChatResponse event.
+                        let _ = lines.next_line().await;
                     }
                     DaemonCommand::RefreshBoard => {
                         if writer.write_all(b"board\n").await.is_err() {

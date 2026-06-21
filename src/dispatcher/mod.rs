@@ -1198,6 +1198,26 @@ impl Dispatcher {
                 format!("ok: fork closed — {summary}")
             }
 
+            "gitzi_search_kb" => {
+                let query = args
+                    .get("query")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if query.is_empty() {
+                    return "error: missing required argument: query".to_string();
+                }
+                let results = crate::kb::search(query);
+                if results.is_empty() {
+                    "No matching KB articles found.".to_string()
+                } else {
+                    results
+                        .iter()
+                        .map(|(name, content)| format!("## {name}\n\n{content}"))
+                        .collect::<Vec<_>>()
+                        .join("\n\n---\n\n")
+                }
+            }
+
             other => format!("error: unknown tool: {other}"),
         }
     }
