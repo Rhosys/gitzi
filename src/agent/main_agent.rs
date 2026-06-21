@@ -139,7 +139,7 @@ fn main_agent_tools() -> Vec<OaiTool> {
                 parameters: json!({
                     "type": "object",
                     "properties": {
-                        "view": { "type": "string", "enum": ["board", "review"], "description": "The view to switch to." }
+                        "view": { "type": "string", "enum": ["status", "epic", "kanban", "task", "logs"], "description": "The view to switch to." }
                     },
                     "required": ["view"]
                 }),

@@ -23,25 +23,6 @@ pub struct BoardColumn {
     pub tasks: Vec<BoardTask>,
 }
 
-// ─── Review item (deserialized from daemon `peek_review` JSON) ────────────────
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ReviewItem {
-    pub id: String,
-    pub task_id: String,
-    pub kind: ReviewItemKind,
-    /// Human-readable task title looked up by the daemon at serialization time.
-    #[serde(default)]
-    pub task_title: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ReviewItemKind {
-    AgentQuestion { question: String },
-    BufferApproval { buffer_column: String, task_priority: u32 },
-}
-
 // ─── Chat entry (for local display) ──────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -151,9 +132,6 @@ pub struct App {
     /// Count of pending agent-question review items (clarification queue size).
     pub question_count: usize,
 
-    /// Current topmost review item (from peek_review)
-    pub review_item: Option<ReviewItem>,
-
     /// True while waiting for a chat response from the main agent.
     pub chat_pending: bool,
 
@@ -190,8 +168,6 @@ pub struct App {
 /// Commands sent from the TUI event loop to the daemon client task.
 #[derive(Debug)]
 pub enum DaemonCommand {
-    Approve(String),            // task_id
-    Answer(String, String),     // item_id, answer
     Chat(String),               // message to main agent
     CloseFork,
     RefreshBoard,
@@ -204,7 +180,7 @@ pub enum DaemonCommand {
 #[derive(Debug)]
 pub enum DaemonMessage {
     BoardSnapshot(Vec<BoardColumn>),
-    ReviewItem(Option<ReviewItem>),
+    ReviewPending(bool),
     Epics(Vec<crate::model::Epic>),
     QueueLen(usize),
     ChatHistory(Vec<ChatEntry>),
@@ -215,7 +191,6 @@ pub enum DaemonMessage {
     SwitchPanel(String),
     Connected,
     Disconnected(String),
-    CommandResult(std::result::Result<String, String>),
 }
 
 impl App {
@@ -225,7 +200,6 @@ impl App {
             board: HashMap::new(),
             epics: Vec::new(),
             question_count: 0,
-            review_item: None,
             chat_pending: false,
             panel: Panel::Status,
             chat_input: String::new(),
@@ -247,11 +221,6 @@ impl App {
         }
         // Clamp navigation indices
         self.clamp_board_nav();
-    }
-
-    /// Apply a review item update.
-    pub fn apply_review_item(&mut self, item: Option<ReviewItem>) {
-        self.review_item = item;
     }
 
     /// Apply a panel switch command from the main agent.

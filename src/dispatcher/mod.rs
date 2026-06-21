@@ -901,7 +901,7 @@ impl Dispatcher {
 
         // 2. Switch side panel when something needs human attention
         if pending_review.is_some() {
-            self.gitzi_switch_panel("review".to_string()).await;
+            self.gitzi_switch_panel("task".to_string()).await;
         }
 
         // 3. Build context-augmented message for the LLM

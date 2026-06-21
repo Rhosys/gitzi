@@ -70,20 +70,18 @@ pub fn task_worktree_path(task_id: &str, repo_slug: &str) -> PathBuf {
 /// Default repo path. Uses the first discovered repo from config, or falls back to cwd.
 pub fn repo_path() -> PathBuf {
     let config_path = global_config_file();
-    if config_path.exists() {
-        if let Ok(text) = std::fs::read_to_string(&config_path) {
-            if let Ok(config) = toml::from_str::<toml::Value>(&text) {
-                if let Some(patterns) = config.get("repo_paths").and_then(|v| v.as_array()) {
-                    let string_patterns: Vec<String> = patterns
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                    let repos = discover_repos(&string_patterns);
-                    if let Some(first) = repos.first() {
-                        return first.clone();
-                    }
-                }
-            }
+    if config_path.exists()
+        && let Ok(text) = std::fs::read_to_string(&config_path)
+        && let Ok(config) = toml::from_str::<toml::Value>(&text)
+        && let Some(patterns) = config.get("repo_paths").and_then(|v| v.as_array())
+    {
+        let string_patterns: Vec<String> = patterns
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        let repos = discover_repos(&string_patterns);
+        if let Some(first) = repos.first() {
+            return first.clone();
         }
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))

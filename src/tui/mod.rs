@@ -67,8 +67,9 @@ async fn run_event_loop(
                 DaemonMessage::BoardSnapshot(columns) => {
                     app.apply_board_snapshot(columns);
                 }
-                DaemonMessage::ReviewItem(item) => {
-                    app.apply_review_item(item);
+                DaemonMessage::ReviewPending(_pending) => {
+                    // Review state is managed by the main agent via chat;
+                    // TUI only needs to know something is pending for status display.
                 }
                 DaemonMessage::Epics(epics) => {
                     app.apply_epics(epics);
@@ -102,14 +103,6 @@ async fn run_event_loop(
                 }
                 DaemonMessage::ForkClosed { id } => {
                     app.apply_fork_closed(&id);
-                }
-                DaemonMessage::CommandResult(result) => {
-                    match result {
-                        Ok(resp) => app.status = resp,
-                        Err(e) => app.status = e,
-                    }
-                    let _ = app.cmd_tx.send(DaemonCommand::RefreshBoard);
-                    let _ = app.cmd_tx.send(DaemonCommand::RefreshReview);
                 }
             }
         }
