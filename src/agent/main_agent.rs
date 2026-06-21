@@ -267,6 +267,25 @@ fn main_agent_tools() -> Vec<OaiTool> {
                 }),
             },
         },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_search_kb",
+                description: "Search the gitzi knowledge base to answer questions about \
+                              how gitzi works, its configuration, features, and behavior. \
+                              Use this when the user asks about gitzi itself.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search term to look up in the knowledge base."
+                        }
+                    },
+                    "required": ["query"]
+                }),
+            },
+        },
     ]
 }
 

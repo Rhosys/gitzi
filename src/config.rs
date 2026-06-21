@@ -4,6 +4,42 @@ use serde::{Deserialize, Serialize};
 use crate::dispatcher::AgentRole;
 use crate::error::{GitziError, Result};
 
+/// Merge strategy for completed tasks.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum MergeStrategy {
+    /// Fast-forward only. If not possible, create a review item.
+    #[default]
+    FfOnly,
+    /// Merge into a dedicated gitzi branch (no main merge).
+    GitziBranch,
+    /// Merge with conflict resolution (create merge commit).
+    MergeCommit,
+    /// Create a pull/merge request on the remote.
+    PullRequest,
+    /// Push branch to remote without merging.
+    PushToRemote,
+}
+
+/// Per-repo configuration overrides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepoConfig {
+    pub slug: String,
+    #[serde(default)]
+    pub merge_strategy: MergeStrategy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main_branch: Option<String>,
+}
+
+/// Resolved configuration for a repo (defaults applied).
+pub struct ResolvedRepoConfig {
+    pub merge_strategy: MergeStrategy,
+    pub test_command: String,
+    pub main_branch: String,
+}
+
 /// An LLM provider definition (e.g. LM Studio, Ollama, OpenAI-compatible endpoint).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDef {
@@ -139,6 +175,9 @@ pub struct Config {
     /// Each pattern is expanded and checked for a `.git/` directory.
     #[serde(default)]
     pub repo_paths: Vec<String>,
+    /// Per-repository configuration overrides.
+    #[serde(default)]
+    pub repos: Vec<RepoConfig>,
 }
 
 fn default_agent_name() -> String { "developer".to_string() }
@@ -158,6 +197,7 @@ impl Default for Config {
             fork_auto_close: default_fork_auto_close(),
             integrations: HashMap::new(),
             repo_paths: Vec::new(),
+            repos: Vec::new(),
         }
     }
 }
@@ -246,6 +286,20 @@ impl Config {
     /// Resolve a provider by name, if it exists.
     pub fn resolve_provider(&self, name: &str) -> Option<&ProviderDef> {
         self.providers.get(name)
+    }
+
+    /// Resolve config for a specific repo slug. Falls back to global defaults.
+    pub fn repo_config(&self, slug: &str) -> ResolvedRepoConfig {
+        let repo = self.repos.iter().find(|r| r.slug == slug);
+        ResolvedRepoConfig {
+            merge_strategy: repo.map(|r| r.merge_strategy.clone()).unwrap_or_default(),
+            test_command: repo
+                .and_then(|r| r.test_command.clone())
+                .unwrap_or_else(|| self.test_command.clone()),
+            main_branch: repo
+                .and_then(|r| r.main_branch.clone())
+                .unwrap_or_else(|| "main".to_string()),
+        }
     }
 }
 
