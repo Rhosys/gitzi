@@ -122,6 +122,12 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             }
             "chat_history" => handle_chat_history(&dispatcher).await,
             "close_fork" => handle_close_fork(&dispatcher).await,
+            cmd if cmd.starts_with("update_task ") => {
+                handle_update_task(cmd.strip_prefix("update_task ").unwrap().trim())
+            }
+            cmd if cmd.starts_with("update_epic ") => {
+                handle_update_epic(cmd.strip_prefix("update_epic ").unwrap().trim())
+            }
             other => format!("error: unknown command '{other}'"),
         };
         if writer.write_all(format!("{response}\n").as_bytes()).await.is_err() {
@@ -458,6 +464,64 @@ async fn handle_chat_history(dispatcher: &Dispatcher) -> String {
     let history = dispatcher.chat_history.lock().await;
     serde_json::to_string(&*history)
         .unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Handle `update_task <id> <json>` -- update a task's title/description on disk.
+fn handle_update_task(args: &str) -> String {
+    let (id, json) = args.split_once(' ').unwrap_or((args, "{}"));
+    let updates = match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(v) => v,
+        Err(_) => return "error: invalid json".to_string(),
+    };
+    let title = updates.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    let desc = updates
+        .get("description")
+        .and_then(|v| if v.is_null() { None } else { v.as_str() })
+        .map(str::to_string);
+    match crate::state::reader::load_task(id) {
+        Ok(mut task) => {
+            if let Some(t) = title {
+                task.title = t;
+            }
+            if let Some(d) = desc {
+                task.description = Some(d);
+            }
+            match crate::state::writer::write_task(&task) {
+                Ok(()) => "ok".to_string(),
+                Err(e) => format!("error: {e}"),
+            }
+        }
+        Err(e) => format!("error: {e}"),
+    }
+}
+
+/// Handle `update_epic <id> <json>` -- update an epic's title/description on disk.
+fn handle_update_epic(args: &str) -> String {
+    let (id, json) = args.split_once(' ').unwrap_or((args, "{}"));
+    let updates = match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(v) => v,
+        Err(_) => return "error: invalid json".to_string(),
+    };
+    let title = updates.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    let desc = updates
+        .get("description")
+        .and_then(|v| if v.is_null() { None } else { v.as_str() })
+        .map(str::to_string);
+    match crate::state::reader::load_epic(id) {
+        Ok(mut epic) => {
+            if let Some(t) = title {
+                epic.title = t;
+            }
+            if let Some(d) = desc {
+                epic.description = Some(d);
+            }
+            match crate::state::writer::write_epic(&epic) {
+                Ok(()) => "ok".to_string(),
+                Err(e) => format!("error: {e}"),
+            }
+        }
+        Err(e) => format!("error: {e}"),
+    }
 }
 
 // ── Service registration (systemd / launchd) ─────────────────────────────────

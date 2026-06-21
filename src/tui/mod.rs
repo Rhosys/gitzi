@@ -123,18 +123,45 @@ async fn run_event_loop(
             break;
         }
 
-        match key.code {
-            // Chat input — always active
-            KeyCode::Esc => app.close_current_fork(),
-            KeyCode::Enter => app.submit_chat(),
-            KeyCode::Backspace => { app.chat_input.pop(); }
-            KeyCode::Char(c) => app.chat_input.push(c),
-            // Board navigation via arrow keys
-            KeyCode::Left => app.move_left(),
-            KeyCode::Right => app.move_right(),
-            KeyCode::Up => app.move_up(),
-            KeyCode::Down => app.move_down(),
-            _ => {}
+        if app.editor_focused {
+            if key.modifiers.contains(KeyModifiers::CONTROL)
+                && key.code == KeyCode::Char('s')
+            {
+                app.save_editor();
+            } else {
+                match key.code {
+                    KeyCode::Esc => app.editor_esc(),
+                    KeyCode::Enter => {
+                        app.editor_buffer.push('\n');
+                        app.editor_dirty = true;
+                        app.editor_esc_warned = false;
+                    }
+                    KeyCode::Backspace => {
+                        app.editor_buffer.pop();
+                        app.editor_dirty = true;
+                        app.editor_esc_warned = false;
+                    }
+                    KeyCode::Char(c) => {
+                        app.editor_buffer.push(c);
+                        app.editor_dirty = true;
+                        app.editor_esc_warned = false;
+                    }
+                    _ => {}
+                }
+            }
+        } else {
+            match key.code {
+                KeyCode::Tab => app.enter_editor(),
+                KeyCode::Esc => app.close_current_fork(),
+                KeyCode::Enter => app.submit_chat(),
+                KeyCode::Backspace => { app.chat_input.pop(); }
+                KeyCode::Char(c) => app.chat_input.push(c),
+                KeyCode::Left => app.move_left(),
+                KeyCode::Right => app.move_right(),
+                KeyCode::Up => app.move_up(),
+                KeyCode::Down => app.move_down(),
+                _ => {}
+            }
         }
     }
 
