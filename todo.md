@@ -36,6 +36,7 @@
 
 ### Agent behavior
 
+- [ ] As a developer, the agent is instructed (via system prompt / harness injection) that it is critically important to always write ongoing work, plans, ideas, and discussions to long-lived artifacts outside of the chat — context windows expire; files don't — every decision, design thought, or open question must land in a TODO, spec, ADR, or note, never exist only in conversation
 - [ ] As a developer, the agent makes the smallest possible change that satisfies the task
 - [ ] As a developer, the agent stops and surfaces a question rather than guessing when scope is unclear
 - [ ] As a developer, the agent never refactors or extends beyond what the task explicitly asks for

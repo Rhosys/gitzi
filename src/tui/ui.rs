@@ -232,6 +232,10 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 // -- Right panel (dispatched by app.panel) ----------------------------------
 
 fn draw_right_panel(frame: &mut Frame, app: &App, area: Rect) {
+    if app.editor_focused {
+        draw_editor(frame, app, area);
+        return;
+    }
     match app.panel {
         Panel::Status => draw_status(frame, app, area),
         Panel::Kanban => draw_board(frame, app, area),
@@ -239,6 +243,25 @@ fn draw_right_panel(frame: &mut Frame, app: &App, area: Rect) {
         Panel::Task => draw_task(frame, app, area),
         Panel::Logs => draw_logs(frame, app, area),
     }
+}
+
+fn draw_editor(frame: &mut Frame, app: &App, area: Rect) {
+    let dirty_indicator = if app.editor_dirty { " [modified]" } else { "" };
+    let title = format!(" Edit{dirty_indicator} ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let text = format!("{}|", app.editor_buffer);
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::White)),
+        inner,
+    );
 }
 
 fn draw_epic(frame: &mut Frame, app: &App, area: Rect) {
@@ -599,7 +622,9 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
 // -- Footer -----------------------------------------------------------------
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let controls = if !app.fork_stack.is_empty() {
+    let controls = if app.editor_focused {
+        " [ctrl+s] save  [esc] leave editor  [ctrl+q] quit"
+    } else if !app.fork_stack.is_empty() {
         " [enter] send  [esc] close fork  [arrows] board  [ctrl+q] quit"
     } else {
         " [enter] send  [arrows] board  [ctrl+q] quit"

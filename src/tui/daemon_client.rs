@@ -5,7 +5,7 @@ use tracing::warn;
 
 use crate::daemon::socket_path;
 use crate::state::chat::{ChatMessage as StoredMessage, Role};
-use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage};
+use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, EditorTarget};
 
 /// Spawn the background task that manages the daemon socket connection.
 /// Returns an UnboundedReceiver for incoming messages.
@@ -219,6 +219,28 @@ async fn run_client(
                     }
                     DaemonCommand::CloseFork => {
                         let _ = writer.write_all(b"close_fork\n").await;
+                    }
+                    DaemonCommand::UpdateEntity { id, target, title, description } => {
+                        let json = serde_json::json!({
+                            "title": title,
+                            "description": description,
+                        });
+                        let cmd = match target {
+                            EditorTarget::Epic => {
+                                format!("update_epic {} {}\n", id, json)
+                            }
+                            EditorTarget::Task => {
+                                format!("update_task {} {}\n", id, json)
+                            }
+                        };
+                        if writer.write_all(cmd.as_bytes()).await.is_err() {
+                            let _ = msg_tx.send(
+                                DaemonMessage::Disconnected("write failed".to_string()),
+                            );
+                            return;
+                        }
+                        // Read response but don't block the loop on failure
+                        if let Ok(Some(_resp)) = lines.next_line().await {}
                     }
                 }
             }

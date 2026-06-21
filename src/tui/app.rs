@@ -40,6 +40,14 @@ pub struct ForkInfo {
     pub name: String,
 }
 
+// ─── Editor target type ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorTarget {
+    Epic,
+    Task,
+}
+
 // ─── TUI Mode ─────────────────────────────────────────────────────────────────
 // No Mode enum — chat input is always active. Arrow keys navigate the board,
 // printable chars go to chat, Enter submits, Backspace deletes, Ctrl+Q quits.
@@ -138,8 +146,6 @@ pub struct App {
     /// Which panel is shown on the right
     pub panel: Panel,
 
-
-
     /// Chat message being composed
     pub chat_input: String,
 
@@ -163,6 +169,19 @@ pub struct App {
 
     /// Whether we're connected to the daemon
     pub connected: bool,
+
+    /// Editor buffer for the right panel (Epic/Task editing)
+    pub editor_buffer: String,
+    /// Whether the editor is focused (Tab was pressed)
+    pub editor_focused: bool,
+    /// Whether the editor has unsaved changes
+    pub editor_dirty: bool,
+    /// Whether Esc warning has been shown (second Esc discards)
+    pub editor_esc_warned: bool,
+    /// The ID of what's being edited (epic or task id)
+    pub editor_target_id: Option<String>,
+    /// Whether we're editing an epic or task
+    pub editor_target_type: Option<EditorTarget>,
 }
 
 /// Commands sent from the TUI event loop to the daemon client task.
@@ -174,6 +193,7 @@ pub enum DaemonCommand {
     RefreshReview,
     RefreshEpics,
     RefreshQueueLen,
+    UpdateEntity { id: String, target: EditorTarget, title: String, description: Option<String> },
 }
 
 /// Messages received from the daemon client task into the TUI event loop.
@@ -210,6 +230,12 @@ impl App {
             status: "connecting…".to_string(),
             cmd_tx,
             connected: false,
+            editor_buffer: String::new(),
+            editor_focused: false,
+            editor_dirty: false,
+            editor_esc_warned: false,
+            editor_target_id: None,
+            editor_target_type: None,
         }
     }
 
@@ -403,5 +429,146 @@ impl App {
         } else if self.board_task >= n {
             self.board_task = n - 1;
         }
+    }
+
+    // ── Editor ────────────────────────────────────────────────────────────────
+
+    /// Enter editor mode. Populates buffer from current panel content.
+    pub fn enter_editor(&mut self) {
+        match self.panel {
+            Panel::Epic => {
+                if let Some(epic_status) = self.current_epic_status() {
+                    if let Some(epic) =
+                        self.epics.iter().find(|e| e.title == epic_status.title)
+                    {
+                        let desc = epic.description.as_deref().unwrap_or("");
+                        self.editor_buffer = format!(
+                            "# Title\n{}\n\n# Description\n{}",
+                            epic.title, desc
+                        );
+                        self.editor_target_id = Some(epic.id.clone());
+                        self.editor_target_type = Some(EditorTarget::Epic);
+                        self.editor_focused = true;
+                        self.editor_dirty = false;
+                        self.editor_esc_warned = false;
+                    }
+                }
+            }
+            Panel::Task => {
+                if let Some(task) = self.selected_board_task() {
+                    let task_title = task.title.clone();
+                    let task_id = task.id.clone();
+                    self.editor_buffer =
+                        format!("# Title\n{}\n\n# Description\n", task_title);
+                    self.editor_target_id = Some(task_id);
+                    self.editor_target_type = Some(EditorTarget::Task);
+                    self.editor_focused = true;
+                    self.editor_dirty = false;
+                    self.editor_esc_warned = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Save the editor buffer to disk via daemon command.
+    pub fn save_editor(&mut self) {
+        if let (Some(id), Some(target)) =
+            (&self.editor_target_id, self.editor_target_type)
+        {
+            let (title, description) = parse_editor_buffer(&self.editor_buffer);
+            let _ = self.cmd_tx.send(DaemonCommand::UpdateEntity {
+                id: id.clone(),
+                target,
+                title,
+                description,
+            });
+            self.editor_dirty = false;
+            self.editor_esc_warned = false;
+            self.status = "saved".to_string();
+        }
+    }
+
+    /// Handle Esc in editor mode.
+    pub fn editor_esc(&mut self) {
+        if !self.editor_dirty {
+            self.editor_focused = false;
+        } else if self.editor_esc_warned {
+            self.editor_focused = false;
+            self.editor_dirty = false;
+            self.editor_esc_warned = false;
+        } else {
+            self.editor_esc_warned = true;
+            self.status =
+                "unsaved changes \u{2014} Ctrl+S to save, Esc to discard".to_string();
+        }
+    }
+}
+
+/// Parse the editor buffer into (title, optional description).
+fn parse_editor_buffer(buf: &str) -> (String, Option<String>) {
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut section = "";
+
+    for line in buf.lines() {
+        if line.trim() == "# Title" {
+            section = "title";
+            continue;
+        }
+        if line.trim() == "# Description" {
+            section = "description";
+            continue;
+        }
+        match section {
+            "title" => {
+                if !line.trim().is_empty() || !title.is_empty() {
+                    if !title.is_empty() {
+                        title.push('\n');
+                    }
+                    title.push_str(line);
+                }
+            }
+            "description" => {
+                if !description.is_empty() {
+                    description.push('\n');
+                }
+                description.push_str(line);
+            }
+            _ => {}
+        }
+    }
+
+    let title = title.trim().to_string();
+    let desc = description.trim().to_string();
+    (title, if desc.is_empty() { None } else { Some(desc) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_editor_buffer_basic() {
+        let buf = "# Title\nMy Epic\n\n# Description\nSome description text";
+        let (title, desc) = parse_editor_buffer(buf);
+        assert_eq!(title, "My Epic");
+        assert_eq!(desc, Some("Some description text".to_string()));
+    }
+
+    #[test]
+    fn parse_editor_buffer_empty_description() {
+        let buf = "# Title\nTask Name\n\n# Description\n";
+        let (title, desc) = parse_editor_buffer(buf);
+        assert_eq!(title, "Task Name");
+        assert_eq!(desc, None);
+    }
+
+    #[test]
+    fn parse_editor_buffer_multiline_description() {
+        let buf = "# Title\nHello\n\n# Description\nLine 1\nLine 2\nLine 3";
+        let (title, desc) = parse_editor_buffer(buf);
+        assert_eq!(title, "Hello");
+        assert_eq!(desc, Some("Line 1\nLine 2\nLine 3".to_string()));
     }
 }

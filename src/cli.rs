@@ -20,6 +20,9 @@ pub enum Commands {
     /// Show current WIP snapshot
     Status,
 
+    /// View daemon logs (scrollable, live-following)
+    Log,
+
     /// Manually advance a task to a new stage
     Advance {
         task_id: String,

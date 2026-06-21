@@ -36,6 +36,12 @@ async fn main() -> Result<()> {
     match cli.command {
         None => cmd_default().await?,
         Some(Commands::Status) => cmd_status()?,
+        Some(Commands::Log) => {
+            #[cfg(feature = "tui")]
+            cmd_log().await?;
+            #[cfg(not(feature = "tui"))]
+            anyhow::bail!("log viewer not available — build with --features tui");
+        }
         Some(Commands::Advance { task_id, stage, note }) => {
             cmd_advance(&task_id, &stage, note)?;
         }
@@ -69,6 +75,150 @@ async fn cmd_default() -> Result<()> {
         anyhow::bail!("TUI not available — build with --features tui");
     }
 
+    Ok(())
+}
+
+/// Fullscreen scrollable journal viewer with live follow.
+#[cfg(feature = "tui")]
+async fn cmd_log() -> Result<()> {
+    use std::process::Stdio;
+    use ratatui::crossterm::{
+        event::{self as ct_event, Event, KeyCode, KeyEventKind},
+        execute,
+        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+        cursor::Show,
+    };
+    use ratatui::{
+        backend::CrosstermBackend,
+        layout::{Constraint, Layout},
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Paragraph},
+        Terminal,
+    };
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use tokio::process::Command as TokioCommand;
+
+    let mut child = TokioCommand::new("journalctl")
+        .args(["--user", "-u", "gitzi.service", "--no-pager", "-n", "200", "-f", "-o", "short"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to spawn journalctl")?;
+
+    let child_stdout = child.stdout.take().unwrap();
+    let mut reader = BufReader::new(child_stdout).lines();
+
+    enable_raw_mode()?;
+    let mut out = std::io::stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(out);
+    let mut terminal = Terminal::new(backend)?;
+
+    let mut log_lines: Vec<String> = Vec::new();
+    let mut scroll_offset: usize = 0;
+    let mut auto_follow = true;
+
+    loop {
+        // Read available lines non-blocking
+        loop {
+            tokio::select! {
+                biased;
+                result = reader.next_line() => {
+                    match result {
+                        Ok(Some(line)) => {
+                            log_lines.push(line);
+                            if log_lines.len() > 10000 {
+                                log_lines.drain(..log_lines.len() - 10000);
+                            }
+                            if auto_follow {
+                                scroll_offset = log_lines.len().saturating_sub(1);
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => break,
+            }
+        }
+
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let [header, body] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ]).areas(area);
+
+            let follow_indicator = if auto_follow { " [following]" } else { "" };
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    format!(
+                        " gitzi log{follow_indicator}  [q] quit  [up/dn] scroll  [f] follow"
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                )),
+                header,
+            );
+
+            let height = body.height.saturating_sub(2) as usize;
+            let start = scroll_offset.saturating_sub(height.saturating_sub(1));
+            let visible: Vec<Line> = log_lines
+                .iter()
+                .skip(start)
+                .take(height)
+                .map(|l| {
+                    Line::from(Span::styled(l.as_str(), Style::default().fg(Color::Gray)))
+                })
+                .collect();
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray));
+            let inner = block.inner(body);
+            frame.render_widget(block, body);
+            frame.render_widget(Paragraph::new(visible), inner);
+        })?;
+
+        if ct_event::poll(std::time::Duration::from_millis(50))? {
+            if let Event::Key(key) = ct_event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') => break,
+                    KeyCode::Char('f') => {
+                        auto_follow = !auto_follow;
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        auto_follow = false;
+                        scroll_offset = scroll_offset.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        auto_follow = false;
+                        if scroll_offset < log_lines.len().saturating_sub(1) {
+                            scroll_offset += 1;
+                        }
+                    }
+                    KeyCode::PageUp => {
+                        auto_follow = false;
+                        scroll_offset = scroll_offset.saturating_sub(20);
+                    }
+                    KeyCode::PageDown => {
+                        if scroll_offset + 20 >= log_lines.len() {
+                            auto_follow = true;
+                        }
+                        scroll_offset =
+                            (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let _ = child.kill().await;
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, Show);
     Ok(())
 }
 
