@@ -29,7 +29,13 @@ pub struct OaiMessage {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct OaiToolCall {
     pub id: String,
+    #[serde(default = "default_tool_type")]
+    pub r#type: String,
     pub function: OaiFunctionBody,
+}
+
+fn default_tool_type() -> String {
+    "function".to_string()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
