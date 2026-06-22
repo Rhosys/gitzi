@@ -13,34 +13,32 @@
 
 ### Core pipeline
 
-- [ ] As a developer, I can run `gitzi init` in any repo to set up `.gitzi/`
-- [ ] As a developer, I can create an epic with a title and description
-- [ ] As a developer, I can create a task under an epic with a title, priority, and optional description
-- [ ] As a developer, I can run `gitzi run` to start the scheduler and dashboard
-- [ ] As a developer, the harness picks the highest-priority `prioritized` task automatically
-- [ ] As a developer, the harness creates a git branch and worktree for each task without touching my workspace
-- [ ] As a developer, the agent works inside the task's worktree and commits its output there
+- [x] As a developer, I can create an epic with a title and description
+- [x] As a developer, I can create a task under an epic with a title, priority, and optional description
+- [x] As a developer, running `gitzi` auto-starts the daemon and launches the TUI
+- [x] As a developer, the harness picks the highest-priority `prioritized` task automatically
+- [x] As a developer, the harness creates a git branch and worktree for each task without touching my workspace
+- [x] As a developer, the agent works inside the task's worktree and commits its output there
 - [ ] As a developer, I see the task appear in the dashboard when it moves to `waiting-for-review`
 - [ ] As a developer, I can view the diff for a task in the dashboard
 - [ ] As a developer, I can approve a task from the dashboard, moving it to `in-testing`
 - [ ] As a developer, I can reject a task with written feedback, sending it back to the agent
 - [ ] As a developer, the harness runs the configured test command after I approve a task
 - [ ] As a developer, the task moves to `done` automatically when tests pass
-- [ ] As a developer, I can run `gitzi status` to see the current WIP snapshot in my terminal
+- [x] As a developer, I can run `gitzi status` to see the current WIP snapshot in my terminal
 
 ### Plan management
 
-- [ ] As a developer, I can commit `.gitzi/plan/` to git to checkpoint my epic and task state
-- [ ] As a developer, `.gitzi/wip/` is automatically gitignored so runtime state never pollutes my commits
+- [x] As a developer, runtime state lives in `~/.gitzi/` (flat layout, no sessions, no UUIDs)
 - [ ] As a developer, the harness asks me one clarifying question at a time before starting work on a task
 
 ### Agent behavior
 
 - [ ] As a developer, the agent is instructed (via system prompt / harness injection) that it is critically important to always write ongoing work, plans, ideas, and discussions to long-lived artifacts outside of the chat — context windows expire; files don't — every decision, design thought, or open question must land in a TODO, spec, ADR, or note, never exist only in conversation
-- [ ] As a developer, the agent makes the smallest possible change that satisfies the task
-- [ ] As a developer, the agent stops and surfaces a question rather than guessing when scope is unclear
-- [ ] As a developer, the agent never refactors or extends beyond what the task explicitly asks for
-- [ ] As a developer, rejected tasks are retried with the feedback included in the agent's next prompt
+- [x] As a developer, the agent makes the smallest possible change that satisfies the task
+- [x] As a developer, the agent stops and surfaces a question rather than guessing when scope is unclear
+- [x] As a developer, the agent never refactors or extends beyond what the task explicitly asks for
+- [x] As a developer, rejected tasks are retried with the feedback included in the agent's next prompt
 
 ### Dashboard
 
@@ -59,46 +57,41 @@ the input and handles each part in the right context.
 
 ### Classification
 
-- [ ] As a developer, when I interject during an active task, the harness classifies my
+- [x] As a developer, when I interject during an active task, the harness classifies my
       message into: **(a)** relevant to the current thread — handle inline, or **(b)** a
       new independent thread — split and handle separately
-- [ ] As a developer, the harness asks one clarifying question if the classification is
+- [x] As a developer, the harness asks one clarifying question if the classification is
       ambiguous before deciding
-- [ ] As a developer, inline additions (same thread) are folded into the current task's
+- [x] As a developer, inline additions (same thread) are folded into the current task's
       context without interrupting execution
 
 ### Thread splitting
 
-- [ ] As a developer, when a new thread is identified the harness forks the current
+- [x] As a developer, when a new thread is identified the harness forks the current
       execution context: it saves the current thread state (task, stage, pending work),
       opens a new context for the new thread, and works through it completely before
       returning
-- [ ] As a developer, the forked context is a full copy of the relevant state — it knows
+- [x] As a developer, the forked context is a full copy of the relevant state — it knows
       what was in flight when it was created so it can reason about dependencies
-- [ ] As a developer, new-thread work that produces tasks/epics follows the normal
+- [x] As a developer, new-thread work that produces tasks/epics follows the normal
       pipeline (backlog → prioritized → ...) rather than bypassing it
-- [ ] As a developer, the new thread's completion is a hard gate — the original thread
+- [x] As a developer, the new thread's completion is a hard gate — the original thread
       does not resume until the new one reaches `done` or is explicitly deferred
 
 ### Resumption
 
-- [ ] As a developer, after the new thread completes, the harness resumes the original
+- [x] As a developer, after the new thread completes, the harness resumes the original
       thread from exactly the point it was paused — no repeated questions, no lost context
 - [ ] As a developer, if the new thread produced changes that affect the original thread
       (e.g. a shared file was modified), the harness surfaces that conflict as a single
       question before resuming
-- [ ] As a developer, thread history is stored in `.gitzi/wip/` so a restart does not
-      lose a paused thread
 
 ### Implementation notes
 
-Thread state is a stack entry in `.gitzi/wip/threads/<thread-id>/`:
-```
-  context.toml     frozen execution state (active task id, pending items, parent thread id)
-  inbox.toml       raw user inputs received while the thread was paused
-```
-The scheduler maintains a thread stack; the active thread is always the top of the stack.
-Completing a thread pops it and resumes its parent.
+Thread state is managed by the `chat_stack` field on the Dispatcher and persisted
+per-fork in `~/.gitzi/chats/<fork-id>.jsonl`.
+The active fork is always the top of the stack.
+Completing a fork pops it and resumes its parent.
 
 - [ ] LLM proposes task breakdown for a new epic; I approve before tasks are created
 - [ ] Multiple tasks can be `in-progress` simultaneously (WIP limit raised deliberately)
@@ -128,14 +121,13 @@ than silently stall. The scheduler already ticks; nudges ride on top of it.
 
 ### Implementation notes
 
-Nudge state is tracked in the session wip so restarts do not re-fire the same nudge:
+Nudge state would be tracked in `~/.gitzi/tmp/nudges.toml`:
 ```
-~/.gitzi/<session>/wip/nudges.toml
-  [[nudge]]
-  task_id = "..."
-  stage   = "waiting-for-review"
-  fired_at = "..."
-  acked   = false
+[[nudge]]
+task_id = "..."
+stage   = "waiting-for-review"
+fired_at = "..."
+acked   = false
 ```
 
 ---
@@ -145,8 +137,8 @@ Nudge state is tracked in the session wip so restarts do not re-fire the same nu
 The chat history grows unboundedly; the right panel and any LLM context must always
 reflect a coherent, up-to-date summary rather than raw transcript replay.
 
-- [ ] As a developer, the session maintains a rolling summary stored alongside
-      `chat.jsonl` at `~/.gitzi/<session>/summary.md`
+- [ ] As a developer, the session maintains a rolling summary stored at
+      `~/.gitzi/chats/summary.md`
 - [ ] As a developer, after every N messages (configurable, default 10) the summarizer
       runs and updates `summary.md` with what is known: active epics, tasks in flight,
       decisions made, open questions
@@ -178,7 +170,7 @@ messages. Some apply to the whole conversation; others are scoped to a single me
 - [ ] As a developer, I can prefix a single message with `@skill-name` to activate a
       skill for that message only without changing the session default
 - [ ] As a developer, skill state is persisted in
-      `~/.gitzi/<session>/skills.toml` so a restart restores the same active set
+      `~/.gitzi/config.toml` so a restart restores the same active set
 - [ ] As a developer, I can define custom skills in `~/.gitzi/config.toml` as named
       system-prompt fragments that are injected when the skill is active
 
@@ -214,10 +206,6 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
       the field defaults to `100`. If lower number = higher priority (P1 beats P100), the
       sort is correct but the convention is undocumented and the `task create --priority`
       flag has no guidance. Decide the convention, document it, enforce it.
-- [ ] **`wip_limit_blocked` is set but never read** — `orchestrator.advance_task` marks the
-      field but `pick_next_task` guards on `!t.wip_limit_blocked` while simultaneously
-      doing its own WIP check. The field and the check are duplicated and the flag is never
-      cleared after a slot opens. Remove the field or make it the single source of truth.
 - [ ] **Empty commits allowed** — `git::ops::commit_all` stages and commits unconditionally;
       if the agent produced no file changes (e.g. only logged output) an empty commit is
       created, corrupting the task's git history. Guard with an index-is-clean check before
@@ -237,10 +225,8 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
 
 ### Architecture concerns
 
-- [ ] **No parallelism within a tick** — the scheduler runs one agent at a time even though
-      WIP limits explicitly allow more than one task in-progress. Each `tick()` picks at
-      most one Prioritized task and awaits the agent sequentially. Use `tokio::spawn` or
-      `FuturesUnordered` to run up to `wip_limits.in_progress` agents concurrently.
+- [x] **No parallelism within a tick** — RESOLVED: agent pool spawns concurrent tasks up to
+      WIP limits using `tokio::spawn`.
 - [ ] **No timeouts anywhere** — agent execution, test runs, git operations, and HTTP
       handlers all have no deadline. A hung subprocess blocks the scheduler indefinitely.
       Add per-operation timeouts (`tokio::time::timeout`) configurable in `config.toml`.
@@ -249,26 +235,16 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
       scheduler should detect and repair inconsistent state (task in-progress but worktree
       missing → move back to Prioritized; worktree exists but task not in-progress →
       re-register or clean up).
-- [ ] **WipSnapshot can diverge from task files** — `rebuild_wip()` is the only
-      reconciliation path and it is only called after writes, not on startup. A crash or
-      concurrent write can leave the snapshot stale. Either remove the snapshot (derive it
-      from task files every time) or add a startup validation pass.
-- [ ] **No per-project config** — all repos share a single `~/.gitzi/config.toml`: same WIP
-      limits, same test command, same agent backend. Projects differ; the config should
-      support a project-level `config.toml` that overrides the global one, keyed off the
-      repo root path or an explicit project ID stored in `.gitzi/project.toml` in the repo.
-- [ ] **Session model is unclear** — the session UUID in `~/.gitzi/current` maps to a single
-      conversation + plan directory. Questions: Does one session span one repo or many?
-      Does starting gitzi in a new repo replace the session? Is the intention to run
-      multiple sessions in parallel? Define and document the session lifecycle clearly.
-- [ ] **Rejection re-queue lacks priority boost** — a rejected task goes back to
-      `in-progress` (via `reject_task`) but the scheduler does not preferentially pick it
-      up again. It competes equally with all other Prioritized tasks. Tasks with
-      `agent_feedback` set should be boosted to the front of the queue.
-- [ ] **No state caching** — every `reader::load_all_tasks()` call opens and parses every
-      `.toml` file on disk. With O(100) tasks this is acceptable; with O(1000) it will
-      noticeably lag the TUI. Consider an in-process cache invalidated by the file watcher
-      (which is already implemented but never connected to anything).
+- [x] **WipSnapshot can diverge from task files** — RESOLVED: replaced by in-memory
+      `KanbanBoard` projection built from task files on boot. No separate snapshot file.
+- [x] **No per-project config** — RESOLVED: `[[repos]]` config with per-repo overrides
+      (merge strategy, test command, main branch) keyed by repo slug.
+- [x] **Session model is unclear** — RESOLVED: sessions removed. Flat layout at
+      `~/.gitzi/` with `chats/current.jsonl` for main history and per-fork files.
+- [x] **Rejection re-queue with priority boost** — rejected tasks get `priority = 0` (front
+      of queue) and `agent_feedback` is included in the next agent prompt.
+- [x] **No state caching** — RESOLVED: `KanbanBoard` is the in-memory cache. Tasks are
+      loaded once on boot and mutated in-memory; disk writes happen on state changes.
 - [ ] **File watcher is dead code** — `state::watcher` watches the state directory and
       classifies events into `StateEvent` variants, but nothing subscribes to it in the
       scheduler or TUI. Wire it: TUI should call `app.reload()` automatically on
@@ -278,10 +254,9 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
 
 ### Design questions
 
-- [ ] **What is the unit of a "session"?** Is it a conversation, a workday, a sprint?
-      Should there be a `gitzi new-session` command to start a fresh context while keeping
-      the plan directory? The current `new_session()` replaces the active pointer, which
-      loses the previous session's chat history from the TUI.
+- [x] **What is the unit of a "session"?** — RESOLVED: no sessions. Single daemon process,
+      single flat `~/.gitzi/` layout. Chat history is one continuous file plus per-fork
+      files. No `gitzi new-session` concept needed.
 - [ ] **How does a task relate to a branch after completion?** Once a task reaches `done`,
       the worktree is left on disk. Should it be cleaned up automatically? Should the
       branch be merged, deleted, or archived? The workflow is silent on post-done
@@ -362,11 +337,9 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
       a report without modifying state.
 - [ ] **`gitzi clean` command** — removes orphaned worktrees, stale WIP directories for
       completed tasks, and branches for `done` tasks (optionally merges them first).
-- [ ] **Inline agent questions via chat** — when an agent encounters ambiguity, instead of
-      guessing or failing, it should emit a structured question back through the harness.
-      The scheduler pauses the task, the question appears in the TUI chat panel, and the
-      human's reply is injected as context before the agent resumes. This is the "ask
-      before write" skill made native to the pipeline.
+- [x] **Inline agent questions via chat** — when an agent encounters ambiguity, it emits a
+      structured question back through the harness via `gitzi_create_review_item`. The
+      review queue surfaces it in the main chat, and the human's reply unblocks the agent.
 - [ ] **Task dependency graph** — add an optional `depends_on: Vec<String>` field to Task.
       The scheduler respects dependencies: a task cannot be picked up until all its
       dependencies are `done`. Visualize dependencies as a DAG in the TUI right panel.
@@ -377,8 +350,8 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
 - [ ] **Per-stage time tracking** — record `entered_at` on each `StageTransition` and
       compute cycle time (time from InProgress to Done) and lead time (Prioritized to
       Done). Surface these in the TUI board column headers and the dashboard.
-- [ ] **Config hot-reload** — watch `config.toml` for changes and reload without restarting
-      the scheduler. WIP limit changes should take effect on the next tick.
+- [x] **Config hot-reload** — `watch_config()` watches `config.toml` for changes and
+      reloads WIP limits without restarting the scheduler.
 - [ ] **`gitzi status --json`** — machine-readable output from `cmd_status` for integration
       with shell scripts, CI steps, and external dashboards.
 - [ ] **UI screenshotter** — need a way to capture screenshots of the dashboard/TUI for
