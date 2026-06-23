@@ -31,10 +31,25 @@
 
 - [x] As a developer, runtime state lives in `~/.gitzi/` (flat layout, no sessions, no UUIDs)
 - [ ] As a developer, the harness asks me one clarifying question at a time before starting work on a task
+- [ ] As a developer, before a task moves from `prioritized` to `in-progress`, the harness
+      runs an LLM pass over its description to identify vagueness, ambiguity, undefined
+      scope boundaries, missing acceptance criteria, and implicit assumptions. Each gap is
+      surfaced as a clarifying question the human must answer before work begins.
 
 ### Agent behavior
 
 - [ ] As a developer, the agent is instructed (via system prompt / harness injection) that it is critically important to always write ongoing work, plans, ideas, and discussions to long-lived artifacts outside of the chat — context windows expire; files don't — every decision, design thought, or open question must land in a TODO, spec, ADR, or note, never exist only in conversation
+- [ ] As a developer, when the agent starts a task the harness auto-discovers and injects
+      repo-level convention/steering docs into the agent's context. Known file locations:
+      `AGENTS.md` (root + subdirs), `CLAUDE.md`, `GEMINI.md`, `.kiro/steering/*.md`,
+      `.cursor/rules/*.mdc`, `.cursorrules`, `.windsurfrules`, `.windsurf/rules/*.md`,
+      `.github/copilot-instructions.md`, `CONVENTIONS.md`, `.junie/guidelines.md`,
+      `devin.md`, `CONTRIBUTING.md`, `docs/ADR/*.md`, `ARCHITECTURE.md`, `DESIGN.md`.
+      Resolve: (1) configurable discovery patterns per-repo in `[[repos]]` vs global
+      default list, (2) dedup when multiple files say the same thing in different tool
+      formats, (3) context budget — summarize or truncate when total exceeds threshold,
+      (4) scope filtering — subdirectory-scoped docs injected only when task touches
+      those paths vs always injecting root-level docs.
 - [x] As a developer, the agent makes the smallest possible change that satisfies the task
 - [x] As a developer, the agent stops and surfaces a question rather than guessing when scope is unclear
 - [x] As a developer, the agent never refactors or extends beyond what the task explicitly asks for
