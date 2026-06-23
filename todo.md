@@ -6,6 +6,7 @@
 - **One question at a time.** Never ask two things at once. Wait for the answer.
 - **Thoroughness over speed.** A slow correct step beats a fast wrong one.
 - **Never assume.** If the next step is unclear, ask. Don't fill in gaps with guesses.
+- **Do it right the first time.** Never any hacks. The user will be the only one to suggest and approve hacks.
 
 ---
 
