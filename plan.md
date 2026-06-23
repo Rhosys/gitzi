@@ -870,3 +870,48 @@ decision was made.
 - [x] **Test adapter** — not needed; `test_command` in `config.toml`
 - [x] **Epic auto-generation** — LLM proposes epic breakdowns, task splits, and prioritization; human approves each step
 - [ ] **Mobile protocol** — define the federated protocol for mobile ↔ git repo communication
+
+
+---
+
+## First-run bootstrap
+
+When a user runs `gitzi` for the first time (no `~/.gitzi/` exists), the harness runs a
+bootstrap sequence before launching the TUI. No wizard, no manual config editing — it
+discovers what's available and generates `config.toml` automatically.
+
+### LLM provider discovery
+
+The bootstrapper scans for available LLM providers in priority order:
+
+1. **CLI-based LLMs already running** (highest priority — zero setup)
+2. **Installed but not running** (can be started automatically)
+3. **Not installed** (skip, try next)
+
+**Known providers to detect:**
+
+| Provider | Detection | Start command |
+|----------|-----------|---------------|
+| LM Studio | `~/.lmstudio/bin/lms` exists | `lms server start` |
+| Ollama | `which ollama` | `ollama serve` |
+| Claude CLI | `which claude` | N/A (subprocess per-call) |
+| OpenCode | `which opencode` | TBD |
+| Goose | `which goose` | TBD |
+| LocalAI | `which local-ai` | TBD |
+| llama.cpp server | `which llama-server` | TBD |
+
+**Decision logic:**
+- If exactly one provider is found → use it, no prompt
+- If multiple found in the same priority tier → ask the user which to use
+- For "installed but not running" providers → attempt to start them
+- Test connectivity: hit the provider's health endpoint to confirm it responds
+
+### Q&A decisions (to be answered)
+
+<!-- Record answers to bootstrap questions below as they're decided -->
+
+1. **Q: Auto-discover repo_paths?**
+   A: (pending)
+
+2. **Q: ...**
+   A: (pending)

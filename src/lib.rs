@@ -12,7 +12,7 @@ pub mod model;
 pub mod pipeline;
 pub mod runner;
 pub mod state;
-pub mod trope_blocker;
+pub mod verifier;
 
 #[cfg(feature = "tui")]
 pub mod tui;

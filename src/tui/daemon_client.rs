@@ -164,9 +164,13 @@ async fn run_client(
             cmd = cmd_rx.recv() => {
                 let Some(cmd) = cmd else { return };
                 match cmd {
-                    DaemonCommand::Chat(message) => {
-                        let encoded = serde_json::to_string(&message).unwrap_or_default();
-                        let cmd = format!("chat {encoded}\n");
+                    DaemonCommand::Chat { message, view_context } => {
+                        let payload = serde_json::json!({
+                            "message": message,
+                            "view_context": view_context,
+                        });
+                        let encoded = serde_json::to_string(&payload).unwrap_or_default();
+                        let cmd = format!("chat_ctx {encoded}\n");
                         if writer.write_all(cmd.as_bytes()).await.is_err() {
                             let _ = msg_tx.send(DaemonMessage::Disconnected("write failed".to_string()));
                             return;

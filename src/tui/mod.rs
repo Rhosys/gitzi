@@ -14,7 +14,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
 use crate::error::Result;
-use app::{App, DaemonCommand, DaemonMessage};
+use app::{App, DaemonCommand, DaemonMessage, Panel};
 
 /// Run the TUI. Must be called from within a tokio runtime.
 pub async fn run_async() -> Result<()> {
@@ -156,10 +156,20 @@ async fn run_event_loop(
                 KeyCode::Enter => app.submit_chat(),
                 KeyCode::Backspace => { app.chat_input.pop(); }
                 KeyCode::Char(c) => app.chat_input.push(c),
-                KeyCode::Left => app.move_left(),
-                KeyCode::Right => app.move_right(),
-                KeyCode::Up => app.move_up(),
-                KeyCode::Down => app.move_down(),
+                // Up/Down switch panels (S/E/K/T/L)
+                KeyCode::Up => app.prev_panel(),
+                KeyCode::Down => app.next_panel(),
+                // Left/Right only navigate inside Kanban board
+                KeyCode::Left => {
+                    if app.panel == Panel::Kanban {
+                        app.move_left();
+                    }
+                }
+                KeyCode::Right => {
+                    if app.panel == Panel::Kanban {
+                        app.move_right();
+                    }
+                }
                 _ => {}
             }
         }
