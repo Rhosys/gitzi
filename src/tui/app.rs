@@ -187,13 +187,30 @@ pub struct App {
 /// Commands sent from the TUI event loop to the daemon client task.
 #[derive(Debug)]
 pub enum DaemonCommand {
-    Chat(String),               // message to main agent
+    Chat { message: String, view_context: ViewContext },
     CloseFork,
     RefreshBoard,
     RefreshReview,
     RefreshEpics,
     RefreshQueueLen,
     UpdateEntity { id: String, target: EditorTarget, title: String, description: Option<String> },
+}
+
+/// Describes what the user is currently looking at in the TUI.
+/// Sent alongside each chat message so the main agent can discuss
+/// on-screen content without the user having to describe it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ViewContext {
+    /// Which panel is currently displayed on the right side.
+    pub panel: String,
+    /// The selected task's ID (if any task is highlighted on the board).
+    pub selected_task_id: Option<String>,
+    /// The selected task's title (for convenience — avoids a lookup).
+    pub selected_task_title: Option<String>,
+    /// The board column the user is looking at.
+    pub selected_column: Option<String>,
+    /// Number of pending review items (questions from agents).
+    pub pending_questions: usize,
 }
 
 /// Messages received from the daemon client task into the TUI event loop.
@@ -348,14 +365,26 @@ impl App {
 
     // ── Chat ──────────────────────────────────────────────────────────────────
 
-    /// Submit the current chat message.
+    /// Submit the current chat message with visual context.
     pub fn submit_chat(&mut self) {
         let message = std::mem::take(&mut self.chat_input).trim().to_string();
         if message.is_empty() {
             return;
         }
         self.chat_history.push(ChatEntry { is_user: true, content: message.clone() });
-        let _ = self.cmd_tx.send(DaemonCommand::Chat(message));
+
+        let selected_task = self.selected_board_task();
+        let view_context = ViewContext {
+            panel: self.panel.label().to_string(),
+            selected_task_id: selected_task.map(|t| t.id.clone()),
+            selected_task_title: selected_task.map(|t| t.title.clone()),
+            selected_column: column_order()
+                .get(self.board_col)
+                .map(|c| c.to_string()),
+            pending_questions: self.question_count,
+        };
+
+        let _ = self.cmd_tx.send(DaemonCommand::Chat { message, view_context });
         self.chat_pending = true;
         self.status = "thinking…".to_string();
     }
@@ -417,6 +446,26 @@ impl App {
         if n > 0 && self.board_task < n - 1 {
             self.board_task += 1;
         }
+    }
+
+    /// Cycle to the previous panel (Ctrl+Up).
+    pub fn prev_panel(&mut self) {
+        let idx = Panel::ALL.iter().position(|p| *p == self.panel).unwrap_or(0);
+        self.panel = if idx == 0 {
+            Panel::ALL[Panel::ALL.len() - 1]
+        } else {
+            Panel::ALL[idx - 1]
+        };
+    }
+
+    /// Cycle to the next panel (Ctrl+Down).
+    pub fn next_panel(&mut self) {
+        let idx = Panel::ALL.iter().position(|p| *p == self.panel).unwrap_or(0);
+        self.panel = if idx >= Panel::ALL.len() - 1 {
+            Panel::ALL[0]
+        } else {
+            Panel::ALL[idx + 1]
+        };
     }
 
     fn clamp_board_nav(&mut self) {

@@ -109,6 +109,20 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             cmd if cmd.starts_with("answer ") => {
                 handle_answer(&dispatcher, cmd.strip_prefix("answer ").unwrap().trim()).await
             }
+            cmd if cmd.starts_with("chat_ctx ") => {
+                let encoded = cmd.strip_prefix("chat_ctx ").unwrap().trim();
+                let (message, view_prefix) = parse_chat_ctx(encoded);
+                let augmented = if view_prefix.is_empty() {
+                    message
+                } else {
+                    format!("{view_prefix}\n\n{message}")
+                };
+                let d = Arc::clone(&dispatcher);
+                tokio::spawn(async move {
+                    handle_chat_with_interrupt(d, augmented).await;
+                });
+                "queued".to_string()
+            }
             cmd if cmd.starts_with("chat ") => {
                 let encoded = cmd.strip_prefix("chat ").unwrap().trim();
                 let message: String = serde_json::from_str(encoded)
@@ -749,4 +763,67 @@ fn uninstall_launchd() -> Result<()> {
         .ok();
     let _ = std::fs::remove_file(plist_path);
     Ok(())
+}
+
+// ─── View context parsing ─────────────────────────────────────────────────────
+
+/// Parse a `chat_ctx` payload into (message, view_context_prefix).
+/// The prefix is a short system-injected line that tells the main agent what the
+/// user is currently looking at. If parsing fails, returns the raw string as
+/// the message with no prefix.
+fn parse_chat_ctx(encoded: &str) -> (String, String) {
+    #[derive(serde::Deserialize)]
+    struct ChatCtxPayload {
+        message: String,
+        #[serde(default)]
+        view_context: Option<ViewCtx>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct ViewCtx {
+        panel: Option<String>,
+        selected_task_id: Option<String>,
+        selected_task_title: Option<String>,
+        selected_column: Option<String>,
+        #[serde(default)]
+        pending_questions: usize,
+    }
+
+    let payload: ChatCtxPayload = match serde_json::from_str(encoded) {
+        Ok(p) => p,
+        Err(_) => {
+            // Fallback: treat the whole thing as a plain message
+            let message: String = serde_json::from_str(encoded)
+                .unwrap_or_else(|_| encoded.to_string());
+            return (message, String::new());
+        }
+    };
+
+    let prefix = match payload.view_context {
+        Some(ctx) => {
+            let mut parts = Vec::new();
+            if let Some(ref panel) = ctx.panel {
+                parts.push(format!("panel={panel}"));
+            }
+            if let Some(ref col) = ctx.selected_column {
+                parts.push(format!("column={col}"));
+            }
+            if let Some(ref title) = ctx.selected_task_title {
+                if let Some(ref id) = ctx.selected_task_id {
+                    parts.push(format!("selected_task=\"{title}\" ({id})"));
+                }
+            }
+            if ctx.pending_questions > 0 {
+                parts.push(format!("pending_questions={}", ctx.pending_questions));
+            }
+            if parts.is_empty() {
+                String::new()
+            } else {
+                format!("[view: {}]", parts.join(", "))
+            }
+        }
+        None => String::new(),
+    };
+
+    (payload.message, prefix)
 }

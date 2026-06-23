@@ -625,9 +625,9 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let controls = if app.editor_focused {
         " [ctrl+s] save  [esc] leave editor  [ctrl+q] quit"
     } else if !app.fork_stack.is_empty() {
-        " [enter] send  [esc] close fork  [arrows] board  [ctrl+q] quit"
+        " [enter] send  [esc] close fork  [↑↓] panels  [←→] board  [ctrl+q] quit"
     } else {
-        " [enter] send  [arrows] board  [ctrl+q] quit"
+        " [enter] send  [↑↓] panels  [←→] board  [ctrl+q] quit"
     };
 
     let status = &app.status;

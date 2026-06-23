@@ -20,7 +20,7 @@ use crate::id;
 use crate::model::task::Task;
 use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind};
 use crate::state::writer::write_task;
-use crate::trope_blocker;
+use crate::verifier;
 
 // ─── AgentHandle ──────────────────────────────────────────────────────────────
 
@@ -81,9 +81,10 @@ impl AgentPool {
     /// 1. Sleep on Notify
     /// 2. Wake → pick highest-priority task from its column
     /// 3. Run agent backend with task context (including agent_feedback if present)
-    /// 4. Scan response through TropeBlocker
-    /// 5. On clean: WIP check → advance task to next buffer, emit TaskStageChanged then AgentCompleted
-    /// 6. On blocked: set blocked flag, emit AgentBlocked, sleep until unblocked
+    /// 4. On success: run Verifier (task contract + summary + diff) → pass/fail
+    /// 5. On pass: WIP check → advance task to next buffer, emit TaskStageChanged then AgentCompleted
+    /// 6. On fail: retry once with verifier feedback, escalate to human review if still failing
+    /// 7. On blocked: set blocked flag, emit AgentBlocked, sleep until unblocked
     pub fn spawn(
         event_bus: Arc<EventBus>,
         board: Arc<RwLock<KanbanBoard>>,
@@ -338,70 +339,67 @@ async fn handle_agent_result(
         AgentResult::Success { output } => output,
     };
 
-    // TropeBlocker scan
-    match trope_blocker::scan(&output) {
-        trope_blocker::ScanResult::Clean => {
+    // Verifier gate: validate that the agent's output satisfies the task contract
+    // before allowing advancement to the next buffer column.
+    let diff = {
+        let repo_root = crate::state::home::repo_path();
+        match ops::open_repo(&repo_root) {
+            Ok(repo) => ops::get_diff(&repo, &ctx.branch).unwrap_or_default(),
+            Err(e) => {
+                warn!(%role, task_id = %task.id, error = %e, "cannot open repo for verifier diff");
+                String::new()
+            }
+        }
+    };
+
+    match verifier::verify(config, task, &output, &diff).await {
+        verifier::VerifyResult::Pass => {
             try_advance(handle, event_bus, board, task, wip_limits, wip_waiting).await;
         }
-        trope_blocker::ScanResult::Blocked(trope_match) => {
-            // Estimate context tokens (rough: 4 chars per token)
-            let token_estimate = output.len() / 4;
-            let task_summary = format!("Task: {} — {}", task.id, task.title);
+        verifier::VerifyResult::Fail { reason } => {
+            info!(%role, task_id = %task.id, %reason, "verifier rejected — retrying");
 
-            let directive =
-                trope_blocker::execute(&trope_match, token_estimate, &task_summary);
-
-            // Build retry context based on directive
-            let retry_ctx = match directive {
-                trope_blocker::Directive::Continue { ref injection } => {
-                    debug!(%role, task_id = %task.id, "trope blocked — injecting correction");
-                    RunContext {
-                        repo_root: ctx.repo_root.clone(),
-                        branch: ctx.branch.clone(),
-                        resume_summary: Some(injection.clone()),
-                        mcp_token: ctx.mcp_token.clone(),
-                        answered_questions: ctx.answered_questions.clone(),
-                    }
-                }
-                trope_blocker::Directive::RotateSession { ref summary } => {
-                    debug!(%role, task_id = %task.id, "trope blocked — rotate session");
-                    // Persist summary to task for recovery across restarts
-                    let mut task_mut = task.clone();
-                    task_mut.resume_summary = Some(summary.clone());
-                    if let Err(e) = write_task(&task_mut) {
-                        warn!(%role, task_id = %task.id, error = %e,
-                            "failed to persist resume_summary");
-                    }
-                    RunContext {
-                        repo_root: ctx.repo_root.clone(),
-                        branch: ctx.branch.clone(),
-                        resume_summary: Some(summary.clone()),
-                        mcp_token: ctx.mcp_token.clone(),
-                        answered_questions: ctx.answered_questions.clone(),
-                    }
-                }
+            // ONE retry: inject verifier feedback and re-run the agent
+            let retry_ctx = RunContext {
+                repo_root: ctx.repo_root.clone(),
+                branch: ctx.branch.clone(),
+                resume_summary: Some(format!(
+                    "Your previous attempt was rejected by the verifier: {reason}\n\
+                     Re-read the task requirements and try again."
+                )),
+                mcp_token: ctx.mcp_token.clone(),
+                answered_questions: ctx.answered_questions.clone(),
             };
 
-            // ONE retry attempt
             let agent_def = config.resolve_agent(&role.to_string());
             let backend = agent::build_agent(config, &agent_def);
             let retry_result = backend.run(task, &retry_ctx).await;
 
-            let retry_clean = match retry_result {
-                Ok(AgentResult::Success { ref output }) => {
-                    trope_blocker::scan(output).is_clean()
+            let retry_passed = match retry_result {
+                Ok(AgentResult::Success { output: ref retry_output }) => {
+                    let retry_diff = {
+                        let repo_root = crate::state::home::repo_path();
+                        match ops::open_repo(&repo_root) {
+                            Ok(repo) => ops::get_diff(&repo, &ctx.branch).unwrap_or_default(),
+                            Err(_) => String::new(),
+                        }
+                    };
+                    matches!(
+                        verifier::verify(config, task, retry_output, &retry_diff).await,
+                        verifier::VerifyResult::Pass
+                    )
                 }
                 _ => false,
             };
 
-            if retry_clean {
-                info!(%role, task_id = %task.id, "retry succeeded — advancing");
-                try_advance(handle, event_bus, board, task, wip_limits, wip_waiting)
-                    .await;
+            if retry_passed {
+                info!(%role, task_id = %task.id, "retry passed verification — advancing");
+                try_advance(handle, event_bus, board, task, wip_limits, wip_waiting).await;
             } else {
-                // Escalate: create review item, emit AgentBlocked, set blocked
-                warn!(%role, task_id = %task.id, "retry still blocked — escalating");
-                escalate_trope_block(handle, event_bus, task, review_queue).await;
+                warn!(%role, task_id = %task.id, "retry also failed verification — escalating");
+                escalate_verification_failure(
+                    handle, event_bus, task, review_queue, &reason,
+                ).await;
             }
         }
     }
@@ -465,18 +463,20 @@ async fn try_advance(
     });
 }
 
-/// Escalate a trope block after retry failure: persist a review item, emit
+/// Escalate a verification failure after retry: persist a review item, emit
 /// `AgentBlocked`, and set the agent's blocked flag so it sleeps.
-async fn escalate_trope_block(
+async fn escalate_verification_failure(
     handle: &AgentHandle,
     event_bus: &Arc<EventBus>,
     task: &Task,
     review_queue: &Arc<Mutex<HumanReviewQueue>>,
+    reason: &str,
 ) {
     let role = handle.role;
-    let question =
-        "Agent stuck after trope correction — needs human guidance".to_string();
-    let review_id = id::new_id("review-trope-block");
+    let question = format!(
+        "Agent failed verification after retry. Verifier reason: {reason}"
+    );
+    let review_id = id::new_id("review-verify-fail");
     let item = PersistedReviewItem {
         id: review_id,
         task_id: task.id.clone(),
@@ -488,7 +488,7 @@ async fn escalate_trope_block(
     };
 
     if let Err(e) = review::write_review_item(&item) {
-        warn!(%role, task_id = %task.id, error = %e, "failed to persist trope escalation review");
+        warn!(%role, task_id = %task.id, error = %e, "failed to persist verification failure review");
     }
 
     event_bus.emit(DispatchEvent::AgentBlocked {

@@ -133,6 +133,19 @@ impl AgentDef {
             ),
         }
     }
+
+    /// Hardcoded default for the `role = "verifier"` contract-verification agent.
+    /// The verifier's system prompt lives in `src/verifier.rs` (VERIFIER_SYSTEM_PROMPT)
+    /// and is injected at call time — this default only sets the model/endpoint.
+    pub fn default_verifier() -> Self {
+        Self {
+            role: "verifier".to_string(),
+            model: "local-model".to_string(),
+            api_url: Some("http://localhost:1234/v1".to_string()),
+            provider: None,
+            system_prompt: None,
+        }
+    }
 }
 
 fn default_model() -> String { "claude-sonnet-4-6".to_string() }
@@ -274,6 +287,9 @@ impl Config {
             .unwrap_or_else(|| {
                 if role == "main" {
                     return AgentDef::default_main();
+                }
+                if role == "verifier" {
+                    return AgentDef::default_verifier();
                 }
                 AgentRole::all()
                     .iter()
