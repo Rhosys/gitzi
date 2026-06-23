@@ -380,3 +380,7 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
       the scheduler. WIP limit changes should take effect on the next tick.
 - [ ] **`gitzi status --json`** — machine-readable output from `cmd_status` for integration
       with shell scripts, CI steps, and external dashboards.
+- [ ] **UI screenshotter** — need a way to capture screenshots of the dashboard/TUI for
+      verifying UI changes (e.g. before/after a layout fix) without manual review. Decide
+      whether this is a dev-only tool, a CI check, or both, and which capture mechanism
+      (headless browser for the dashboard, terminal capture for the TUI) fits each.
