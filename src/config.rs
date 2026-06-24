@@ -266,7 +266,6 @@ fn render_scaffold_toml() -> String {
 designing = 1
 coding = 1
 reviewing = 1
-testing = 1
 auditing = 1
 deploying = 1
 
@@ -300,11 +299,6 @@ provider = "lmstudio"
 
 [[agents]]
 role = "reviewer"
-model = "local-model"
-provider = "lmstudio"
-
-[[agents]]
-role = "tester"
 model = "local-model"
 provider = "lmstudio"
 
@@ -379,8 +373,8 @@ mod tests {
     proptest! {
         #[test]
         fn resolve_agent_returns_config_override_or_main_fallback(
-            include_flags in prop::collection::vec(any::<bool>(), 7..=7),
-            custom_models in prop::collection::vec("[a-z]{3,10}", 7..=7),
+            include_flags in prop::collection::vec(any::<bool>(), 6..=6),
+            custom_models in prop::collection::vec("[a-z]{3,10}", 6..=6),
         ) {
             let all_roles = AgentRole::all();
 

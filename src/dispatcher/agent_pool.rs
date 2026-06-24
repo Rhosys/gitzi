@@ -687,7 +687,7 @@ mod tests {
 
     #[test]
     fn agent_handle_blocked_state_toggle() {
-        let handle = AgentHandle::new(AgentRole::Tester);
+        let handle = AgentHandle::new(AgentRole::Reviewer);
         assert!(!handle.is_blocked());
         handle.blocked.store(true, Ordering::Release);
         assert!(handle.is_blocked());

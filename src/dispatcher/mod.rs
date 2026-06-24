@@ -37,8 +37,6 @@ pub enum Column {
     Coding,
     ReviewBuffer,
     Reviewing,
-    TestBuffer,
-    Testing,
     SecurityAuditBuffer,
     Auditing,
     DeploymentBuffer,
@@ -53,8 +51,6 @@ static ALL_COLUMNS: &[Column] = &[
     Column::Coding,
     Column::ReviewBuffer,
     Column::Reviewing,
-    Column::TestBuffer,
-    Column::Testing,
     Column::SecurityAuditBuffer,
     Column::Auditing,
     Column::DeploymentBuffer,
@@ -86,7 +82,6 @@ impl Column {
             self,
             Column::CodingBuffer
                 | Column::ReviewBuffer
-                | Column::TestBuffer
                 | Column::SecurityAuditBuffer
                 | Column::DeploymentBuffer
         )
@@ -99,7 +94,6 @@ impl Column {
             Column::Designing => Some(AgentRole::Designer),
             Column::Coding => Some(AgentRole::Coder),
             Column::Reviewing => Some(AgentRole::Reviewer),
-            Column::Testing => Some(AgentRole::Tester),
             Column::Auditing => Some(AgentRole::Auditor),
             Column::Deploying => Some(AgentRole::Infrarian),
             _ => None,
@@ -116,8 +110,6 @@ impl std::fmt::Display for Column {
             Column::Coding => "coding",
             Column::ReviewBuffer => "review-buffer",
             Column::Reviewing => "reviewing",
-            Column::TestBuffer => "test-buffer",
-            Column::Testing => "testing",
             Column::SecurityAuditBuffer => "security-audit-buffer",
             Column::Auditing => "auditing",
             Column::DeploymentBuffer => "deployment-buffer",
@@ -128,7 +120,7 @@ impl std::fmt::Display for Column {
     }
 }
 
-/// One of the seven LLM agent roles. Each role has exactly one agent instance
+/// One of the six LLM agent roles. Each role has exactly one agent instance
 /// and maps to a specific work column on the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -137,7 +129,6 @@ pub enum AgentRole {
     Designer,
     Coder,
     Reviewer,
-    Tester,
     Auditor,
     Infrarian,
 }
@@ -147,7 +138,6 @@ static ALL_ROLES: &[AgentRole] = &[
     AgentRole::Designer,
     AgentRole::Coder,
     AgentRole::Reviewer,
-    AgentRole::Tester,
     AgentRole::Auditor,
     AgentRole::Infrarian,
 ];
@@ -165,7 +155,6 @@ impl AgentRole {
             AgentRole::Designer => Column::Designing,
             AgentRole::Coder => Column::Coding,
             AgentRole::Reviewer => Column::Reviewing,
-            AgentRole::Tester => Column::Testing,
             AgentRole::Auditor => Column::Auditing,
             AgentRole::Infrarian => Column::Deploying,
         }
@@ -189,8 +178,7 @@ impl AgentRole {
             AgentRole::Prioritizer => "You break epics into minimal, independently-shippable tasks ordered by dependency and value.",
             AgentRole::Designer => "You produce concise technical designs. No code — architecture, data models, interfaces only.",
             AgentRole::Coder => "You are a disciplined coding agent. Make the smallest possible change. No refactoring, no extras.",
-            AgentRole::Reviewer => "You review code for correctness, security, and adherence to the design. Flag issues, never rewrite.",
-            AgentRole::Tester => "\
+            AgentRole::Reviewer => "\
 You are an adversarial code auditor. Your job is to find everything wrong with the \
 coder's work. Assume the coder attempted to:\n\
 - Build the most wrong implementation possible for the task\n\
@@ -226,7 +214,6 @@ impl std::fmt::Display for AgentRole {
             AgentRole::Designer => "designer",
             AgentRole::Coder => "coder",
             AgentRole::Reviewer => "reviewer",
-            AgentRole::Tester => "tester",
             AgentRole::Auditor => "auditor",
             AgentRole::Infrarian => "infrarian",
         };
@@ -1481,14 +1468,14 @@ mod tests {
 
     #[test]
     fn column_all_has_13_variants() {
-        assert_eq!(Column::all().len(), 13);
+        assert_eq!(Column::all().len(), 11);
     }
 
     #[test]
     fn column_order_starts_with_prioritized_ends_with_done() {
         let all = Column::all();
         assert_eq!(all[0], Column::Prioritized);
-        assert_eq!(all[12], Column::Done);
+        assert_eq!(all[10], Column::Done);
     }
 
     #[test]
@@ -1522,7 +1509,6 @@ mod tests {
             vec![
                 Column::CodingBuffer,
                 Column::ReviewBuffer,
-                Column::TestBuffer,
                 Column::SecurityAuditBuffer,
                 Column::DeploymentBuffer,
             ]
@@ -1536,7 +1522,6 @@ mod tests {
             Column::Designing,
             Column::Coding,
             Column::Reviewing,
-            Column::Testing,
             Column::Auditing,
             Column::Deploying,
         ];
@@ -1556,7 +1541,7 @@ mod tests {
 
     #[test]
     fn agent_role_all_has_7_variants() {
-        assert_eq!(AgentRole::all().len(), 7);
+        assert_eq!(AgentRole::all().len(), 6);
     }
 
     #[test]

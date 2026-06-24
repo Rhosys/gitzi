@@ -106,8 +106,6 @@ pub fn column_abbrev(col: &Column) -> &'static str {
         Column::Coding => "COD",
         Column::ReviewBuffer => "R·B",
         Column::Reviewing => "REV",
-        Column::TestBuffer => "T·B",
-        Column::Testing => "TST",
         Column::SecurityAuditBuffer => "A·B",
         Column::Auditing => "AUD",
         Column::DeploymentBuffer => "D·B",
