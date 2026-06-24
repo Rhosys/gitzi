@@ -25,9 +25,17 @@ pub async fn run(
         .unwrap_or("http://localhost:1234/v1");
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let model = &agent_def.model;
-    let system_prompt = "You are a coding agent. Implement the task described below. \
-         Use the provided tools to read, write, and edit files. \
-         Run tests when done. Make the smallest correct change.";
+    let system_prompt = "\
+You are a coding agent. Implement the task described below.\n\n\
+RULES:\n\
+- Use the provided tools to read, write, and edit files.\n\
+- Make the smallest correct change that satisfies the task.\n\
+- ALWAYS run tests and lint after making changes.\n\
+- If tests or lint fail, fix the problems immediately. Do not stop until they pass.\n\
+- Only report done (respond with text, no tool calls) when tests and lint pass.\n\
+- If you cannot fix a failure after 3 attempts, raise a clarification item.\n\
+- Never refactor code you were not asked to change.\n\
+- Never guess about intent — if unclear, use gitzi_create_review_item to ask.";
 
     let tools = coding_agent_tools();
 
