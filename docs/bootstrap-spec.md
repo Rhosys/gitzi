@@ -105,8 +105,15 @@ Provider field populated (not commented). Pretty section headers.
 
 ## Open Questions
 
-- Q5: Opening message = "So what are we going to do next?" (after first-time status panel)
-- Q6–Q20: TBD
+- Q7–Q20: TBD
+
+### Q6: Auto-start providers or ask the user?
+- **Installed but NOT running** → show on Status panel: "X is installed but not running.
+  Please start it and load a model." Do NOT auto-start.
+- **Running but no model loaded** → gitzi starts the API server (if needed) and
+  force-loads the first downloaded text model (e.g. `lms load <model> -y`).
+  Use `/v1/models` HTTP endpoint to check what's loaded (more reliable than CLI).
+- **Running with model** → ready to go.
 
 ## Status Panel Forms
 
