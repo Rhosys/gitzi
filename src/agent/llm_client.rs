@@ -6,10 +6,18 @@ use serde::de::DeserializeOwned;
 use std::time::Duration;
 use tracing::{info, warn};
 
-/// Attempt an LLM API call. On connection failure:
+/// Maximum wall-clock time for a single `post_with_retry` call (including
+/// auto-start attempts). Prevents unbounded blocking when the LLM server
+/// is unreachable.
+const MAX_TOTAL_TIMEOUT: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Attempt an LLM API call. On connection failure in production:
 /// 1. Try to start LM Studio via `lms server start`
 /// 2. Wait for it to come up (up to 15s with polling)
 /// 3. Retry the request once
+///
+/// The auto-start behavior is skipped during tests (`cfg(test)`) — connection
+/// failures return immediately.
 ///
 /// Returns the parsed response body on success.
 pub async fn post_with_retry<T: DeserializeOwned>(
@@ -17,28 +25,44 @@ pub async fn post_with_retry<T: DeserializeOwned>(
     url: &str,
     body: &impl serde::Serialize,
 ) -> Result<T, LlmError> {
+    let deadline = tokio::time::Instant::now() + MAX_TOTAL_TIMEOUT;
+
     // First attempt
-    match try_post::<T>(client, url, body).await {
-        Ok(resp) => return Ok(resp),
-        Err(LlmError::ConnectionFailed(e)) => {
+    let first = tokio::time::timeout_at(deadline, try_post::<T>(client, url, body)).await;
+    match first {
+        Ok(Ok(resp)) => return Ok(resp),
+        Ok(Err(LlmError::ConnectionFailed(e))) => {
+            if cfg!(test) {
+                return Err(LlmError::ConnectionFailed(e));
+            }
             warn!("LLM connection failed: {e} — attempting auto-start");
         }
-        Err(e) => return Err(e),
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err(LlmError::ConnectionFailed(
+            "total timeout exceeded waiting for LLM".to_string(),
+        )),
     }
 
-    // Try starting LM Studio
+    // Try starting LM Studio (production only — cfg(test) returns above)
     attempt_start_lms();
 
     // Wait for the server to become reachable (poll every 2s, up to 15s)
-    let started = wait_for_server(url, Duration::from_secs(15)).await;
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    let wait_limit = remaining.min(Duration::from_secs(15));
+    let started = wait_for_server(url, wait_limit).await;
     if !started {
         return Err(LlmError::ConnectionFailed(
-            "LM Studio failed to start within 15s".to_string(),
+            "LM Studio failed to start within timeout".to_string(),
         ));
     }
 
-    // Retry
-    try_post::<T>(client, url, body).await
+    // Retry (bounded by overall deadline)
+    match tokio::time::timeout_at(deadline, try_post::<T>(client, url, body)).await {
+        Ok(result) => result,
+        Err(_) => Err(LlmError::ConnectionFailed(
+            "total timeout exceeded on retry".to_string(),
+        )),
+    }
 }
 
 async fn try_post<T: DeserializeOwned>(

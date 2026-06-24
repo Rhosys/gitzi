@@ -73,18 +73,13 @@ proptest! {
             let wip_waiting = Arc::new(Mutex::new(waiting));
 
             let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
-            let agent_pool = AgentPool::spawn(
-                Arc::clone(&event_bus),
-                Arc::clone(&board),
-                Arc::clone(&config),
-                Arc::clone(&wip_limits),
-                Arc::clone(&wip_waiting),
-                Arc::clone(&review_queue),
-                Arc::clone(&token_store),
-            );
+            let agent_pool = AgentPool::inert();
 
             let main_agent_def = config.resolve_agent("main");
             let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
+
+            let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
+                std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
 
             let dispatcher = Dispatcher {
                 event_bus: Arc::clone(&event_bus),
@@ -97,6 +92,7 @@ proptest! {
                 chat_history: Arc::new(Mutex::new(vec![])),
                 main_agent,
                 token_store,
+                store,
                 chat_stack: Mutex::new(Vec::new()),
             };
 
@@ -169,18 +165,13 @@ proptest! {
             let wip_waiting = Arc::new(Mutex::new(waiting));
 
             let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
-            let agent_pool = AgentPool::spawn(
-                Arc::clone(&event_bus),
-                Arc::clone(&board),
-                Arc::clone(&config),
-                Arc::clone(&wip_limits),
-                Arc::clone(&wip_waiting),
-                Arc::clone(&review_queue),
-                Arc::clone(&token_store),
-            );
+            let agent_pool = AgentPool::inert();
 
             let main_agent_def = config.resolve_agent("main");
             let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
+
+            let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
+                std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
 
             let dispatcher = Dispatcher {
                 event_bus: Arc::clone(&event_bus),
@@ -193,6 +184,7 @@ proptest! {
                 chat_history: Arc::new(Mutex::new(vec![])),
                 main_agent,
                 token_store,
+                store,
                 chat_stack: Mutex::new(Vec::new()),
             };
 

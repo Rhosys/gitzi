@@ -146,6 +146,9 @@ pub struct App {
     /// Which panel is shown on the right
     pub panel: Panel,
 
+    /// Whether the right panel currently has keyboard focus
+    pub panel_focused: bool,
+
     /// Chat message being composed
     pub chat_input: String,
 
@@ -239,6 +242,7 @@ impl App {
             question_count: 0,
             chat_pending: false,
             panel: Panel::Status,
+            panel_focused: false,
             chat_input: String::new(),
             chat_history: Vec::new(),
             logs: Vec::new(),

@@ -149,28 +149,40 @@ async fn run_event_loop(
                     _ => {}
                 }
             }
-        } else {
+        } else if app.panel_focused {
+            // Right panel is focused — arrows navigate within it
             match key.code {
+                KeyCode::Esc => { app.panel_focused = false; }
+                KeyCode::Up => app.move_up(),
+                KeyCode::Down => app.move_down(),
+                KeyCode::Left => app.move_left(),
+                KeyCode::Right => app.move_right(),
+                KeyCode::Enter => {
+                    // On Kanban: Enter on a task jumps to the Task panel
+                    if app.panel == Panel::Kanban && app.selected_board_task().is_some() {
+                        app.panel = Panel::Task;
+                    }
+                }
                 KeyCode::Tab => app.enter_editor(),
-                KeyCode::Esc => app.close_current_fork(),
-                KeyCode::Enter => app.submit_chat(),
-                KeyCode::Backspace => { app.chat_input.pop(); }
-                KeyCode::Char(c) => app.chat_input.push(c),
-                // Up/Down switch panels (S/E/K/T/L)
-                KeyCode::Up => app.prev_panel(),
-                KeyCode::Down => app.next_panel(),
-                // Left/Right only navigate inside Kanban board
-                KeyCode::Left => {
-                    if app.panel == Panel::Kanban {
-                        app.move_left();
-                    }
-                }
-                KeyCode::Right => {
-                    if app.panel == Panel::Kanban {
-                        app.move_right();
-                    }
-                }
                 _ => {}
+            }
+        } else {
+            // Chat focused (default) — chars go to chat input
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                match key.code {
+                    KeyCode::Up => app.prev_panel(),
+                    KeyCode::Down => app.next_panel(),
+                    _ => {}
+                }
+            } else {
+                match key.code {
+                    KeyCode::Tab => { app.panel_focused = true; }
+                    KeyCode::Esc => app.close_current_fork(),
+                    KeyCode::Enter => app.submit_chat(),
+                    KeyCode::Backspace => { app.chat_input.pop(); }
+                    KeyCode::Char(c) => app.chat_input.push(c),
+                    _ => {}
+                }
             }
         }
     }

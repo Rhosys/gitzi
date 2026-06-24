@@ -624,10 +624,12 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
     let controls = if app.editor_focused {
         " [ctrl+s] save  [esc] leave editor  [ctrl+q] quit"
+    } else if app.panel_focused {
+        " [arrows] navigate  [enter] select  [esc] back to chat  [ctrl+q] quit"
     } else if !app.fork_stack.is_empty() {
-        " [enter] send  [esc] close fork  [↑↓] panels  [←→] board  [ctrl+q] quit"
+        " [enter] send  [tab] panel  [ctrl+↑↓] panels  [esc] close fork  [ctrl+q] quit"
     } else {
-        " [enter] send  [↑↓] panels  [←→] board  [ctrl+q] quit"
+        " [enter] send  [tab] panel  [ctrl+↑↓] panels  [ctrl+q] quit"
     };
 
     let status = &app.status;

@@ -36,18 +36,13 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
     let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
-    let agent_pool = AgentPool::spawn(
-        Arc::clone(&event_bus),
-        Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![]))),
-        Arc::clone(&config),
-        Arc::clone(&wip_limits),
-        Arc::clone(&wip_waiting),
-        Arc::clone(&review_queue),
-        Arc::clone(&token_store),
-    );
+    let agent_pool = AgentPool::inert();
 
     let main_agent_def = config.resolve_agent("main");
     let main_agent = build_main_agent(&main_agent_def);
+
+    let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
+        std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
 
     let dispatcher = Arc::new(Dispatcher {
         event_bus,
@@ -60,6 +55,7 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
         chat_history: Arc::new(Mutex::new(vec![])),
         main_agent,
         token_store: Arc::clone(&token_store),
+        store,
         chat_stack: Mutex::new(Vec::new()),
     });
 
