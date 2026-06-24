@@ -155,6 +155,8 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_feedback: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_summary: Option<String>,
@@ -180,6 +182,7 @@ impl Task {
             priority: default_priority(),
             agent: None,
             branch: None,
+            repo: None,
             agent_feedback: None,
             resume_summary: None,
             created_at: now,

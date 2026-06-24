@@ -82,8 +82,12 @@ pub async fn dispatch(
                 .get("priority")
                 .and_then(Value::as_u64)
                 .map(|v| v as u32);
+            let repo = args
+                .get("repo")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             let task = dispatcher
-                .gitzi_create_task(epic_id, title, description, priority)
+                .gitzi_create_task(epic_id, title, description, priority, repo)
                 .await
                 .map_err(|e| format!("gitzi_create_task failed: {e}"))?;
             Ok(serde_json::to_value(task).unwrap_or(Value::Null))
