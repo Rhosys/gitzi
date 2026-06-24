@@ -810,7 +810,6 @@ fn column_title_color(col: &Column) -> Color {
             Column::Designing => Color::Blue,
             Column::Coding => Color::Yellow,
             Column::Reviewing => Color::Magenta,
-            Column::Testing => Color::Cyan,
             Column::Auditing => Color::Red,
             Column::Deploying => Color::Green,
             Column::Done => Color::Green,

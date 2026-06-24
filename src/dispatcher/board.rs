@@ -163,13 +163,11 @@ impl Default for WipLimits {
         limits.insert(Column::Designing, 1);
         limits.insert(Column::Coding, 1);
         limits.insert(Column::Reviewing, 1);
-        limits.insert(Column::Testing, 1);
         limits.insert(Column::Auditing, 1);
         limits.insert(Column::Deploying, 1);
         // Buffer columns: 1 each
         limits.insert(Column::CodingBuffer, 1);
         limits.insert(Column::ReviewBuffer, 1);
-        limits.insert(Column::TestBuffer, 1);
         limits.insert(Column::SecurityAuditBuffer, 1);
         limits.insert(Column::DeploymentBuffer, 1);
         // Done: unlimited
@@ -255,14 +253,12 @@ mod tests {
             make_task("a", Stage::Backlog, 10),
             make_task("b", Stage::InProgress, 20),
             make_task("c", Stage::WaitingForReview, 30),
-            make_task("d", Stage::InTesting, 40),
         ];
         let board = KanbanBoard::from_tasks(tasks);
 
         assert_eq!(board.count(Column::Prioritized), 1); // Backlog → Prioritized
         assert_eq!(board.count(Column::Coding), 1); // InProgress → Coding
         assert_eq!(board.count(Column::ReviewBuffer), 1); // WaitingForReview → ReviewBuffer
-        assert_eq!(board.count(Column::Testing), 1); // InTesting → Testing
     }
 
     #[test]
@@ -358,7 +354,6 @@ mod tests {
             Column::Designing,
             Column::Coding,
             Column::Reviewing,
-            Column::Testing,
             Column::Auditing,
             Column::Deploying,
         ];
@@ -374,7 +369,6 @@ mod tests {
         let buffers = [
             Column::CodingBuffer,
             Column::ReviewBuffer,
-            Column::TestBuffer,
             Column::SecurityAuditBuffer,
             Column::DeploymentBuffer,
         ];

@@ -43,7 +43,6 @@ pub fn run() -> crate::error::Result<Config> {
     overrides.insert("designing".to_string(), 1);
     overrides.insert("coding".to_string(), 1);
     overrides.insert("reviewing".to_string(), 1);
-    overrides.insert("testing".to_string(), 1);
     overrides.insert("auditing".to_string(), 1);
     overrides.insert("deploying".to_string(), 1);
     config.wip_limits = WipLimits { overrides };
@@ -64,7 +63,7 @@ pub fn run() -> crate::error::Result<Config> {
     let provider_name = chosen.as_ref().map(|p| p.name.clone());
     let roles = [
         "main", "prioritizer", "designer", "coder",
-        "reviewer", "tester", "auditor", "infrarian",
+        "reviewer", "auditor", "infrarian",
     ];
     config.agents = roles.iter().map(|role| AgentDef {
         role: role.to_string(),

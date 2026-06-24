@@ -173,8 +173,6 @@ mod tests {
             Just(Column::Coding),
             Just(Column::ReviewBuffer),
             Just(Column::Reviewing),
-            Just(Column::TestBuffer),
-            Just(Column::Testing),
             Just(Column::SecurityAuditBuffer),
             Just(Column::Auditing),
             Just(Column::DeploymentBuffer),
