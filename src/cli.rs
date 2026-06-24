@@ -23,6 +23,9 @@ pub enum Commands {
     /// View daemon logs (scrollable, live-following)
     Log,
 
+    /// Force-regenerate ~/.gitzi/config.toml from defaults
+    GenerateConfig,
+
     /// Manually advance a task to a new stage
     Advance {
         task_id: String,

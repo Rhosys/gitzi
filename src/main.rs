@@ -36,6 +36,7 @@ async fn main() -> Result<()> {
     match cli.command {
         None => cmd_default().await?,
         Some(Commands::Status) => cmd_status()?,
+        Some(Commands::GenerateConfig) => cmd_generate_config()?,
         Some(Commands::Log) => {
             #[cfg(feature = "tui")]
             cmd_log().await?;
@@ -278,6 +279,14 @@ fn cmd_status() -> Result<()> {
     for (stage, ids) in &wip.stages {
         println!("{stage}: {}", ids.join(", "));
     }
+    Ok(())
+}
+
+fn cmd_generate_config() -> Result<()> {
+    home::ensure_dirs()?;
+    let path = home::global_config_file();
+    Config::force_generate(&path)?;
+    println!("Generated config at {}", path.display());
     Ok(())
 }
 
