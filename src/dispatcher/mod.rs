@@ -17,9 +17,8 @@ use crate::config::Config;
 use crate::mcp::auth::TokenStore;
 use crate::state::chat::{self as chat_store, ChatMessage, Role};
 use crate::state::home;
-use crate::state::reader;
-use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind, ReviewAction};
-use crate::state::writer;
+use crate::state::review::{PersistedReviewItem, PersistedReviewKind, ReviewAction};
+use crate::state::store::{FileStore, StateStore};
 
 use self::agent_pool::AgentPool;
 use self::board::{KanbanBoard, WipLimits};
@@ -233,6 +232,8 @@ pub struct Dispatcher {
     pub main_agent: MainAgent,
     /// Token store for MCP sub-agent authorization.
     pub token_store: Arc<TokenStore>,
+    /// Persistence layer for tasks, epics, and review items.
+    pub store: Arc<dyn StateStore>,
     /// Tracks the currently in-flight chat turn for interrupt classification.
     /// A stack — each fork pushes a new entry. Classifier operates against the top.
     pub chat_stack: Mutex<Vec<ForkEntry>>,
@@ -295,17 +296,17 @@ impl Dispatcher {
         {
             let board = self.board.read().await;
             if let Some(task) = board.task(task_id)
-                && let Err(e) = writer::write_task(task) {
+                && let Err(e) = self.store.write_task(task) {
                 warn!(%task_id, error = %e, "failed to persist task after approval");
             }
         }
 
         // Persist review item with approval action appended
-        if let Ok(Some(mut review_item)) = review::find_unresolved_for_task(task_id) {
+        if let Ok(Some(mut review_item)) = self.store.find_unresolved_for_task(task_id) {
             review_item.actions.push(ReviewAction::Approval {
                 at: chrono::Utc::now(),
             });
-            if let Err(e) = review::write_review_item(&review_item) {
+            if let Err(e) = self.store.write_review_item(&review_item) {
                 warn!(%task_id, error = %e, "failed to persist review item approval");
             }
         }
@@ -363,18 +364,18 @@ impl Dispatcher {
         {
             let board = self.board.read().await;
             if let Some(task) = board.task(task_id)
-                && let Err(e) = writer::write_task(task) {
+                && let Err(e) = self.store.write_task(task) {
                 warn!(%task_id, error = %e, "failed to persist task after rejection");
             }
         }
 
         // Persist review item with rejection action appended
-        if let Ok(Some(mut review_item)) = review::find_unresolved_for_task(task_id) {
+        if let Ok(Some(mut review_item)) = self.store.find_unresolved_for_task(task_id) {
             review_item.actions.push(ReviewAction::Rejection {
                 at: chrono::Utc::now(),
                 feedback: feedback.clone(),
             });
-            if let Err(e) = review::write_review_item(&review_item) {
+            if let Err(e) = self.store.write_review_item(&review_item) {
                 warn!(%task_id, error = %e, "failed to persist review item rejection");
             }
         }
@@ -402,7 +403,7 @@ impl Dispatcher {
     async fn attempt_merge(&self, task_id: &str) {
         use crate::git::ops::{merge_task_branch, MergeOutcome};
 
-        let task = match reader::load_task(task_id) {
+        let task = match self.store.load_task(task_id) {
             Ok(t) => t,
             Err(e) => {
                 warn!(%task_id, error = %e, "cannot load task for merge");
@@ -486,13 +487,13 @@ impl Dispatcher {
         }
 
         // Persist the answer on the review item (not the task)
-        match review::load_review_item(item_id) {
+        match self.store.load_review_item(item_id) {
             Ok(mut persisted) => {
                 persisted.actions.push(ReviewAction::Answer {
                     at: chrono::Utc::now(),
                     content: answer.clone(),
                 });
-                if let Err(e) = review::write_review_item(&persisted) {
+                if let Err(e) = self.store.write_review_item(&persisted) {
                     warn!(%item_id, error = %e, "failed to persist answer to review item");
                 }
             }
@@ -520,11 +521,11 @@ impl Dispatcher {
     // ── gitzi_ management tools ───────────────────────────────────────────────
 
     pub async fn gitzi_list_epics(&self) -> anyhow::Result<Vec<crate::model::Epic>> {
-        Ok(reader::load_all_epics()?)
+        Ok(self.store.load_all_epics()?)
     }
 
     pub async fn gitzi_list_tasks(&self, epic_id: Option<&str>) -> anyhow::Result<Vec<crate::model::Task>> {
-        let all = reader::load_all_tasks()?;
+        let all = self.store.load_all_tasks()?;
         if let Some(id) = epic_id {
             Ok(all.into_iter().filter(|t| t.epic == id).collect())
         } else {
@@ -533,7 +534,7 @@ impl Dispatcher {
     }
 
     pub async fn gitzi_get_review_item(&self, id: &str) -> anyhow::Result<PersistedReviewItem> {
-        Ok(review::load_review_item(id)?)
+        Ok(self.store.load_review_item(id)?)
     }
 
     pub async fn gitzi_create_epic(
@@ -544,7 +545,7 @@ impl Dispatcher {
         let id = crate::id::new_id(&title);
         let mut epic = crate::model::Epic::new(&id, &title);
         epic.description = description;
-        writer::write_epic(&epic)?;
+        self.store.write_epic(&epic)?;
         Ok(epic)
     }
 
@@ -559,12 +560,12 @@ impl Dispatcher {
         let mut task = crate::model::Task::new(&id, &epic_id, &title);
         task.description = description;
         task.priority = priority.unwrap_or(100);
-        writer::write_task(&task)?;
+        self.store.write_task(&task)?;
 
         // Update parent epic's task list on disk
-        if let Ok(mut epic) = reader::load_epic(&epic_id) {
+        if let Ok(mut epic) = self.store.load_epic(&epic_id) {
             epic.tasks.push(id.clone());
-            if let Err(e) = writer::write_epic(&epic) {
+            if let Err(e) = self.store.write_epic(&epic) {
                 warn!(%epic_id, error = %e, "failed to update epic task list after create_task");
             }
         }
@@ -585,11 +586,11 @@ impl Dispatcher {
         title: Option<String>,
         description: Option<String>,
     ) -> anyhow::Result<crate::model::Task> {
-        let mut task = reader::load_task(task_id)?;
+        let mut task = self.store.load_task(task_id)?;
         if let Some(t) = title { task.title = t; }
         if let Some(d) = description { task.description = Some(d); }
         task.updated_at = chrono::Utc::now();
-        writer::write_task(&task)?;
+        self.store.write_task(&task)?;
 
         // Sync in-memory board entry
         {
@@ -603,10 +604,10 @@ impl Dispatcher {
     }
 
     pub async fn gitzi_prioritize_task(&self, task_id: &str, priority: u32) -> anyhow::Result<crate::model::Task> {
-        let mut task = reader::load_task(task_id)?;
+        let mut task = self.store.load_task(task_id)?;
         task.priority = priority;
         task.updated_at = chrono::Utc::now();
-        writer::write_task(&task)?;
+        self.store.write_task(&task)?;
 
         {
             let mut board = self.board.write().await;
@@ -617,10 +618,10 @@ impl Dispatcher {
     }
 
     pub async fn gitzi_park_task(&self, task_id: &str, reason: String) -> anyhow::Result<()> {
-        let mut task = reader::load_task(task_id)?;
+        let mut task = self.store.load_task(task_id)?;
         task.resume_summary = Some(reason);
         task.updated_at = chrono::Utc::now();
-        writer::write_task(&task)?;
+        self.store.write_task(&task)?;
 
         // Sync in-memory board entry
         {
@@ -661,7 +662,7 @@ impl Dispatcher {
             created_at: now,
             actions: Vec::new(),
         };
-        review::write_review_item(&persisted)?;
+        self.store.write_review_item(&persisted)?;
 
         // Enqueue in-memory with the same ID
         {
@@ -683,7 +684,8 @@ impl Dispatcher {
         let config = Arc::new(config);
 
         // 1. Load tasks from disk
-        let tasks = reader::load_all_tasks()?;
+        let store: Arc<dyn StateStore> = Arc::new(FileStore);
+        let tasks = store.load_all_tasks()?;
         info!(task_count = tasks.len(), "loaded tasks from disk");
 
         // 2. Build KanbanBoard from tasks
@@ -694,7 +696,7 @@ impl Dispatcher {
 
         // 4. Create empty HumanReviewQueue and load persisted unresolved items
         let mut queue = HumanReviewQueue::new();
-        match review::load_all_unresolved() {
+        match store.load_all_unresolved() {
             Ok(persisted_items) => {
                 for p in persisted_items {
                     let kind = match p.kind {
@@ -746,6 +748,7 @@ impl Dispatcher {
             Arc::clone(&wip_waiting),
             Arc::clone(&review_queue),
             Arc::clone(&token_store),
+            Arc::clone(&store),
         );
 
         // 8. Emit BootComplete
@@ -787,6 +790,7 @@ impl Dispatcher {
             chat_history,
             main_agent,
             token_store,
+            store,
             chat_stack: Mutex::new(Vec::new()),
         };
 
@@ -915,7 +919,7 @@ impl Dispatcher {
 
         // Record this exchange on the review item's own structured history.
         if let Some(task_id) = discussed_task_id
-            && let Ok(Some(mut review_item)) = review::find_unresolved_for_task(&task_id) {
+            && let Ok(Some(mut review_item)) = self.store.find_unresolved_for_task(&task_id) {
             let now = chrono::Utc::now();
             review_item.actions.push(ReviewAction::Comment {
                 at: now,
@@ -927,7 +931,7 @@ impl Dispatcher {
                 role: Role::Agent,
                 content: final_response.clone(),
             });
-            if let Err(e) = review::write_review_item(&review_item) {
+            if let Err(e) = self.store.write_review_item(&review_item) {
                 warn!(%task_id, error = %e, "failed to persist rework discussion comment");
             }
         }
@@ -1344,7 +1348,7 @@ impl Dispatcher {
                             created_at: chrono::Utc::now(),
                             actions: Vec::new(),
                         };
-                        if let Err(e) = review::write_review_item(&persisted) {
+                        if let Err(e) = self.store.write_review_item(&persisted) {
                             warn!(%task_id, error = %e, "failed to persist review item");
                         }
 

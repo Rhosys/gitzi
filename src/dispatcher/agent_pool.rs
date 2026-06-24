@@ -18,8 +18,8 @@ use crate::dispatcher::event_bus::DispatchEvent;
 use crate::git::ops;
 use crate::id;
 use crate::model::task::Task;
-use crate::state::review::{self, PersistedReviewItem, PersistedReviewKind};
-use crate::state::writer::write_task;
+use crate::state::review::{PersistedReviewItem, PersistedReviewKind};
+use crate::state::store::StateStore;
 use crate::verifier;
 
 // ─── AgentHandle ──────────────────────────────────────────────────────────────
@@ -93,6 +93,7 @@ impl AgentPool {
         wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
         review_queue: Arc<Mutex<HumanReviewQueue>>,
         token_store: Arc<TokenStore>,
+        store: Arc<dyn StateStore>,
     ) -> Self {
         let mut agents = HashMap::new();
 
@@ -107,8 +108,9 @@ impl AgentPool {
             let ww = Arc::clone(&wip_waiting);
             let rq = Arc::clone(&review_queue);
             let ts = Arc::clone(&token_store);
+            let st = Arc::clone(&store);
 
-            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq, ts));
+            tokio::spawn(agent_loop(handle, eb, b, cfg, wl, ww, rq, ts, st));
         }
 
         Self { agents }
@@ -157,6 +159,18 @@ impl AgentPool {
     pub fn handle(&self, role: AgentRole) -> Option<&AgentHandle> {
         self.agents.get(&role)
     }
+
+    /// Create an inert pool for testing. Registers handles for all roles but
+    /// does NOT spawn agent loops — no background tasks, no LLM calls, no
+    /// network I/O. Use this in tests that exercise Dispatcher methods
+    /// (approve, reject, etc.) without needing agents to actually process work.
+    pub fn inert() -> Self {
+        let mut agents = HashMap::new();
+        for role in AgentRole::all() {
+            agents.insert(*role, AgentHandle::new(*role));
+        }
+        Self { agents }
+    }
 }
 
 // ─── Agent Loop ───────────────────────────────────────────────────────────────
@@ -172,6 +186,7 @@ async fn agent_loop(
     wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     review_queue: Arc<Mutex<HumanReviewQueue>>,
     token_store: Arc<TokenStore>,
+    store: Arc<dyn StateStore>,
 ) {
     let role = handle.role;
     let column = role.column();
@@ -225,7 +240,7 @@ async fn agent_loop(
             }
             let mut disk_task = task.clone();
             disk_task.branch = Some(branch.clone());
-            if let Err(e) = write_task(&disk_task) {
+            if let Err(e) = store.write_task(&disk_task) {
                 warn!(task_id = %task.id, error = %e, "failed to persist branch name");
             }
         }
@@ -238,7 +253,7 @@ async fn agent_loop(
         let mcp_token = token_store.issue(&task.id).await;
 
         // Build prompt context — include agent_feedback if present
-        let ctx = build_run_context(&task, worktree_root, branch.clone(), Some(mcp_token.clone()));
+        let ctx = build_run_context(&task, worktree_root, branch.clone(), Some(mcp_token.clone()), &store);
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
@@ -261,6 +276,7 @@ async fn agent_loop(
                     &wip_limits,
                     &wip_waiting,
                     &review_queue,
+                    &store,
                 )
                 .await;
             }
@@ -285,6 +301,7 @@ async fn handle_agent_result(
     wip_limits: &Arc<RwLock<WipLimits>>,
     wip_waiting: &Arc<Mutex<HashMap<Column, AgentRole>>>,
     review_queue: &Arc<Mutex<HumanReviewQueue>>,
+    store: &Arc<dyn StateStore>,
 ) {
     let role = handle.role;
 
@@ -302,7 +319,7 @@ async fn handle_agent_result(
                 created_at: chrono::Utc::now(),
                 actions: Vec::new(),
             };
-            if let Err(e) = review::write_review_item(&item) {
+            if let Err(e) = store.write_review_item(&item) {
                 warn!(
                     %role, task_id = %task.id, error = %e,
                     "failed to persist review item for blocked agent"
@@ -398,7 +415,7 @@ async fn handle_agent_result(
             } else {
                 warn!(%role, task_id = %task.id, "retry also failed verification — escalating");
                 escalate_verification_failure(
-                    handle, event_bus, task, review_queue, &reason,
+                    handle, event_bus, task, review_queue, &reason, &store,
                 ).await;
             }
         }
@@ -471,6 +488,7 @@ async fn escalate_verification_failure(
     task: &Task,
     review_queue: &Arc<Mutex<HumanReviewQueue>>,
     reason: &str,
+    store: &Arc<dyn StateStore>,
 ) {
     let role = handle.role;
     let question = format!(
@@ -487,7 +505,7 @@ async fn escalate_verification_failure(
         actions: Vec::new(),
     };
 
-    if let Err(e) = review::write_review_item(&item) {
+    if let Err(e) = store.write_review_item(&item) {
         warn!(%role, task_id = %task.id, error = %e, "failed to persist verification failure review");
     }
 
@@ -507,9 +525,9 @@ async fn escalate_verification_failure(
     review_queue.lock().await.enqueue(queue_item);
 }
 
-fn build_run_context(task: &Task, worktree_root: std::path::PathBuf, branch: String, mcp_token: Option<String>) -> RunContext {
+fn build_run_context(task: &Task, worktree_root: std::path::PathBuf, branch: String, mcp_token: Option<String>, store: &Arc<dyn StateStore>) -> RunContext {
     let resume_summary = resume_context(task);
-    let answered_questions = crate::state::review::load_answered_for_task(&task.id);
+    let answered_questions = store.load_answered_for_task(&task.id);
     RunContext { repo_root: worktree_root, branch, resume_summary, mcp_token, answered_questions }
 }
 
@@ -653,6 +671,7 @@ fn get_diff_stats(repo: &git2::Repository, branch_name: &str) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::store::InMemoryStore;
 
     #[test]
     fn agent_handle_signal_does_not_panic() {
@@ -686,8 +705,9 @@ mod tests {
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
         let token_store = Arc::new(TokenStore::new());
+        let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
         );
 
         for role in AgentRole::all() {
@@ -705,8 +725,9 @@ mod tests {
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
         let token_store = Arc::new(TokenStore::new());
+        let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
         );
 
         for role in AgentRole::all() {
@@ -724,8 +745,9 @@ mod tests {
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
         let token_store = Arc::new(TokenStore::new());
+        let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
         );
 
         // Simulate blocked state
@@ -754,8 +776,9 @@ mod tests {
         let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
 
         let token_store = Arc::new(TokenStore::new());
+        let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store,
+            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
         );
         // All roles exist, so this just tests the method doesn't panic
         pool.signal(AgentRole::Infrarian);
