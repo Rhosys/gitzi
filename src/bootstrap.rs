@@ -11,7 +11,12 @@ use crate::state::home;
 pub struct DiscoveredProvider {
     pub name: String,
     pub api_url: String,
+    /// Whether the server process is running (port is open).
     pub running: bool,
+    /// Whether at least one model is loaded and ready to serve.
+    pub model_loaded: bool,
+    /// Whether the binary/CLI is installed on the system.
+    pub installed: bool,
 }
 
 /// Run the full bootstrap: discover providers, discover repos, generate config.
@@ -90,10 +95,13 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
     if let Some(ref path) = lms_path {
         if path.exists() {
             let running = check_port_open(1234);
+            let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
             providers.push(DiscoveredProvider {
                 name: "lmstudio".to_string(),
                 api_url: "http://localhost:1234/v1".to_string(),
                 running,
+                model_loaded,
+                installed: true,
             });
         }
     }
@@ -101,17 +109,103 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
     // Ollama
     if which("ollama") {
         let running = check_port_open(11434);
+        let model_loaded = running && has_models_loaded("http://localhost:11434/v1");
         providers.push(DiscoveredProvider {
             name: "ollama".to_string(),
             api_url: "http://localhost:11434/v1".to_string(),
             running,
+            model_loaded,
+            installed: true,
         });
     }
 
-    // Sort: running first, then by name
-    providers.sort_by(|a, b| b.running.cmp(&a.running).then(a.name.cmp(&b.name)));
+    // Sort: running+model first, then running-no-model, then installed-not-running
+    providers.sort_by(|a, b| {
+        let score = |p: &DiscoveredProvider| -> u8 {
+            if p.model_loaded { 2 } else if p.running { 1 } else { 0 }
+        };
+        score(b).cmp(&score(a)).then(a.name.cmp(&b.name))
+    });
 
     providers
+}
+
+/// Check if a provider has at least one model loaded via the /v1/models endpoint.
+fn has_models_loaded(base_url: &str) -> bool {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send();
+
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            if let Ok(body) = r.json::<serde_json::Value>() {
+                body.get("data")
+                    .and_then(|d| d.as_array())
+                    .map(|arr| !arr.is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Attempt to load a model for the given provider.
+/// Returns true if a model is now available.
+pub fn ensure_model_loaded(provider: &DiscoveredProvider) -> bool {
+    if provider.model_loaded {
+        return true;
+    }
+    if !provider.running {
+        return false;
+    }
+
+    match provider.name.as_str() {
+        "lmstudio" => {
+            let lms = dirs::home_dir()
+                .unwrap_or_default()
+                .join(".lmstudio/bin/lms");
+
+            // List downloaded models
+            let output = std::process::Command::new(&lms)
+                .args(["ls"])
+                .output();
+
+            if let Ok(out) = output {
+                let text = String::from_utf8_lossy(&out.stdout);
+                // Find first LLM model (parse the table output)
+                let mut in_llm = false;
+                for line in text.lines() {
+                    if line.contains("LLM") && line.contains("PARAMS") {
+                        in_llm = true;
+                        continue;
+                    }
+                    if line.contains("EMBEDDING") {
+                        break;
+                    }
+                    if in_llm && !line.trim().is_empty() {
+                        // Extract model key from first column
+                        let model_key = line.split_whitespace().next().unwrap_or("");
+                        if !model_key.is_empty() && model_key.contains('/') {
+                            info!("loading model: {model_key}");
+                            let _ = std::process::Command::new(&lms)
+                                .args(["load", model_key, "-y"])
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .status();
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                            return has_models_loaded(&provider.api_url);
+                        }
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
 }
 
 /// Scan common locations for git repositories.
