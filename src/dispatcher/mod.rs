@@ -555,11 +555,13 @@ impl Dispatcher {
         title: String,
         description: Option<String>,
         priority: Option<u32>,
+        repo: Option<String>,
     ) -> anyhow::Result<crate::model::Task> {
         let id = crate::id::new_id(&title);
         let mut task = crate::model::Task::new(&id, &epic_id, &title);
         task.description = description;
         task.priority = priority.unwrap_or(100);
+        task.repo = repo;
         self.store.write_task(&task)?;
 
         // Update parent epic's task list on disk
@@ -1007,6 +1009,20 @@ impl Dispatcher {
             message.to_string()
         };
 
+        // Inject repo context so the agent knows what repos are available
+        let repo_context = {
+            let repos = crate::state::repo_cache::populate(&self.config.repo_paths);
+            if repos.is_empty() {
+                String::new()
+            } else {
+                let listing: String = repos.iter().take(20).map(|r| {
+                    format!("  {} [{}]", r.path, r.labels.join(", "))
+                }).collect::<Vec<_>>().join("\n");
+                format!("[Repos]\n{listing}\n\n")
+            }
+        };
+        let llm_message = format!("{repo_context}{llm_message}");
+
         // 4. Build messages from history + (possibly augmented) message
         let mut messages = MainAgent::history_to_messages(history, &llm_message);
 
@@ -1140,7 +1156,11 @@ impl Dispatcher {
                     .get("priority")
                     .and_then(serde_json::Value::as_u64)
                     .map(|v| v as u32);
-                match self.gitzi_create_task(epic_id, title, description, priority).await {
+                let repo = args
+                    .get("repo")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                match self.gitzi_create_task(epic_id, title, description, priority, repo).await {
                     Ok(task) => serde_json::to_string(&task).unwrap_or_else(|_| "{}".to_string()),
                     Err(e) => format!("error: {e}"),
                 }
@@ -1239,6 +1259,17 @@ impl Dispatcher {
                 match self.reject(&task_id, feedback).await {
                     Ok(()) => "ok: task sent back for rework".to_string(),
                     Err(e) => format!("error: {e}"),
+                }
+            }
+
+            "gitzi_list_repos" => {
+                let repos = crate::state::repo_cache::populate(&self.config.repo_paths);
+                if repos.is_empty() {
+                    "No repos discovered. Configure repo_paths in config.toml.".to_string()
+                } else {
+                    repos.iter().map(|r| {
+                        format!("- {} [{}]\n  {}", r.path, r.labels.join(", "), r.summary)
+                    }).collect::<Vec<_>>().join("\n")
                 }
             }
 

@@ -162,7 +162,8 @@ fn main_agent_tools() -> Vec<OaiTool> {
                         "epic_id": { "type": "string", "description": "The ID of the epic this task belongs to." },
                         "title": { "type": "string", "description": "Short, imperative title for the task." },
                         "description": { "type": "string", "description": "Optional detailed description." },
-                        "priority": { "type": "integer", "description": "Optional initial priority. Defaults to 100." }
+                        "priority": { "type": "integer", "description": "Optional initial priority. Defaults to 100." },
+                        "repo": { "type": "string", "description": "Filesystem path of the repository this task operates in. Use gitzi_list_repos to find available repos." }
                     },
                     "required": ["epic_id", "title"]
                 }),
@@ -251,6 +252,18 @@ fn main_agent_tools() -> Vec<OaiTool> {
                         "id": { "type": "string", "description": "The unique ID of the review item to retrieve." }
                     },
                     "required": ["id"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_list_repos",
+                description: "List all discovered repositories with their paths, summaries, and labels.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }),
             },
         },
