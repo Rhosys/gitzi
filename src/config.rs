@@ -207,6 +207,16 @@ impl Config {
         atomic_write(&path, &text)
     }
 
+    /// Force-regenerate config.toml from the scaffold template, overwriting any
+    /// existing file. Used by `gitzi generate-config`.
+    pub fn force_generate(path: &Path) -> Result<()> {
+        let text = render_scaffold_toml();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        atomic_write(path, &text)
+    }
+
     /// Validate config on load. Returns error for provider references that don't exist
     /// or unknown WIP column overrides.
     pub fn validate(&self) -> Result<()> {
@@ -277,36 +287,97 @@ fn render_scaffold_toml() -> String {
 # gitzi configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ── Fork Behavior ──────────────────────────────────────────────────
+# ── General ────────────────────────────────────────────────────────
+# Core behavior settings: how gitzi manages conversations and finds
+# your repositories.
+
+# When the agent determines a fork conversation is resolved, it can
+# automatically close it. Set to false if you always want to close
+# forks manually.
 # fork_auto_close = true | false
 fork_auto_close = true
 
-# ── Repo Discovery ─────────────────────────────────────────────────
-# repo_paths = ["/home/user/projects/*"]
+# Glob patterns for discovering git repositories. Any directory
+# matching these patterns that contains a .git/ directory is tracked.
+# repo_paths = ["/home/user/projects/*", "/home/user/work/*"]
 repo_paths = []
 
 # ── WIP Limits ─────────────────────────────────────────────────────
-# [wip_limits]
-# coding = 1..N
-# coding = 2
+# Maximum number of tasks allowed in each pipeline column at once.
+# Lower values keep focus tight; raise when you want more parallelism.
+# Columns not listed here use the default of 1.
+[wip_limits]
+designing = 1
+coding = 1
+reviewing = 1
+testing = 1
+auditing = 1
+deploying = 1
 
 # ── Agents ─────────────────────────────────────────────────────────
-# role = "main | coder | reviewer | tester | auditor | designer | prioritizer | infrarian"
+# Each agent role handles one pipeline stage. You only need to set
+# model and provider — system prompts are managed by gitzi internally.
+# Roles not listed here inherit their config from the main agent.
+
 [[agents]]
 role = "main"
 model = "local-model"
 provider = "lmstudio"
 
+[[agents]]
+role = "prioritizer"
+model = "local-model"
+provider = "lmstudio"
+
+[[agents]]
+role = "designer"
+model = "local-model"
+provider = "lmstudio"
+
+[[agents]]
+role = "coder"
+model = "local-model"
+provider = "lmstudio"
+
+[[agents]]
+role = "reviewer"
+model = "local-model"
+provider = "lmstudio"
+
+[[agents]]
+role = "tester"
+model = "local-model"
+provider = "lmstudio"
+
+[[agents]]
+role = "auditor"
+model = "local-model"
+provider = "lmstudio"
+
+[[agents]]
+role = "infrarian"
+model = "local-model"
+provider = "lmstudio"
+
 # ── Repos ──────────────────────────────────────────────────────────
+# Per-repository overrides. Each repo is identified by its slug
+# (the last two path components joined by dash, e.g. "email-catcher-backend").
+# Repos not listed here use ff-only merge into the main branch.
+#
 # [[repos]]
 # slug = "my-project"
 # merge_strategy = "ff-only | gitzi-branch | merge-commit | pull-request | push-to-remote"
 # main_branch = "main"
 
 # ── Providers ──────────────────────────────────────────────────────
+# LLM endpoints that agents connect to. Reference a provider by name
+# in the agent's `provider` field above. api_key is stored in plain
+# text here — this file should never be committed to git.
+#
 # [providers.<name>]
 # api_url = "http://..."
 # api_key = "sk-..."
+
 [providers.lmstudio]
 api_url = "http://localhost:1234/v1"
 "#.to_string()
