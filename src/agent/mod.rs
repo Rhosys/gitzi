@@ -14,6 +14,7 @@ pub use main_agent::{ChatTurn, MainAgent, OaiMessage, OaiTool, ToolCallRequest};
 pub use rig_agent::RigAgent;
 
 use crate::config::{AgentDef, Config};
+use crate::dispatcher::AgentRole;
 use crate::error::Result;
 use crate::model::Task;
 
@@ -55,11 +56,16 @@ impl AgentBackend for PipelineAgent {
 pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
     match def.provider.as_ref().and_then(|name| config.providers.get(name)) {
         Some(provider) => {
+            // System prompt comes from the hardcoded role default, not config.
+            let role_prompt = AgentRole::all()
+                .iter()
+                .find(|r| r.to_string() == def.role)
+                .map(|r| r.default_system_prompt().to_string());
             PipelineAgent::Rig(RigAgent::new(
                 provider.api_url.clone(),
                 provider.api_key.clone(),
                 def.model.clone(),
-                def.system_prompt.clone(),
+                role_prompt,
             ))
         }
         None => PipelineAgent::CodingLoop(def.clone()),

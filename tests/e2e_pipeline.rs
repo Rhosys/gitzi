@@ -68,14 +68,12 @@ fn test_config(port: u16) -> Config {
                 model: "mock-model".to_string(),
                 api_url: Some(api_url.clone()),
                 provider: None,
-                system_prompt: Some("You are a test agent.".to_string()),
             },
             AgentDef {
                 role: "coder".to_string(),
                 model: "mock-model".to_string(),
                 api_url: Some(api_url.clone()),
                 provider: None,
-                system_prompt: Some("You are a test coder.".to_string()),
             },
         ],
         ..Config::default()
