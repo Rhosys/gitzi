@@ -180,7 +180,6 @@ impl AgentRole {
             model: "claude-sonnet-4-20250514".to_string(),
             api_url: None,
             provider: None,
-            system_prompt: Some(self.default_system_prompt().to_string()),
         }
     }
 

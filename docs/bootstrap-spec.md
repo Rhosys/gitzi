@@ -7,7 +7,13 @@ First-time experience when a user runs `gitzi` with no existing `~/.gitzi/`.
 ### Q1: What does the user see first?
 A loader/spinner while gitzi auto-discovers available LLM resources and generates config.
 
-### Q2 (pending): Auto-discover repo_paths?
+### Q2: Auto-discover repo_paths?
+Yes. Scan obvious locations (`~/git/`, `~/projects/`, `~/code/`, `~/src/`, `~/repos/`).
+If none found → ask the user or tell them to cd into a project and rerun.
+When repos are found, compute the common ancestor path and write that as a glob in
+`repo_paths`. Only auto-populate if no existing repos are known.
+
+### Q3: Post-discovery — summary or straight to TUI?
 (Awaiting answer)
 
 ## Discovery priority order
@@ -17,8 +23,6 @@ A loader/spinner while gitzi auto-discovers available LLM resources and generate
 3. **Not installed** — skip, move to next
 
 ## LLM providers to detect
-
-Scan for these binaries/processes (not exhaustive — expand over time):
 
 | Provider | Binary | How to detect | How to start |
 |----------|--------|---------------|--------------|
@@ -35,14 +39,49 @@ Scan for these binaries/processes (not exhaustive — expand over time):
 - If multiple found in same category → ask user which to use
 - Optimize: prefer already-running over needs-start, prefer local over API-key-required
 
-## After discovery
+## Config architecture (three-layer system)
 
-- Generate `~/.gitzi/config.toml` with detected provider + sensible defaults
-- Test connectivity (attempt a simple `/v1/models` or equivalent health check)
-- If test fails → show error, suggest what to do
-- If test passes → proceed to TUI
+```
+Layer 1: Hardcoded (compiled into binary)
+  → System prompts for each role (user cannot override)
+  → Pipeline structure (columns, roles)
+  → Tool definitions
+  → Safety invariants
+
+Layer 2: Default values (written to config.toml on first creation)
+  → Provider URLs, model names, WIP limits
+  → Reasonable starting values
+
+Layer 3: User config.toml
+  → What the user has explicitly set
+```
+
+**Resolution order:**
+```
+Final = hardcoded_value ?? user_config.field ?? default_value
+```
+
+Hardcoded always wins. User config overrides defaults. Defaults are the fallback.
+
+### Agent resolution
+
+- User config defines `[[agents]]` with: `role`, `model`, `provider`, `api_url`
+- `system_prompt` is NOT user-configurable — it's hardcoded per role (L1)
+- Roles not defined in `[[agents]]` inherit model/provider from the `main` role
+- Invalid roles in config → silently stripped and config.toml rewritten
+
+### Removed fields
+
+- `default_agent` — dead, removed
+- `test_command` — removed; the tester agent discovers how to run tests from the repo
+- `system_prompt` in `[[agents]]` — removed from user-facing config; hardcoded per role
+
+## Config.toml scaffold (generated on first run)
+
+Clean, with section headers. No commented-out fields. No redundant explanations.
+Provider field populated (not commented). Pretty section headers.
 
 ## Open Questions
 
-- Q2: Should bootstrapper auto-discover repo_paths (scan ~/git/, ~/projects/, etc)?
-- Q3–Q20: TBD
+- Q3: Post-discovery — summary or straight to TUI?
+- Q4–Q20: TBD

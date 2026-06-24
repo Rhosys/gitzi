@@ -316,10 +316,7 @@ impl MainAgent {
                 .clone()
                 .unwrap_or_else(|| "http://localhost:1234/v1".to_string()),
             model: def.model.clone(),
-            system_prompt: def
-                .system_prompt
-                .clone()
-                .unwrap_or_else(default_system_prompt),
+            system_prompt: default_system_prompt(),
         }
     }
 

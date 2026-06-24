@@ -25,11 +25,9 @@ pub async fn run(
         .unwrap_or("http://localhost:1234/v1");
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let model = &agent_def.model;
-    let system_prompt = agent_def.system_prompt.as_deref().unwrap_or(
-        "You are a coding agent. Implement the task described below. \
+    let system_prompt = "You are a coding agent. Implement the task described below. \
          Use the provided tools to read, write, and edit files. \
-         Run tests when done. Make the smallest correct change.",
-    );
+         Run tests when done. Make the smallest correct change.";
 
     let tools = coding_agent_tools();
 
