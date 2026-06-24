@@ -1,6 +1,5 @@
 use std::path::Path;
 use tokio::process::Command;
-use crate::config::ResolvedRepoConfig;
 use crate::error::Result;
 
 #[derive(Debug)]
@@ -9,9 +8,9 @@ pub struct TestResult {
     pub output: String,
 }
 
-pub async fn run_tests(repo_config: &ResolvedRepoConfig, repo_root: &Path) -> Result<TestResult> {
+pub async fn run_tests(test_command: &str, repo_root: &Path) -> Result<TestResult> {
     let output = Command::new("sh")
-        .args(["-c", &repo_config.test_command])
+        .args(["-c", test_command])
         .current_dir(repo_root)
         .output()
         .await?;

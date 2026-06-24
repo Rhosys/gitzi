@@ -24,11 +24,9 @@ pub enum MergeStrategy {
 /// Per-repo configuration overrides.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoConfig {
-    pub slug: String,
+    pub path: String,
     #[serde(default)]
     pub merge_strategy: MergeStrategy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_branch: Option<String>,
 }
@@ -36,7 +34,6 @@ pub struct RepoConfig {
 /// Resolved configuration for a repo (defaults applied).
 pub struct ResolvedRepoConfig {
     pub merge_strategy: MergeStrategy,
-    pub test_command: String,
     pub main_branch: String,
 }
 
@@ -128,9 +125,6 @@ pub struct Config {
     #[serde(default)]
     pub agents: Vec<AgentDef>,
 
-    /// When true (default), the main agent can auto-close forks via `gitzi_close_fork`.
-    #[serde(default = "default_fork_auto_close")]
-    pub fork_auto_close: bool,
     #[serde(default)]
     pub integrations: HashMap<String, toml::Value>,
     /// Glob patterns for discovering repos managed by gitzi.
@@ -142,15 +136,12 @@ pub struct Config {
     pub repos: Vec<RepoConfig>,
 }
 
-fn default_fork_auto_close() -> bool { true }
-
 impl Default for Config {
     fn default() -> Self {
         Self {
             wip_limits: WipLimits::default(),
             providers: default_providers(),
             agents: Vec::new(),
-            fork_auto_close: default_fork_auto_close(),
             integrations: HashMap::new(),
             repo_paths: Vec::new(),
             repos: Vec::new(),
@@ -259,14 +250,11 @@ impl Config {
         self.providers.get(name)
     }
 
-    /// Resolve config for a specific repo slug. Falls back to global defaults.
-    pub fn repo_config(&self, slug: &str) -> ResolvedRepoConfig {
-        let repo = self.repos.iter().find(|r| r.slug == slug);
+    /// Resolve config for a specific repo path. Falls back to global defaults.
+    pub fn repo_config(&self, repo_path: &str) -> ResolvedRepoConfig {
+        let repo = self.repos.iter().find(|r| r.path == repo_path);
         ResolvedRepoConfig {
             merge_strategy: repo.map(|r| r.merge_strategy.clone()).unwrap_or_default(),
-            test_command: repo
-                .and_then(|r| r.test_command.clone())
-                .unwrap_or_else(|| "cargo test".to_string()),
             main_branch: repo
                 .and_then(|r| r.main_branch.clone())
                 .unwrap_or_else(|| "main".to_string()),
@@ -287,25 +275,12 @@ fn render_scaffold_toml() -> String {
 # gitzi configuration
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-# ── General ────────────────────────────────────────────────────────
-# Core behavior settings: how gitzi manages conversations and finds
-# your repositories.
 
-# When the agent determines a fork conversation is resolved, it can
-# automatically close it. Set to false if you always want to close
-# forks manually.
-# fork_auto_close = true | false
-fork_auto_close = true
-
-# Glob patterns for discovering git repositories. Any directory
-# matching these patterns that contains a .git/ directory is tracked.
-# repo_paths = ["/home/user/projects/*", "/home/user/work/*"]
-repo_paths = []
-
-# ── WIP Limits ─────────────────────────────────────────────────────
-# Maximum number of tasks allowed in each pipeline column at once.
-# Lower values keep focus tight; raise when you want more parallelism.
-# Columns not listed here use the default of 1.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Kanban
+# Controls how many tasks can be active in each pipeline stage.
+# Lower values keep focus tight; raise when you want parallelism.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [wip_limits]
 designing = 1
 coding = 1
@@ -314,10 +289,13 @@ testing = 1
 auditing = 1
 deploying = 1
 
-# ── Agents ─────────────────────────────────────────────────────────
-# Each agent role handles one pipeline stage. You only need to set
-# model and provider — system prompts are managed by gitzi internally.
-# Roles not listed here inherit their config from the main agent.
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Agents
+# Each role handles one pipeline stage. Set model and provider only
+# — system prompts are managed internally. Undefined roles inherit
+# from the main agent.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 [[agents]]
 role = "main"
@@ -359,27 +337,43 @@ role = "infrarian"
 model = "local-model"
 provider = "lmstudio"
 
-# ── Repos ──────────────────────────────────────────────────────────
-# Per-repository overrides. Each repo is identified by its slug
-# (the last two path components joined by dash, e.g. "email-catcher-backend").
-# Repos not listed here use ff-only merge into the main branch.
-#
-# [[repos]]
-# slug = "my-project"
-# merge_strategy = "ff-only | gitzi-branch | merge-commit | pull-request | push-to-remote"
-# main_branch = "main"
 
-# ── Providers ──────────────────────────────────────────────────────
-# LLM endpoints that agents connect to. Reference a provider by name
-# in the agent's `provider` field above. api_key is stored in plain
-# text here — this file should never be committed to git.
-#
-# [providers.<name>]
-# api_url = "http://..."
-# api_key = "sk-..."
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Providers
+# LLM endpoints that agents connect to. Reference by name in the
+# agent's `provider` field. api_key is plaintext — never commit this.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 [providers.lmstudio]
 api_url = "http://localhost:1234/v1"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Repos
+# Glob patterns for discovering git repositories. Then per-repo
+# overrides for merge behavior.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Directories matching these globs that contain .git/ are tracked.
+repo_paths = []
+
+# Per-repo overrides. Identified by filesystem path.
+# merge_strategy options:
+#   ff-only        — fast-forward merge into main. Fails if not possible.
+#   gitzi-branch   — merge into a local "gitzi" branch (main untouched).
+#   merge-commit   — create a merge commit on main (allows non-linear history).
+#   pull-request   — push branch to remote + create PR via gh/glab CLI.
+#   push-to-remote — push branch to remote, no merge or PR.
+#
+# [[repos]]
+# path = "/home/user/projects/myapp"
+# merge_strategy = "ff-only | gitzi-branch | merge-commit | pull-request | push-to-remote"
+# main_branch = "main"
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# General
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 "#.to_string()
 }
 
