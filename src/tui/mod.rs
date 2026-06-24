@@ -123,6 +123,15 @@ async fn run_event_loop(
             break;
         }
 
+        // Global: Ctrl+Up/Down switch panels and focus them (works in any state)
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            match key.code {
+                KeyCode::Up => { app.prev_panel(); app.panel_focused = true; continue; }
+                KeyCode::Down => { app.next_panel(); app.panel_focused = true; continue; }
+                _ => {}
+            }
+        }
+
         if app.editor_focused {
             if key.modifiers.contains(KeyModifiers::CONTROL)
                 && key.code == KeyCode::Char('s')
@@ -150,7 +159,6 @@ async fn run_event_loop(
                 }
             }
         } else if app.panel_focused {
-            // Right panel is focused — arrows navigate within it
             match key.code {
                 KeyCode::Esc => { app.panel_focused = false; }
                 KeyCode::Up => app.move_up(),
@@ -158,7 +166,6 @@ async fn run_event_loop(
                 KeyCode::Left => app.move_left(),
                 KeyCode::Right => app.move_right(),
                 KeyCode::Enter => {
-                    // On Kanban: Enter on a task jumps to the Task panel
                     if app.panel == Panel::Kanban && app.selected_board_task().is_some() {
                         app.panel = Panel::Task;
                     }
@@ -167,22 +174,13 @@ async fn run_event_loop(
                 _ => {}
             }
         } else {
-            // Chat focused (default) — chars go to chat input
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
-                match key.code {
-                    KeyCode::Up => app.prev_panel(),
-                    KeyCode::Down => app.next_panel(),
-                    _ => {}
-                }
-            } else {
-                match key.code {
-                    KeyCode::Tab => { app.panel_focused = true; }
-                    KeyCode::Esc => app.close_current_fork(),
-                    KeyCode::Enter => app.submit_chat(),
-                    KeyCode::Backspace => { app.chat_input.pop(); }
-                    KeyCode::Char(c) => app.chat_input.push(c),
-                    _ => {}
-                }
+            match key.code {
+                KeyCode::Tab => { app.panel_focused = true; }
+                KeyCode::Esc => app.close_current_fork(),
+                KeyCode::Enter => app.submit_chat(),
+                KeyCode::Backspace => { app.chat_input.pop(); }
+                KeyCode::Char(c) => app.chat_input.push(c),
+                _ => {}
             }
         }
     }
