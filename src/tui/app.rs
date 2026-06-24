@@ -175,6 +175,15 @@ pub struct App {
 
     /// Editor buffer for the right panel (Epic/Task editing)
     pub editor_buffer: String,
+    /// Whether an LLM provider is available (false = hide chat, show error)
+    pub llm_available: bool,
+
+    /// Discovered providers (for first-time status display)
+    pub discovered_providers: Vec<(String, bool)>,  // (name, is_running)
+
+    /// Discovered repo summaries (for first-time status display)
+    pub discovered_repos: Vec<(String, String)>,  // (path, summary)
+
     /// Whether the editor is focused (Tab was pressed)
     pub editor_focused: bool,
     /// Whether the editor has unsaved changes
@@ -251,6 +260,9 @@ impl App {
             status: "connecting…".to_string(),
             cmd_tx,
             connected: false,
+            llm_available: true,
+            discovered_providers: Vec::new(),
+            discovered_repos: Vec::new(),
             editor_buffer: String::new(),
             editor_focused: false,
             editor_dirty: false,

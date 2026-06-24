@@ -173,7 +173,7 @@ async fn run_event_loop(
                 KeyCode::Tab => app.enter_editor(),
                 _ => {}
             }
-        } else {
+        } else if app.llm_available {
             match key.code {
                 KeyCode::Tab => { app.panel_focused = true; }
                 KeyCode::Esc => app.close_current_fork(),
