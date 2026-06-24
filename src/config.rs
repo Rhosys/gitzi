@@ -156,20 +156,7 @@ impl Config {
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
-            let text = render_scaffold_toml();
-            let config: Self = toml::from_str(&text).map_err(|e| {
-                GitziError::Config(format!("scaffold TOML failed to parse: {e}"))
-            })?;
-            config.validate()?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            match atomic_write(&path, &text) {
-                Ok(()) => tracing::info!(path = %path.display(), "wrote default config.toml"),
-                Err(e) => tracing::warn!(path = %path.display(), error = %e,
-                    "could not write default config.toml"),
-            }
-            return Ok(config);
+            return Ok(crate::bootstrap::run()?);
         }
         let text = std::fs::read_to_string(&path)?;
         let mut config: Self = toml::from_str(&text)?;
@@ -198,15 +185,7 @@ impl Config {
         atomic_write(&path, &text)
     }
 
-    /// Force-regenerate config.toml from the scaffold template, overwriting any
-    /// existing file. Used by `gitzi generate-config`.
-    pub fn force_generate(path: &Path) -> Result<()> {
-        let text = render_scaffold_toml();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        atomic_write(path, &text)
-    }
+
 
     /// Validate config on load. Returns error for provider references that don't exist
     /// or unknown WIP column overrides.
@@ -270,6 +249,8 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
 }
 
 /// Build the default config.toml content with explanatory comments.
+/// Only used in tests now that bootstrap generates config dynamically.
+#[cfg(test)]
 fn render_scaffold_toml() -> String {
     r#"# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # gitzi configuration

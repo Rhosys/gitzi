@@ -283,10 +283,12 @@ fn cmd_status() -> Result<()> {
 }
 
 fn cmd_generate_config() -> Result<()> {
-    home::ensure_dirs()?;
+    let config = gitzi::bootstrap::run()?;
     let path = home::global_config_file();
-    Config::force_generate(&path)?;
     println!("Generated config at {}", path.display());
+    println!("  providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));
+    println!("  repo_paths: {}", config.repo_paths.len());
+    println!("  agents: {}", config.agents.len());
     Ok(())
 }
 
