@@ -24,6 +24,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
 // -- Body (conditionally includes fork strip) -------------------------------
 
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.llm_available {
+        // No LLM — full width right panel (no chat, no fork strip)
+        let [right_area, sidebar_area] = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(3),
+        ]).areas(area);
+        draw_right_panel(frame, app, right_area);
+        draw_sidebar(frame, app, sidebar_area);
+        return;
+    }
     if app.fork_stack.is_empty() {
         let [chat_area, right_area, sidebar_area] = Layout::horizontal([
             Constraint::Ratio(35, 100),
@@ -460,6 +470,125 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
 // -- Status card ------------------------------------------------------------
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    if !app.llm_available {
+        draw_status_no_llm(frame, app, area);
+    } else if !app.discovered_providers.is_empty() && app.epics.is_empty() {
+        draw_status_first_time(frame, app, area);
+    } else {
+        draw_status_normal(frame, app, area);
+    }
+}
+
+fn draw_status_no_llm(frame: &mut Frame, _app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Status ")
+        .border_style(Style::default().fg(Color::Red));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  No LLM provider available",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  gitzi needs a local LLM to operate. Install one of:",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  * LM Studio  — lmstudio.ai",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(Span::styled(
+            "  * Ollama     — ollama.com",
+            Style::default().fg(Color::White),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Then restart gitzi.",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn draw_status_first_time(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Status ")
+        .border_style(Style::default().fg(Color::Blue));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Providers
+    lines.push(section_header("LLM Providers"));
+    if app.discovered_providers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  None found",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (name, running) in &app.discovered_providers {
+            let status = if *running { "running" } else { "installed" };
+            let color = if *running { Color::Green } else { Color::Yellow };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {name}"),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    format!("  ({status})"),
+                    Style::default().fg(color),
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+
+    // Repos
+    lines.push(section_header("Repositories"));
+    if app.discovered_repos.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  None discovered",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (path, summary) in &app.discovered_repos {
+            let short_path = path
+                .rsplit('/')
+                .take(2)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>()
+                .join("/");
+            lines.push(Line::from(Span::styled(
+                format!("  {short_path}"),
+                Style::default().fg(Color::Cyan),
+            )));
+            if !summary.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    format!("    {summary}"),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn draw_status_normal(frame: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Status ")

@@ -89,4 +89,28 @@ Provider field populated (not commented). Pretty section headers.
 
 ## Open Questions
 
-- Q5–Q20: TBD
+- Q5: Opening message = "So what are we going to do next?" (after first-time status panel)
+- Q6–Q20: TBD
+
+## Status Panel Forms
+
+The Status panel on the right side has different renderings based on system state:
+
+### Form 1: First time / Just bootstrapped
+Shows:
+- Discovered LLM providers (name, status: running/installed/not-found)
+- Discovered repos with their heuristic summaries (from cache)
+- "So what are we going to do next?" in the chat
+
+### Form 2: No LLM available
+Shows:
+- Error: "No LLM provider found"
+- List of supported providers and how to install them
+- **Chat bar is hidden** — cannot interact without an LLM
+
+### Form 3: Normal operation (has epics/tasks)
+Shows:
+- Current epic + progress
+- Tasks in progress
+- Waiting for you (buffer approvals)
+- Clarification queue count
