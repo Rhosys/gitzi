@@ -273,42 +273,43 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
 
 /// Build the default config.toml content with explanatory comments.
 fn render_scaffold_toml() -> String {
-    let mut out = String::new();
+    r#"# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# gitzi configuration
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    out.push_str("# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-    out.push_str("# gitzi configuration\n");
-    out.push_str("# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
+# ── Fork Behavior ──────────────────────────────────────────────────
+# fork_auto_close = true | false
+fork_auto_close = true
 
-    out.push_str("fork_auto_close = true\n\n");
+# ── Repo Discovery ─────────────────────────────────────────────────
+# repo_paths = ["/home/user/projects/*"]
+repo_paths = []
 
-    // Repo discovery
-    out.push_str("# ── Repo Discovery ─────────────────────────────────────────────────\n");
-    out.push_str("repo_paths = []\n\n");
+# ── WIP Limits ─────────────────────────────────────────────────────
+# [wip_limits]
+# coding = 1..N
+# coding = 2
 
-    // WIP limits
-    out.push_str("# ── WIP Limits ─────────────────────────────────────────────────────\n");
-    out.push_str("# [wip_limits]\n");
-    out.push_str("# coding = 2\n\n");
+# ── Agents ─────────────────────────────────────────────────────────
+# role = "main | coder | reviewer | tester | auditor | designer | prioritizer | infrarian"
+[[agents]]
+role = "main"
+model = "local-model"
+provider = "lmstudio"
 
-    // Providers
-    out.push_str("# ── Providers ──────────────────────────────────────────────────────\n");
-    out.push_str("[providers.lmstudio]\n");
-    out.push_str("api_url = \"http://localhost:1234/v1\"\n\n");
+# ── Repos ──────────────────────────────────────────────────────────
+# [[repos]]
+# slug = "my-project"
+# merge_strategy = "ff-only | gitzi-branch | merge-commit | pull-request | push-to-remote"
+# main_branch = "main"
 
-    // Agents
-    out.push_str("# ── Agents ─────────────────────────────────────────────────────────\n");
-    out.push_str("[[agents]]\n");
-    out.push_str("role = \"main\"\n");
-    out.push_str("model = \"local-model\"\n");
-    out.push_str("provider = \"lmstudio\"\n\n");
-
-    // Repos
-    out.push_str("# ── Repos ──────────────────────────────────────────────────────────\n");
-    out.push_str("# [[repos]]\n");
-    out.push_str("# slug = \"my-project\"\n");
-    out.push_str("# merge_strategy = \"ff-only\"\n");
-
-    out
+# ── Providers ──────────────────────────────────────────────────────
+# [providers.<name>]
+# api_url = "http://..."
+# api_key = "sk-..."
+[providers.lmstudio]
+api_url = "http://localhost:1234/v1"
+"#.to_string()
 }
 
 #[cfg(test)]
