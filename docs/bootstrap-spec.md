@@ -16,6 +16,22 @@ When repos are found, compute the common ancestor path and write that as a glob 
 ### Q3: Post-discovery — summary or straight to TUI?
 Straight into TUI. Discovery results shown on the Status panel (right side).
 
+### Q5: First-time opening message?
+Main agent says: "So what are we going to do next?"
+
+Status panel has multiple forms:
+- **First run (LLM available):** shows discovered providers + discovered repos with summaries
+- **First run (NO LLM):** shows error — "No LLM provider found. Install LM Studio, Ollama, or another provider to continue." Chat bar is HIDDEN.
+- **Normal run:** shows current epic, in-progress tasks, queue counts (existing behavior)
+
+The opening message only fires when there IS an LLM available.
+
+### Q5a: Repo summaries on Status panel?
+Yes. The bootstrapper/daemon calls `repo_cache::populate()` which generates heuristic
+summaries (from package.json, Cargo.toml, README). These summaries are shown on the
+Status panel's first-run view so the user can see what repos were discovered and decide
+what to work on.
+
 ### Q4: Multiple providers found?
 List ALL discovered providers in the `[providers.*]` section of config.toml.
 If multiple providers exist, show a special onboarding selection flow (not the chat)
