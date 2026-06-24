@@ -14,7 +14,13 @@ When repos are found, compute the common ancestor path and write that as a glob 
 `repo_paths`. Only auto-populate if no existing repos are known.
 
 ### Q3: Post-discovery — summary or straight to TUI?
-(Awaiting answer)
+Straight into TUI. Discovery results shown on the Status panel (right side).
+
+### Q4: Multiple providers found?
+List ALL discovered providers in the `[providers.*]` section of config.toml.
+If multiple providers exist, show a special onboarding selection flow (not the chat)
+asking which provider to use. The chosen provider is set in each `[[agents]]` entry.
+Providers section goes at the bottom of config.toml.
 
 ## Discovery priority order
 
@@ -83,5 +89,4 @@ Provider field populated (not commented). Pretty section headers.
 
 ## Open Questions
 
-- Q3: Post-discovery — summary or straight to TUI?
-- Q4–Q20: TBD
+- Q5–Q20: TBD
