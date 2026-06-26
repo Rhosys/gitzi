@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::broadcast;
 use tracing::{error, info};
-use gitzi::cli::{Cli, Commands, EpicCommands, TaskCommands};
+use gitzi::cli::{Cli, Commands, CredsHelperCommands, EpicCommands, TaskCommands};
 use gitzi::config::Config;
 use gitzi::daemon;
 use gitzi::id::new_id;
@@ -51,6 +51,9 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Epic { command: EpicCommands::Create { title, description } }) => {
             cmd_epic_create(&title, description)?;
+        }
+        Some(Commands::CredsHelper { command: CredsHelperCommands::Aws { provider } }) => {
+            cmd_creds_helper_aws(&provider).await?;
         }
     }
 
@@ -322,6 +325,76 @@ fn cmd_task_create(
 
     writer::rebuild_wip()?;
     println!("Created task {id}: {title}");
+    Ok(())
+}
+
+/// Implements the AWS `credential_process` protocol: prints temporary
+/// credentials as JSON on stdout for the named Bedrock provider. Invoked by
+/// the AWS SDK itself (via the profile's `credential_process` line) — never
+/// run directly by the user. Logs into AWS SSO (opening a browser) if no
+/// cached, unexpired session token is available.
+async fn cmd_creds_helper_aws(provider_name: &str) -> Result<()> {
+    let gitzi_home = home::gitzi_home();
+    let config = Config::load(&gitzi_home)?;
+
+    let provider = config
+        .providers
+        .get(provider_name)
+        .with_context(|| format!("no provider named '{provider_name}' in config"))?;
+
+    anyhow::ensure!(
+        provider.kind == gitzi::config::ProviderKind::Bedrock,
+        "provider '{provider_name}' is not a Bedrock provider"
+    );
+
+    let region = provider
+        .region
+        .as_deref()
+        .context("Bedrock provider is missing 'region'")?;
+    let start_url = provider
+        .sso_start_url
+        .as_deref()
+        .context("Bedrock provider is missing 'sso_start_url'")?;
+    let account_id = provider
+        .sso_account_id
+        .as_deref()
+        .context("Bedrock provider is missing 'sso_account_id'")?;
+    let role_name = provider
+        .sso_role_name
+        .as_deref()
+        .context("Bedrock provider is missing 'sso_role_name'")?;
+
+    let token = match gitzi::aws_sso::load_token(start_url) {
+        Some(token) => token,
+        None => {
+            let pending = gitzi::aws_sso::start_device_login(region, start_url).await?;
+            eprintln!(
+                "AWS SSO login required — opening browser. If it doesn't open, visit:\n  {}\nUser code: {}",
+                pending.verification_uri_complete, pending.user_code
+            );
+            gitzi::aws_sso::poll_for_token(&pending, start_url).await?
+        }
+    };
+
+    let creds =
+        gitzi::aws_sso::get_role_credentials(region, &token.access_token, account_id, role_name)
+            .await?;
+
+    let expiration = chrono::DateTime::from_timestamp_millis(creds.expiration_ms)
+        .context("AWS SSO returned an invalid credential expiration")?
+        .to_rfc3339();
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "Version": 1,
+            "AccessKeyId": creds.access_key_id,
+            "SecretAccessKey": creds.secret_access_key,
+            "SessionToken": creds.session_token,
+            "Expiration": expiration,
+        })
+    );
+
     Ok(())
 }
 

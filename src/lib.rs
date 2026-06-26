@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod aws_sso;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
@@ -12,6 +13,7 @@ pub mod mcp;
 pub mod model;
 pub mod pipeline;
 pub mod runner;
+pub mod secrets;
 pub mod state;
 pub mod verifier;
 
