@@ -421,3 +421,17 @@ Approaches considered:
    let the agent `read_file` the ones it wants
 
 Decision: TBD — needs further design.
+
+---
+
+## Bootstrapping
+
+- [ ] Implement first-run bootstrapper TUI flow (loader/spinner during discovery)
+- [ ] Add onboarding selection UI when multiple providers found
+- [ ] Add `design` field to Task model (markdown content from Designer agent)
+- [ ] Worktree cleanup: delete `~/.gitzi/tmp/tasks/<id>/` when task reaches Done
+- [ ] Reviewer rejection → direct to Coding (not CodingBuffer), respects WIP limit
+- [ ] `gitzi skill install/uninstall SKILL` CLI commands
+- [ ] User-authored tools in `~/.gitzi/tools/` (exposed to agents as tool name = filename)
+- [ ] Status panel: first-run view shows providers + repos with summaries
+- [ ] Detect installed-but-not-running providers and display guidance on Status panel

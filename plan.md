@@ -915,3 +915,89 @@ The bootstrapper scans for available LLM providers in priority order:
 
 2. **Q: ...**
    A: (pending)
+
+---
+
+## Bootstrapping
+
+First-time experience when a user runs `gitzi` with no existing `~/.gitzi/`.
+
+### First-run flow
+
+```
+loader/spinner (auto-discover LLM providers + repos)
+    → generate config.toml
+    → if multiple providers: onboarding selection UI
+    → launch TUI (Status panel shows discovery results)
+    → main agent: "So what are we going to do next?"
+```
+
+### Provider discovery priority order
+
+1. **CLI-based LLMs already running** (highest — zero friction)
+2. **Installed but not running** — show guidance, do NOT auto-start
+3. **Not installed** — skip
+
+| Provider | Binary | Detection | Start |
+|----------|--------|-----------|-------|
+| LM Studio | `~/.lmstudio/bin/lms` | `lms server status` | `lms server start` |
+| Ollama | `ollama` | `ollama list` / port 11434 | `ollama serve` |
+| Claude CLI | `claude` | `which claude` | N/A (API key) |
+| OpenCode | `opencode` | `which opencode` | TBD |
+| Goose | `goose` | `which goose` | TBD |
+| Aider | `aider` | `which aider` | TBD |
+
+For "installed but not running": display guidance on Status panel ("X is installed but
+not running. Please start it and load a model."). For "running but no model loaded":
+use `/v1/models` HTTP endpoint to check, then force-load first downloaded text model.
+
+### Config three-layer architecture
+
+```
+Layer 1: Hardcoded (compiled into binary)
+  → System prompts per role (not user-overridable)
+  → Pipeline structure, tool definitions, safety invariants
+
+Layer 2: Default values (written to config.toml on first creation)
+  → Provider URLs, model names, WIP limits
+
+Layer 3: User config.toml
+  → What the user has explicitly set
+```
+
+Resolution: `Final = hardcoded ?? user_config ?? default`
+
+- `system_prompt` is NOT in user config — hardcoded per role (L1)
+- Roles not defined in `[[agents]]` inherit model/provider from `main`
+- Invalid roles → silently stripped, config.toml rewritten
+- Removed fields: `default_agent`, `test_command`, `system_prompt` in `[[agents]]`
+
+### Selection logic
+
+- Single provider found → auto-use, no question
+- Multiple in same category → ask user which to use (onboarding selection flow)
+- Prefer: already-running > needs-start, local > API-key-required
+
+### Status panel states
+
+| State | Rendering |
+|-------|-----------|
+| **First run (LLM available)** | Discovered providers + repos with heuristic summaries |
+| **First run (NO LLM)** | Error + install instructions. Chat bar HIDDEN. |
+| **Normal operation** | Current epic, in-progress tasks, queue counts |
+
+### Agent behavior decisions
+
+- **Epic creation**: conversational (10-20 questions), never one-shot
+- **Task creation**: suggest titles, iterate, create only after user confirms each
+- **Coding agent**: always runs tests+lint, fixes failures, never hands off broken code
+- **Reviewer**: adversarial auditor — assumes coder did everything wrong, structured rejection
+- **Tester role**: removed — merged into Reviewer
+- **Reviewer rejection flow**: findings → human triage in buffer → fix or ignore. Fix → direct to Coding (not CodingBuffer), respects WIP limit
+- **Security Auditor**: separate pass, same triage pattern
+- **Stage skipping**: never. Every task traverses every stage. Agent at each stage decides if there's work.
+- **Infrarian**: validates infrastructure (reliability, durability, cost, non-destructive migrations, enterprise patterns)
+- **Designer output**: UI/UX design, architecture, critical considerations, "how to do the work" → stored in task's `## Design` section (markdown)
+- **Prioritizer scope**: reorders existing tasks only. Epic splitting is exclusively main agent + user conversation.
+- **Skills**: gitzi's own system — not just markdown, can be executables, configs, structured data. Matching logic TBD.
+- **Worktree cleanup**: delete `~/.gitzi/tmp/tasks/<id>/` when task reaches Done (after merge)
