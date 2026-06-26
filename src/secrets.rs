@@ -1,5 +1,6 @@
 //! Secure secret storage for config values that would otherwise sit in
-//! plaintext in `~/.gitzi/config.toml` (provider API keys, AWS SSO tokens).
+//! plaintext in `~/.gitzi/config.toml` (provider API keys, cloud SSO/OAuth
+//! tokens).
 //!
 //! Secrets are stored in the OS keyring (Keychain on macOS, Credential
 //! Manager on Windows, Secret Service on Linux via the `keyring` crate) and
@@ -7,10 +8,39 @@
 //! `keyring:<service>/<account>`. `resolve_secret` transparently follows the
 //! pointer; anything that isn't a `keyring:` pointer is treated as a raw
 //! value (so plaintext values from older configs still work until migrated).
+//!
+//! None of the three backing stores support real hierarchy or structured
+//! values — each is just a flat `(service, account) -> secret string` map
+//! (Linux's Secret Service has "collections", but the `keyring` crate doesn't
+//! expose them, and Windows/macOS have no equivalent). So every entry must
+//! follow one naming convention, built with [`service_name`]:
+//!
+//! ```text
+//! service = "gitzi/<domain>/<kind>"   e.g. "gitzi/aws/sso-token", "gitzi/llm/api-key"
+//! account = <natural unique resource id>   e.g. an SSO start URL, a tenant ID, a provider name
+//! ```
+//!
+//! `domain` is the cloud or category (`aws`, `gcp`, `azure`, `llm`, ...);
+//! `kind` distinguishes secrets with different lifetimes or purposes within
+//! that domain (e.g. a short-lived SSO access token vs. a 90-day-lived OIDC
+//! client registration). Keeping `account` tied to the resource's own
+//! identity — not gitzi's local provider name — lets multiple gitzi-config
+//! providers that share one underlying login (e.g. two Bedrock providers on
+//! the same SSO org) share one cached credential instead of duplicating it.
+//! When one logical secret has multiple fields (a token plus its expiry, a
+//! client ID plus its secret), serialize them together as one JSON blob
+//! under a single entry rather than splitting across several.
 
 use crate::error::{GitziError, Result};
 
 const POINTER_PREFIX: &str = "keyring:";
+
+/// Build a `service` string per gitzi's keyring naming convention — see the
+/// module docs. Use this instead of hand-rolling service strings so every
+/// secret type stays self-describing and consistent across clouds/providers.
+pub fn service_name(domain: &str, kind: &str) -> String {
+    format!("gitzi/{domain}/{kind}")
+}
 
 /// Store `value` in the OS keyring under `service`/`account` and return the
 /// `keyring:<service>/<account>` pointer to put in config.toml in its place.

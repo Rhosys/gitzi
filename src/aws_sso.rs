@@ -21,8 +21,10 @@ use crate::error::{GitziError, Result};
 use crate::secrets;
 
 const CLIENT_NAME: &str = "gitzi";
-const SSO_TOKEN_SERVICE: &str = "gitzi-sso-token";
-const SSO_CLIENT_SERVICE: &str = "gitzi-sso-client";
+// `secrets::service_name` isn't `const fn`, so these mirror its output
+// ("gitzi/<domain>/<kind>") literally rather than calling it.
+const SSO_TOKEN_SERVICE: &str = "gitzi/aws/sso-token";
+const SSO_CLIENT_SERVICE: &str = "gitzi/aws/sso-client";
 
 /// A cached SSO access token plus its expiry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
