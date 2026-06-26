@@ -33,7 +33,7 @@ Per-column work-in-progress limit overrides. Columns not listed keep built-in de
 
 ### `[providers.<name>]`
 Named LLM provider endpoints. Providers found during first-run discovery (see
-`docs/bootstrap.md`) are recorded here automatically with `enabled = false` — use the
+`plan.md`'s "Bootstrapping" section) are recorded here automatically with `enabled = false` — use the
 main agent's `gitzi_rediscover_providers`/`gitzi_activate_provider` chat tools to see
 what's available and turn one on, rather than editing this file by hand.
 - `kind`: `"openai-compatible"` (default) or `"bedrock"`
