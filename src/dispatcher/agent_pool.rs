@@ -356,6 +356,22 @@ async fn handle_agent_result(
         AgentResult::Success { output } => output,
     };
 
+    // Persist agent output on the task so humans can read it in buffer review.
+    {
+        let mut b = board.write().await;
+        if let Some(t) = b.task_mut(&task.id) {
+            t.agent_output = Some(output.clone());
+        }
+    }
+    {
+        let b = board.read().await;
+        if let Some(t) = b.task(&task.id)
+            && let Err(e) = store.write_task(t)
+        {
+            warn!(%role, task_id = %task.id, error = %e, "failed to persist agent_output");
+        }
+    }
+
     // Verifier gate: validate that the agent's output satisfies the task contract
     // before allowing advancement to the next buffer column.
     let diff = {

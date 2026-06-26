@@ -355,9 +355,11 @@ impl App {
     }
 
     /// Get the currently selected task from the board (board_col + board_task).
+    /// Works with visible columns (buffer tasks merged into their preceding work column).
     pub fn selected_board_task(&self) -> Option<&BoardTask> {
-        let tasks = self.tasks_in_column(self.board_col);
-        tasks.get(self.board_task)
+        let vis_idx = self.board_col_visible();
+        let tasks = self.tasks_in_visible_column(vis_idx);
+        tasks.get(self.board_task).copied()
     }
 
     /// Append a log entry (capped at 500 lines).
@@ -368,11 +370,46 @@ impl App {
         }
     }
 
-    /// Get tasks for a given column index.
-    pub fn tasks_in_column(&self, col_idx: usize) -> &[BoardTask] {
-        let col = &column_order()[col_idx];
-        let key = col.to_string();
-        self.board.get(&key).map(|v| v.as_slice()).unwrap_or(&[])
+    /// Map board_col (which indexes all columns) to a visible-only index.
+    /// The board only displays non-buffer columns, so this maps the internal
+    /// col index to the display index used by draw_board.
+    pub fn board_col_visible(&self) -> usize {
+        let visible: Vec<&Column> = column_order()
+            .iter()
+            .filter(|c| !c.is_buffer())
+            .collect();
+        let current_col = &column_order()[self.board_col];
+        // If we're on a buffer column, find its preceding work column
+        let target = if current_col.is_buffer() {
+            current_col.prev().unwrap_or(*current_col)
+        } else {
+            *current_col
+        };
+        visible.iter().position(|c| **c == target).unwrap_or(0)
+    }
+
+    /// Get the combined tasks for a visible column (work column tasks + its
+    /// buffer column tasks). Buffer tasks come first.
+    pub fn tasks_in_visible_column(&self, visible_idx: usize) -> Vec<&BoardTask> {
+        let visible: Vec<&Column> = column_order()
+            .iter()
+            .filter(|c| !c.is_buffer())
+            .collect();
+        let Some(col) = visible.get(visible_idx) else {
+            return Vec::new();
+        };
+        let mut result: Vec<&BoardTask> = Vec::new();
+        // Buffer tasks first
+        if let Some(buffer_col) = col.next().filter(|c| c.is_buffer())
+            && let Some(tasks) = self.board.get(&buffer_col.to_string())
+        {
+            result.extend(tasks.iter());
+        }
+        // Own tasks
+        if let Some(tasks) = self.board.get(&col.to_string()) {
+            result.extend(tasks.iter());
+        }
+        result
     }
 
 
@@ -434,17 +471,20 @@ impl App {
         }
     }
 
-    // Navigation
+    // Navigation — only traverses visible (non-buffer) columns
     pub fn move_left(&mut self) {
-        if self.board_col > 0 {
-            self.board_col -= 1;
+        let vis_idx = self.board_col_visible();
+        if vis_idx > 0 {
+            self.board_col = self.visible_to_all_index(vis_idx - 1);
             self.board_task = 0;
         }
     }
 
     pub fn move_right(&mut self) {
-        if self.board_col < column_order().len() - 1 {
-            self.board_col += 1;
+        let visible_count = self.visible_column_count();
+        let vis_idx = self.board_col_visible();
+        if vis_idx < visible_count - 1 {
+            self.board_col = self.visible_to_all_index(vis_idx + 1);
             self.board_task = 0;
         }
     }
@@ -456,7 +496,8 @@ impl App {
     }
 
     pub fn move_down(&mut self) {
-        let n = self.tasks_in_column(self.board_col).len();
+        let vis_idx = self.board_col_visible();
+        let n = self.tasks_in_visible_column(vis_idx).len();
         if n > 0 && self.board_task < n - 1 {
             self.board_task += 1;
         }
@@ -483,15 +524,33 @@ impl App {
     }
 
     fn clamp_board_nav(&mut self) {
-        if self.board_col >= column_order().len() {
-            self.board_col = column_order().len().saturating_sub(1);
+        let visible_count = self.visible_column_count();
+        let vis_idx = self.board_col_visible();
+        if vis_idx >= visible_count {
+            self.board_col = self.visible_to_all_index(visible_count.saturating_sub(1));
         }
-        let n = self.tasks_in_column(self.board_col).len();
+        let n = self.tasks_in_visible_column(self.board_col_visible()).len();
         if n == 0 {
             self.board_task = 0;
         } else if self.board_task >= n {
             self.board_task = n - 1;
         }
+    }
+
+    /// Number of visible (non-buffer) columns.
+    fn visible_column_count(&self) -> usize {
+        column_order().iter().filter(|c| !c.is_buffer()).count()
+    }
+
+    /// Convert a visible-column index to an all-columns index.
+    fn visible_to_all_index(&self, visible_idx: usize) -> usize {
+        column_order()
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| !c.is_buffer())
+            .nth(visible_idx)
+            .map(|(i, _)| i)
+            .unwrap_or(0)
     }
 
     // ── Editor ────────────────────────────────────────────────────────────────

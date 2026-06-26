@@ -230,12 +230,13 @@ fn main_agent_tools() -> Vec<OaiTool> {
             r#type: "function",
             function: OaiFunctionDef {
                 name: "gitzi_request_rework",
-                description: "Send a task parked in a buffer column back to its previous work column for rework, with feedback for the agent that will redo the work. Only call this once you and the user have explicitly converged on the feedback — you must have restated the user's concern and had them confirm both what they want changed and how strongly they feel about it.",
+                description: "Send a task parked in a buffer column back to a work column for rework, with feedback for the agent that will redo the work. Only call this once you and the user have explicitly converged on the feedback — you must have restated the user's concern and had them confirm both what they want changed and how strongly they feel about it. Use target_column to send to a specific column (e.g. 'coding' from review-buffer when the review is valid and coder needs to fix issues).",
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "task_id": { "type": "string", "description": "The ID of the task currently parked in a buffer column." },
-                        "feedback": { "type": "string", "description": "Concrete, actionable feedback for the agent that will rework this task." }
+                        "feedback": { "type": "string", "description": "Concrete, actionable feedback for the agent that will rework this task." },
+                        "target_column": { "type": "string", "description": "Optional. The kebab-case column name to send the task to (e.g. 'coding', 'reviewing', 'designing'). If omitted, sends back one column (the immediate predecessor)." }
                     },
                     "required": ["task_id", "feedback"]
                 }),
