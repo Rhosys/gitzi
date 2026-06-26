@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use crate::dispatcher::AgentRole;
 use crate::error::{GitziError, Result};
 
@@ -37,12 +38,85 @@ pub struct ResolvedRepoConfig {
     pub main_branch: String,
 }
 
-/// An LLM provider definition (e.g. LM Studio, Ollama, OpenAI-compatible endpoint).
+/// Which kind of model server a `[providers.*]` entry talks to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProviderKind {
+    /// Any server speaking the OpenAI chat-completions wire format (LM Studio,
+    /// Ollama, etc.) — reached over `api_url` with `api_key`.
+    #[default]
+    OpenaiCompatible,
+    /// AWS Bedrock, reached through the AWS SDK credential chain via a named
+    /// profile (see `profile`) rather than a URL/key pair.
+    Bedrock,
+}
+
+/// An LLM provider definition (e.g. LM Studio, Ollama, AWS Bedrock).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderDef {
+    #[serde(default)]
+    pub kind: ProviderKind,
+
+    /// Base URL for OpenAI-compatible providers. Unused for Bedrock.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_url: String,
+    /// API key for OpenAI-compatible providers. May be plaintext (legacy
+    /// configs) or a `keyring:<service>/<account>` pointer — always resolve
+    /// with `crate::secrets::resolve_secret` before use. Unused for Bedrock.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub api_key: String,
+
+    /// AWS region for Bedrock (e.g. "us-east-1").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Named AWS CLI profile carrying credentials for Bedrock. gitzi writes
+    /// this profile into `~/.aws/config` with
+    /// `credential_process = gitzi creds-helper aws --provider <name>`
+    /// pointing back at the keyring-stored SSO session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// AWS SSO start URL — re-used to resume/refresh login and to key the
+    /// keyring entry holding the SSO access token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sso_start_url: Option<String>,
+    /// AWS account ID chosen during SSO role-credential exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sso_account_id: Option<String>,
+    /// AWS SSO permission-set/role name chosen during role-credential exchange.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sso_role_name: Option<String>,
+    /// Bedrock model ID, e.g. "anthropic.claude-sonnet-4-6-v1:0".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
+
+    /// Whether this provider is actually wired up for use. Providers found
+    /// during discovery are recorded here so they show up for the user to
+    /// choose from, but stay `enabled = false` (and unreferenced by any
+    /// agent) until explicitly activated — see `gitzi_rediscover_providers`
+    /// and `gitzi_activate_provider`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ProviderDef {
+    fn default() -> Self {
+        Self {
+            kind: ProviderKind::default(),
+            api_url: String::new(),
+            api_key: String::new(),
+            region: None,
+            profile: None,
+            sso_start_url: None,
+            sso_account_id: None,
+            sso_role_name: None,
+            model_id: None,
+            enabled: true,
+        }
+    }
 }
 
 /// Per-column WIP limit overrides, as configured in `config.toml`:
@@ -107,7 +181,7 @@ fn default_providers() -> HashMap<String, ProviderDef> {
     HashMap::from([
         ("lmstudio".to_string(), ProviderDef {
             api_url: "http://localhost:1234/v1".to_string(),
-            api_key: String::new(),
+            ..ProviderDef::default()
         }),
     ])
 }
@@ -168,12 +242,43 @@ impl Config {
         valid_roles.push("verifier".to_string());
         let before_len = config.agents.len();
         config.agents.retain(|a| valid_roles.contains(&a.role));
-        if config.agents.len() != before_len {
+        let roles_changed = config.agents.len() != before_len;
+
+        let secrets_changed = config.migrate_secrets();
+
+        if roles_changed || secrets_changed {
             let _ = config.write(_repo_root);
         }
 
         config.validate()?;
         Ok(config)
+    }
+
+    /// Move any plaintext `api_key` values into the OS keyring, replacing
+    /// them in-memory with `keyring:<service>/<account>` pointers. Returns
+    /// `true` if anything changed (caller should persist the rewrite).
+    /// Values already in pointer form, or providers that don't use
+    /// `api_key` (Bedrock), are left untouched.
+    fn migrate_secrets(&mut self) -> bool {
+        let mut changed = false;
+        for (name, provider) in self.providers.iter_mut() {
+            if provider.kind != ProviderKind::OpenaiCompatible || provider.api_key.is_empty()
+                || crate::secrets::is_pointer(&provider.api_key)
+            {
+                continue;
+            }
+            let service = format!("gitzi-provider-{name}");
+            match crate::secrets::store_secret(&service, "api-key", &provider.api_key) {
+                Ok(pointer) => {
+                    provider.api_key = pointer;
+                    changed = true;
+                }
+                Err(e) => {
+                    warn!(provider = %name, error = %e, "failed to migrate api_key into the OS keyring — leaving it as plaintext in config.toml");
+                }
+            }
+        }
+        changed
     }
 
     pub fn write(&self, _repo_root: &Path) -> Result<()> {
@@ -227,6 +332,17 @@ impl Config {
     /// Resolve a provider by name, if it exists.
     pub fn resolve_provider(&self, name: &str) -> Option<&ProviderDef> {
         self.providers.get(name)
+    }
+
+    /// Resolve a provider's `api_key` field to its real secret value
+    /// (following a `keyring:` pointer if present). Falls back to the raw
+    /// stored value on lookup failure so callers degrade rather than panic;
+    /// the underlying connection attempt will simply fail with a clear error.
+    pub fn resolve_provider_api_key(provider: &ProviderDef) -> String {
+        crate::secrets::resolve_secret(&provider.api_key).unwrap_or_else(|e| {
+            warn!(error = %e, "failed to resolve provider api_key from keyring");
+            provider.api_key.clone()
+        })
     }
 
     /// Resolve config for a specific repo path. Falls back to global defaults.
@@ -450,7 +566,7 @@ mod tests {
                 "lmstudio".to_string(),
                 ProviderDef {
                     api_url: "http://localhost:1234/v1".to_string(),
-                    api_key: String::new(),
+                    ..ProviderDef::default()
                 },
             )]),
             ..Config::default()
@@ -467,6 +583,7 @@ mod tests {
                 ProviderDef {
                     api_url: "http://localhost:1234/v1".to_string(),
                     api_key: "sk-test".to_string(),
+                    ..ProviderDef::default()
                 },
             )]),
             ..Config::default()
@@ -477,5 +594,44 @@ mod tests {
         let provider = parsed.providers.get("lmstudio").unwrap();
         assert_eq!(provider.api_url, "http://localhost:1234/v1");
         assert_eq!(provider.api_key, "sk-test");
+    }
+
+    #[test]
+    fn bedrock_provider_round_trips_through_toml() {
+        let config = Config {
+            providers: HashMap::from([(
+                "bedrock".to_string(),
+                ProviderDef {
+                    kind: ProviderKind::Bedrock,
+                    region: Some("us-east-1".to_string()),
+                    profile: Some("gitzi-bedrock".to_string()),
+                    model_id: Some("anthropic.claude-sonnet-4-6-v1:0".to_string()),
+                    enabled: false,
+                    ..ProviderDef::default()
+                },
+            )]),
+            ..Config::default()
+        };
+
+        let text = toml::to_string_pretty(&config).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        let provider = parsed.providers.get("bedrock").unwrap();
+        assert_eq!(provider.kind, ProviderKind::Bedrock);
+        assert_eq!(provider.region.as_deref(), Some("us-east-1"));
+        assert_eq!(provider.profile.as_deref(), Some("gitzi-bedrock"));
+        assert!(!provider.enabled);
+    }
+
+    #[test]
+    fn legacy_provider_toml_without_new_fields_still_parses() {
+        // Configs written before this change have no `kind`/`enabled` keys.
+        let text = r#"
+            [providers.lmstudio]
+            api_url = "http://localhost:1234/v1"
+        "#;
+        let config: Config = toml::from_str(text).unwrap();
+        let provider = config.providers.get("lmstudio").unwrap();
+        assert_eq!(provider.kind, ProviderKind::OpenaiCompatible);
+        assert!(provider.enabled);
     }
 }

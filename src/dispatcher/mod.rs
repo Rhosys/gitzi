@@ -711,6 +711,173 @@ impl Dispatcher {
         Ok(persisted)
     }
 
+    /// Re-scan this machine for LLM providers and AWS Bedrock/SSO access,
+    /// merging any newly-found ones into `~/.gitzi/config.toml` as disabled
+    /// candidates (never auto-activated — see `bootstrap` module docs).
+    /// Reads and writes the config file directly rather than `self.config`,
+    /// since the latter is an immutable snapshot for the life of the daemon.
+    /// Returns a human-readable summary for the main agent to relay.
+    pub async fn gitzi_rediscover_providers(&self) -> anyhow::Result<String> {
+        let gitzi_home = crate::state::home::gitzi_home();
+        let mut config = Config::load(&gitzi_home)?;
+
+        let discovered = crate::bootstrap::discover_providers();
+        let mut added = Vec::new();
+        for provider in &discovered {
+            if config.providers.contains_key(&provider.name) {
+                continue;
+            }
+            let mut def = crate::config::ProviderDef {
+                kind: provider.kind,
+                enabled: false,
+                ..crate::config::ProviderDef::default()
+            };
+            match provider.kind {
+                crate::config::ProviderKind::OpenaiCompatible => {
+                    def.api_url = provider.api_url.clone();
+                }
+                crate::config::ProviderKind::Bedrock => {
+                    def.region = provider.region.clone();
+                    def.sso_start_url = provider.sso_start_url.clone();
+                }
+            }
+            config.providers.insert(provider.name.clone(), def);
+            added.push(provider.name.clone());
+        }
+
+        if !added.is_empty() {
+            config.write(&gitzi_home)?;
+            info!(added = ?added, "rediscovered new providers — merged into config.toml as disabled");
+        }
+
+        if discovered.is_empty() {
+            return Ok("No LLM providers or AWS Bedrock access discovered on this machine.".to_string());
+        }
+
+        let lines: Vec<String> = discovered.iter().map(|p| {
+            let enabled = config.providers.get(&p.name).map(|d| d.enabled).unwrap_or(false);
+            let status = if p.model_loaded {
+                "running, model loaded"
+            } else if p.running {
+                "running, no model loaded"
+            } else if p.installed {
+                "installed, not running"
+            } else {
+                "not installed"
+            };
+            let kind = match p.kind {
+                crate::config::ProviderKind::OpenaiCompatible => "openai-compatible",
+                crate::config::ProviderKind::Bedrock => "bedrock",
+            };
+            format!("- {} [{kind}] {status}, enabled={enabled}", p.name)
+        }).collect();
+
+        let added_note = if added.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nNewly discovered: {}", added.join(", "))
+        };
+
+        Ok(format!("Discovered providers:\n{}{added_note}", lines.join("\n")))
+    }
+
+    /// Activate a discovered provider so agents actually use it. For
+    /// OpenAI-compatible providers this is immediate. For Bedrock, this may
+    /// span multiple calls — see the `gitzi_activate_provider` tool
+    /// description. Operates on `~/.gitzi/config.toml` directly; the caller
+    /// must tell the user a gitzi restart is needed for the rewired agent to
+    /// take effect (the running daemon's `self.config` is immutable).
+    pub async fn gitzi_activate_provider(
+        &self,
+        name: &str,
+        account_id: Option<String>,
+        role_name: Option<String>,
+    ) -> anyhow::Result<String> {
+        let gitzi_home = crate::state::home::gitzi_home();
+        let mut config = Config::load(&gitzi_home)?;
+
+        let mut provider = config.providers.get(name).cloned().ok_or_else(|| {
+            anyhow::anyhow!("no provider named '{name}' — run gitzi_rediscover_providers first")
+        })?;
+
+        if provider.kind == crate::config::ProviderKind::OpenaiCompatible {
+            provider.enabled = true;
+            config.providers.insert(name.to_string(), provider);
+            wire_main_agent(&mut config, name);
+            config.write(&gitzi_home)?;
+            return Ok(format!(
+                "ok: activated '{name}' and wired it into the main agent. Restart gitzi for this to take effect."
+            ));
+        }
+
+        // Bedrock: AWS SSO login, then account/role selection, then validate.
+        let region = provider.region.clone().ok_or_else(|| {
+            anyhow::anyhow!("provider '{name}' has no AWS region configured — set one in config.toml under [providers.{name}] first")
+        })?;
+        let start_url = provider.sso_start_url.clone().ok_or_else(|| {
+            anyhow::anyhow!("provider '{name}' has no sso_start_url configured — set one in config.toml under [providers.{name}] first")
+        })?;
+
+        let token = match crate::aws_sso::load_token(&start_url) {
+            Some(t) => t,
+            None => {
+                let pending = crate::aws_sso::start_device_login(&region, &start_url).await?;
+                info!(provider = %name, "AWS SSO device login started — waiting for user approval in browser");
+                crate::aws_sso::poll_for_token(&pending, &start_url).await?
+            }
+        };
+
+        let Some(account_id) = account_id else {
+            let accounts = crate::aws_sso::list_accounts(&region, &token.access_token).await?;
+            if accounts.is_empty() {
+                anyhow::bail!("AWS SSO login succeeded but no accounts are assigned to this user");
+            }
+            let listing = accounts
+                .iter()
+                .map(|a| format!("- {} ({}) <{}>", a.account_id, a.account_name, a.email_address))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Ok(format!(
+                "AWS SSO login confirmed. Choose an account and call gitzi_activate_provider again with name='{name}' and account_id set:\n{listing}"
+            ));
+        };
+
+        let Some(role_name) = role_name else {
+            let roles = crate::aws_sso::list_account_roles(&region, &token.access_token, &account_id).await?;
+            if roles.is_empty() {
+                anyhow::bail!("no SSO roles assigned to account '{account_id}'");
+            }
+            let listing = roles
+                .iter()
+                .map(|r| format!("- {}", r.role_name))
+                .collect::<Vec<_>>()
+                .join("\n");
+            return Ok(format!(
+                "Choose a role and call gitzi_activate_provider again with name='{name}', account_id='{account_id}', and role_name set:\n{listing}"
+            ));
+        };
+
+        // Validate the chosen account/role actually exchange for credentials.
+        crate::aws_sso::get_role_credentials(&region, &token.access_token, &account_id, &role_name).await?;
+
+        crate::aws_sso::write_credential_process_profile(name, name, &region)?;
+
+        provider.enabled = true;
+        provider.sso_account_id = Some(account_id.clone());
+        provider.sso_role_name = Some(role_name.clone());
+        provider.profile = Some(name.to_string());
+        if provider.model_id.is_none() {
+            provider.model_id = Some("anthropic.claude-sonnet-4-6-v1:0".to_string());
+        }
+        config.providers.insert(name.to_string(), provider);
+        wire_main_agent(&mut config, name);
+        config.write(&gitzi_home)?;
+
+        Ok(format!(
+            "ok: activated Bedrock provider '{name}' (account {account_id}, role {role_name}) and wired it into the main agent. Restart gitzi for this to take effect."
+        ))
+    }
+
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
     /// and signal agents whose columns contain work.
     pub async fn start(config: Config) -> anyhow::Result<Self> {
@@ -1347,6 +1514,34 @@ impl Dispatcher {
                 format!("ok: fork closed — {summary}")
             }
 
+            "gitzi_rediscover_providers" => match self.gitzi_rediscover_providers().await {
+                Ok(summary) => summary,
+                Err(e) => format!("error: {e}"),
+            },
+
+            "gitzi_activate_provider" => {
+                let name = args
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    return "error: missing required argument: name".to_string();
+                }
+                let account_id = args
+                    .get("account_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let role_name = args
+                    .get("role_name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                match self.gitzi_activate_provider(&name, account_id, role_name).await {
+                    Ok(summary) => summary,
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
             "gitzi_search_kb" => {
                 let query = args
                     .get("query")
@@ -1495,6 +1690,23 @@ impl Dispatcher {
                 }
             }
         }
+    }
+}
+
+/// Point the `main` role's `[[agents]]` entry at `provider_name`, creating
+/// the entry if one doesn't exist yet. Other roles keep falling back to
+/// `main` (or the local `claude` CLI) per the agent-resolution rules in
+/// `config.rs` — only `main` is rewired here.
+fn wire_main_agent(config: &mut Config, provider_name: &str) {
+    if let Some(agent) = config.agents.iter_mut().find(|a| a.role == "main") {
+        agent.provider = Some(provider_name.to_string());
+        agent.api_url = None;
+    } else {
+        config.agents.push(crate::config::AgentDef {
+            role: "main".to_string(),
+            provider: Some(provider_name.to_string()),
+            ..crate::config::AgentDef::default()
+        });
     }
 }
 

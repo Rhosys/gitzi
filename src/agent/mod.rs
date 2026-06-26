@@ -1,4 +1,5 @@
 pub mod backend;
+mod bedrock_agent;
 pub mod classifier;
 pub mod claude_code;
 pub mod coding_agent;
@@ -9,11 +10,12 @@ mod prompt;
 mod rig_agent;
 
 pub use backend::{AgentBackend, AgentResult, RunContext};
+pub use bedrock_agent::BedrockAgent;
 pub use claude_code::ClaudeCodeCli;
 pub use main_agent::{ChatTurn, MainAgent, OaiMessage, OaiTool, ToolCallRequest};
 pub use rig_agent::RigAgent;
 
-use crate::config::{AgentDef, Config};
+use crate::config::{AgentDef, Config, ProviderKind};
 use crate::dispatcher::AgentRole;
 use crate::error::Result;
 use crate::model::Task;
@@ -24,6 +26,8 @@ pub enum PipelineAgent {
     ClaudeCode(ClaudeCodeCli),
     /// Talks directly to a `[providers.*]` entry over its OpenAI-compatible API (e.g. LM Studio).
     Rig(RigAgent),
+    /// Talks to AWS Bedrock via a `[providers.*]` entry with `kind = "bedrock"`.
+    Bedrock(BedrockAgent),
     /// Direct LLM tool-calling loop with sandboxed filesystem tools.
     CodingLoop(AgentDef),
 }
@@ -33,6 +37,7 @@ impl AgentBackend for PipelineAgent {
         match self {
             PipelineAgent::ClaudeCode(b) => b.run(task, ctx).await,
             PipelineAgent::Rig(b) => b.run(task, ctx).await,
+            PipelineAgent::Bedrock(b) => b.run(task, ctx).await,
             PipelineAgent::CodingLoop(def) => {
                 let task_prompt = format!(
                     "Task: {}\n\nDescription: {}\n\nWork in the current directory. \
@@ -51,24 +56,34 @@ impl AgentBackend for PipelineAgent {
 }
 
 /// Build a runnable pipeline agent from its definition. If `def.provider` names
-/// an entry in `config.providers`, the agent talks to that endpoint directly via
-/// `rig`; otherwise it falls back to the local `claude` CLI subprocess.
+/// an enabled entry in `config.providers`, the agent talks to that endpoint
+/// directly via `rig` (OpenAI-compatible) or `rig-bedrock` (AWS Bedrock);
+/// otherwise it falls back to the local `claude` CLI subprocess. A provider
+/// that exists but isn't `enabled` (discovered but not yet activated) is
+/// treated the same as no provider at all.
 pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
     match def.provider.as_ref().and_then(|name| config.providers.get(name)) {
-        Some(provider) => {
+        Some(provider) if provider.enabled => {
             // System prompt comes from the hardcoded role default, not config.
             let role_prompt = AgentRole::all()
                 .iter()
                 .find(|r| r.to_string() == def.role)
                 .map(|r| r.default_system_prompt().to_string());
-            PipelineAgent::Rig(RigAgent::new(
-                provider.api_url.clone(),
-                provider.api_key.clone(),
-                def.model.clone(),
-                role_prompt,
-            ))
+            match provider.kind {
+                ProviderKind::Bedrock => PipelineAgent::Bedrock(BedrockAgent::new(
+                    provider.profile.clone().unwrap_or_default(),
+                    provider.model_id.clone().unwrap_or_else(|| def.model.clone()),
+                    role_prompt,
+                )),
+                ProviderKind::OpenaiCompatible => PipelineAgent::Rig(RigAgent::new(
+                    provider.api_url.clone(),
+                    Config::resolve_provider_api_key(provider),
+                    def.model.clone(),
+                    role_prompt,
+                )),
+            }
         }
-        None => PipelineAgent::CodingLoop(def.clone()),
+        _ => PipelineAgent::CodingLoop(def.clone()),
     }
 }
 
@@ -98,7 +113,7 @@ mod tests {
                 "lmstudio".to_string(),
                 ProviderDef {
                     api_url: "http://localhost:1234/v1".to_string(),
-                    api_key: String::new(),
+                    ..ProviderDef::default()
                 },
             )]),
             ..Config::default()
@@ -114,5 +129,42 @@ mod tests {
         let def = AgentDef { provider: Some("nonexistent".to_string()), ..AgentDef::default() };
 
         assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
+    }
+
+    #[test]
+    fn build_agent_with_disabled_provider_falls_back_to_coding_loop() {
+        let config = Config {
+            providers: HashMap::from([(
+                "lmstudio".to_string(),
+                ProviderDef {
+                    api_url: "http://localhost:1234/v1".to_string(),
+                    enabled: false,
+                    ..ProviderDef::default()
+                },
+            )]),
+            ..Config::default()
+        };
+        let def = AgentDef { provider: Some("lmstudio".to_string()), ..AgentDef::default() };
+
+        assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
+    }
+
+    #[test]
+    fn build_agent_with_bedrock_provider_uses_bedrock() {
+        let config = Config {
+            providers: HashMap::from([(
+                "bedrock".to_string(),
+                ProviderDef {
+                    kind: crate::config::ProviderKind::Bedrock,
+                    profile: Some("gitzi-bedrock".to_string()),
+                    model_id: Some("anthropic.claude-sonnet-4-6-v1:0".to_string()),
+                    ..ProviderDef::default()
+                },
+            )]),
+            ..Config::default()
+        };
+        let def = AgentDef { provider: Some("bedrock".to_string()), ..AgentDef::default() };
+
+        assert!(matches!(build_agent(&config, &def), PipelineAgent::Bedrock(_)));
     }
 }
