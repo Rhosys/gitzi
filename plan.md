@@ -915,3 +915,107 @@ The bootstrapper scans for available LLM providers in priority order:
 
 2. **Q: ...**
    A: (pending)
+
+---
+
+## Bootstrapping
+
+First-time experience when a user runs `gitzi` with no existing `~/.gitzi/`.
+
+### First-run flow
+
+```
+quick non-blocking scan (discover LLM providers + repos)
+    → generate config.toml (providers recorded, none enabled/wired)
+    → launch TUI immediately (Status panel shows discovery results)
+    → main agent: "So what are we going to do next?"
+```
+
+Discovery never starts a server, loads a model, or opens a browser for SSO login —
+onboarding must never block waiting on any of those. Every provider found is written to
+`[providers.*]` with `enabled = false` and not wired into `[[agents]]`; every role falls
+back to the local `claude` CLI subprocess until the user explicitly activates a provider
+through the main agent's `gitzi_rediscover_providers`/`gitzi_activate_provider` tools
+(see `src/bootstrap.rs`, `src/agent/main_agent.rs`).
+
+### Provider discovery priority order
+
+Priority only affects *display* sort on the Status panel — discovery never auto-starts,
+auto-loads a model, or auto-activates a provider:
+
+1. **Running with a model loaded** — zero friction to activate
+2. **Running but no model loaded**
+3. **Installed but not running**
+4. **Not installed** — skipped, not recorded
+
+| Provider | Detected via | Kind |
+|----------|---------------|------|
+| LM Studio | `~/.lmstudio/bin/lms` exists; port 1234 + `/v1/models` for running/model-loaded | `openai-compatible` |
+| Ollama | `which ollama`; port 11434 + `/v1/models` for running/model-loaded | `openai-compatible` |
+| AWS Bedrock | `[sso-session NAME]` blocks in `~/.aws/config` (one candidate per session), else a generic candidate if the `aws` CLI is installed | `bedrock` |
+
+Claude CLI/OpenCode/Goose/Aider are not auto-discovered providers — they remain
+available as the implicit fallback (the local `claude` CLI subprocess) for any role not
+wired to a provider.
+
+For "installed but not running": Status panel shows "X is installed but not running.
+Start it and load a model, then ask me to rediscover providers." For "running but no
+model loaded": same guidance, using `/v1/models` to check what's loaded (more reliable
+than the CLI) — never force-loads a model.
+
+### Config three-layer architecture
+
+```
+Layer 1: Hardcoded (compiled into binary)
+  → System prompts per role (not user-overridable)
+  → Pipeline structure, tool definitions, safety invariants
+
+Layer 2: Default values (written to config.toml on first creation)
+  → Provider URLs, model names, WIP limits
+
+Layer 3: User config.toml
+  → What the user has explicitly set
+```
+
+Resolution: `Final = hardcoded ?? user_config ?? default`
+
+- `system_prompt` is NOT in user config — hardcoded per role (L1)
+- Roles not defined in `[[agents]]` inherit model/provider from `main`
+- Invalid roles → silently stripped, config.toml rewritten
+- Removed fields: `default_agent`, `test_command`, `system_prompt` in `[[agents]]`
+
+### Activation logic
+
+Nothing is enabled or wired into `[[agents]]` by discovery — activation is always an
+explicit, user-initiated step via chat:
+
+- 1 or many providers found → all listed, none enabled; the user picks which (if any) to
+  activate.
+- Activating an OpenAI-compatible provider (LM Studio, Ollama) is immediate.
+- Activating Bedrock walks the user through AWS SSO device-authorization login, then
+  account and role selection, across multiple `gitzi_activate_provider` calls.
+- A `gitzi` restart is required after activation for the rewired agent to take effect.
+
+### Status panel states
+
+| State | Rendering |
+|-------|-----------|
+| **First run (LLM available)** | Discovered providers + repos with heuristic summaries |
+| **First run (NO LLM)** | Error + install instructions. Chat bar HIDDEN. |
+| **Normal operation** | Current epic, in-progress tasks, queue counts |
+
+### Agent behavior decisions
+
+- **Epic creation**: conversational (10-20 questions), never one-shot
+- **Task creation**: suggest titles, iterate, create only after user confirms each
+- **Coding agent**: always runs tests+lint, fixes failures, never hands off broken code
+- **Reviewer**: adversarial auditor — assumes coder did everything wrong, structured rejection
+- **Tester role**: removed — merged into Reviewer
+- **Reviewer rejection flow**: findings → human triage in buffer → fix or ignore. Fix → direct to Coding (not CodingBuffer), respects WIP limit
+- **Security Auditor**: separate pass, same triage pattern
+- **Stage skipping**: never. Every task traverses every stage. Agent at each stage decides if there's work.
+- **Infrarian**: validates infrastructure (reliability, durability, cost, non-destructive migrations, enterprise patterns)
+- **Designer output**: UI/UX design, architecture, critical considerations, "how to do the work" → stored in task's `## Design` section (markdown)
+- **Prioritizer scope**: reorders existing tasks only. Epic splitting is exclusively main agent + user conversation.
+- **Skills**: gitzi's own system — not just markdown, can be executables, configs, structured data. Matching logic TBD.
+- **Worktree cleanup**: delete `~/.gitzi/tmp/tasks/<id>/` when task reaches Done (after merge)
