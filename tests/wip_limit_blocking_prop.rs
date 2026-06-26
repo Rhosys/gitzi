@@ -16,7 +16,6 @@ fn arb_work_column_with_next() -> impl Strategy<Value = Column> {
         Just(Column::Designing),
         Just(Column::Coding),
         Just(Column::Reviewing),
-        Just(Column::Testing),
         Just(Column::Auditing),
         Just(Column::Deploying),
     ]

@@ -27,7 +27,6 @@ fn arb_buffer_column() -> impl Strategy<Value = Column> {
     prop_oneof![
         Just(Column::CodingBuffer),
         Just(Column::ReviewBuffer),
-        Just(Column::TestBuffer),
         Just(Column::SecurityAuditBuffer),
         Just(Column::DeploymentBuffer),
     ]

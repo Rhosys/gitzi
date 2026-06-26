@@ -20,7 +20,6 @@ fn arb_work_column() -> impl Strategy<Value = Column> {
         Just(Column::Designing),
         Just(Column::Coding),
         Just(Column::Reviewing),
-        Just(Column::Testing),
         Just(Column::Auditing),
         Just(Column::Deploying),
     ]
@@ -33,7 +32,6 @@ fn arb_role() -> impl Strategy<Value = AgentRole> {
         Just(AgentRole::Designer),
         Just(AgentRole::Coder),
         Just(AgentRole::Reviewer),
-        Just(AgentRole::Tester),
         Just(AgentRole::Auditor),
         Just(AgentRole::Infrarian),
     ]
