@@ -8,7 +8,6 @@ fn valid_happy_path() {
         Stage::Prioritized,
         Stage::InProgress,
         Stage::WaitingForReview,
-        Stage::InTesting,
         Stage::Done,
     ];
     for window in path.windows(2) {
@@ -22,11 +21,6 @@ fn rejection_is_valid() {
 }
 
 #[test]
-fn test_failure_is_valid() {
-    validate_transition(&Stage::InTesting, &Stage::InProgress).unwrap();
-}
-
-#[test]
 fn skipping_stages_is_invalid() {
     assert!(validate_transition(&Stage::Backlog, &Stage::InProgress).is_err());
     assert!(validate_transition(&Stage::Prioritized, &Stage::Done).is_err());
@@ -35,7 +29,7 @@ fn skipping_stages_is_invalid() {
 
 #[test]
 fn backwards_is_invalid_except_rejection() {
-    assert!(validate_transition(&Stage::Done, &Stage::InTesting).is_err());
+    assert!(validate_transition(&Stage::Done, &Stage::WaitingForReview).is_err());
     assert!(validate_transition(&Stage::InProgress, &Stage::Prioritized).is_err());
 }
 

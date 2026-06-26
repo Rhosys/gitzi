@@ -6,21 +6,18 @@ use gitzi::dispatcher::Column;
 use gitzi::model::task::{Stage, Task};
 use proptest::prelude::*;
 
-/// Strategy that generates an arbitrary `Stage` value (all 17 variants).
+/// Strategy that generates an arbitrary `Stage` value (all 14 variants).
 fn arb_stage() -> impl Strategy<Value = Stage> {
     prop_oneof![
         Just(Stage::Backlog),
         Just(Stage::InProgress),
         Just(Stage::WaitingForReview),
-        Just(Stage::InTesting),
         Just(Stage::Prioritized),
         Just(Stage::Designing),
         Just(Stage::CodingBuffer),
         Just(Stage::Coding),
         Just(Stage::ReviewBuffer),
         Just(Stage::Reviewing),
-        Just(Stage::TestBuffer),
-        Just(Stage::Testing),
         Just(Stage::SecurityAuditBuffer),
         Just(Stage::Auditing),
         Just(Stage::DeploymentBuffer),
@@ -59,7 +56,7 @@ proptest! {
     /// Property 1 (extended): For column-aligned stages, `Stage::from(col)` round-trips
     /// through `to_column()` back to the same column.
     #[test]
-    fn column_aligned_stage_roundtrips(col_idx in 0usize..13) {
+    fn column_aligned_stage_roundtrips(col_idx in 0usize..11) {
         let col = Column::all()[col_idx];
         let stage: Stage = col.into();
         let mapped_col = stage.to_column();
@@ -99,7 +96,7 @@ proptest! {
     /// - `prev()` of the later equals the earlier
     /// This proves the ordering forms a strict total order (a chain).
     #[test]
-    fn adjacent_columns_linked_by_next_prev(idx in 0usize..12) {
+    fn adjacent_columns_linked_by_next_prev(idx in 0usize..10) {
         let all = Column::all();
         let earlier = all[idx];
         let later = all[idx + 1];

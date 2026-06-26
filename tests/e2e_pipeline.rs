@@ -60,6 +60,7 @@ fn test_config(port: u16) -> Config {
             ProviderDef {
                 api_url: api_url.clone(),
                 api_key: String::new(),
+                ..ProviderDef::default()
             },
         )]),
         agents: vec![
@@ -132,6 +133,7 @@ async fn create_epic_and_task_via_dispatcher() {
             epic.id.clone(),
             "Implement login".to_string(),
             Some("Add OAuth2 login endpoint".to_string()),
+            None,
             None,
         )
         .await

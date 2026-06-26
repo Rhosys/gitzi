@@ -33,7 +33,6 @@ fn all_buffer_columns() -> Vec<Column> {
     vec![
         Column::CodingBuffer,
         Column::ReviewBuffer,
-        Column::TestBuffer,
         Column::SecurityAuditBuffer,
         Column::DeploymentBuffer,
     ]
@@ -44,7 +43,6 @@ fn arb_buffer_column() -> impl Strategy<Value = Column> {
     prop_oneof![
         Just(Column::CodingBuffer),
         Just(Column::ReviewBuffer),
-        Just(Column::TestBuffer),
         Just(Column::SecurityAuditBuffer),
         Just(Column::DeploymentBuffer),
     ]
@@ -58,7 +56,6 @@ fn arb_work_column_with_next_buffer() -> impl Strategy<Value = Column> {
         Just(Column::Designing),
         Just(Column::Coding),
         Just(Column::Reviewing),
-        Just(Column::Testing),
         Just(Column::Auditing),
         Just(Column::Deploying),
     ]
