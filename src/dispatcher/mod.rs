@@ -468,10 +468,9 @@ impl Dispatcher {
                     repo_config.main_branch
                 );
                 crate::state::repo_cache::increment_commits(
-                    &repo_path.file_name()
+                    repo_path.file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("default")
-                        .to_string()
                 );
             }
             Ok(MergeOutcome::Skipped(reason)) => {

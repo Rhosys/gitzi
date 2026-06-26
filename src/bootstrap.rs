@@ -105,21 +105,21 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
 
     // LM Studio
     let lms_path = dirs::home_dir().map(|h| h.join(".lmstudio/bin/lms"));
-    if let Some(ref path) = lms_path {
-        if path.exists() {
-            let running = check_port_open(1234);
-            let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
-            providers.push(DiscoveredProvider {
-                name: "lmstudio".to_string(),
-                kind: ProviderKind::OpenaiCompatible,
-                api_url: "http://localhost:1234/v1".to_string(),
-                region: None,
-                sso_start_url: None,
-                running,
-                model_loaded,
-                installed: true,
-            });
-        }
+    if let Some(ref path) = lms_path
+        && path.exists()
+    {
+        let running = check_port_open(1234);
+        let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
+        providers.push(DiscoveredProvider {
+            name: "lmstudio".to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_url: "http://localhost:1234/v1".to_string(),
+            region: None,
+            sso_start_url: None,
+            running,
+            model_loaded,
+            installed: true,
+        });
     }
 
     // Ollama
@@ -206,10 +206,10 @@ fn parse_aws_sso_sessions(path: &std::path::Path) -> Vec<(String, String, String
     let mut region = String::new();
 
     let flush = |current: &mut Option<String>, start_url: &mut String, region: &mut String, sessions: &mut Vec<(String, String, String)>| {
-        if let Some(name) = current.take() {
-            if !start_url.is_empty() {
-                sessions.push((name, start_url.clone(), region.clone()));
-            }
+        if let Some(name) = current.take()
+            && !start_url.is_empty()
+        {
+            sessions.push((name, start_url.clone(), region.clone()));
         }
         start_url.clear();
         region.clear();
@@ -222,13 +222,13 @@ fn parse_aws_sso_sessions(path: &std::path::Path) -> Vec<(String, String, String
             current = Some(name.trim().to_string());
         } else if line.starts_with('[') {
             flush(&mut current, &mut start_url, &mut region, &mut sessions);
-        } else if current.is_some() {
-            if let Some((key, val)) = line.split_once('=') {
-                match key.trim() {
-                    "sso_start_url" => start_url = val.trim().to_string(),
-                    "sso_region" => region = val.trim().to_string(),
-                    _ => {}
-                }
+        } else if current.is_some()
+            && let Some((key, val)) = line.split_once('=')
+        {
+            match key.trim() {
+                "sso_start_url" => start_url = val.trim().to_string(),
+                "sso_region" => region = val.trim().to_string(),
+                _ => {}
             }
         }
     }
@@ -353,14 +353,12 @@ pub fn discover_repo_paths() -> Vec<String> {
     }
 
     // Also check if cwd contains a .git
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join(".git").is_dir() {
-            if let Some(parent) = cwd.parent() {
-                if !found_parents.iter().any(|p| p == parent) {
-                    found_parents.push(parent.to_path_buf());
-                }
-            }
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd.join(".git").is_dir()
+        && let Some(parent) = cwd.parent()
+        && !found_parents.iter().any(|p| p == parent)
+    {
+        found_parents.push(parent.to_path_buf());
     }
 
     // Convert to glob patterns

@@ -559,21 +559,20 @@ impl App {
     pub fn enter_editor(&mut self) {
         match self.panel {
             Panel::Epic => {
-                if let Some(epic_status) = self.current_epic_status() {
-                    if let Some(epic) =
+                if let Some(epic_status) = self.current_epic_status()
+                    && let Some(epic) =
                         self.epics.iter().find(|e| e.title == epic_status.title)
-                    {
-                        let desc = epic.description.as_deref().unwrap_or("");
-                        self.editor_buffer = format!(
-                            "# Title\n{}\n\n# Description\n{}",
-                            epic.title, desc
-                        );
-                        self.editor_target_id = Some(epic.id.clone());
-                        self.editor_target_type = Some(EditorTarget::Epic);
-                        self.editor_focused = true;
-                        self.editor_dirty = false;
-                        self.editor_esc_warned = false;
-                    }
+                {
+                    let desc = epic.description.as_deref().unwrap_or("");
+                    self.editor_buffer = format!(
+                        "# Title\n{}\n\n# Description\n{}",
+                        epic.title, desc
+                    );
+                    self.editor_target_id = Some(epic.id.clone());
+                    self.editor_target_type = Some(EditorTarget::Epic);
+                    self.editor_focused = true;
+                    self.editor_dirty = false;
+                    self.editor_esc_warned = false;
                 }
             }
             Panel::Task => {
