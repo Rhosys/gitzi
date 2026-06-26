@@ -148,6 +148,11 @@ pub struct Task {
     pub repo: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_feedback: Option<String>,
+    /// The last agent's raw output text (review findings, design doc, etc.).
+    /// Populated by the agent pool after each successful run so humans can
+    /// inspect what the agent produced when reviewing buffer items.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_output: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resume_summary: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -174,6 +179,7 @@ impl Task {
             branch: None,
             repo: None,
             agent_feedback: None,
+            agent_output: None,
             resume_summary: None,
             created_at: now,
             updated_at: now,

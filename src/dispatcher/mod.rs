@@ -342,7 +342,8 @@ impl Dispatcher {
     /// agent. Invoked via the main agent's `gitzi_request_rework` tool once the
     /// human and main agent have converged on what feedback to send.
     pub async fn reject(&self, task_id: &str, feedback: String) -> anyhow::Result<()> {
-        let prev_col = {
+        // Default: send back to the previous column (one step back)
+        let target_col = {
             let board = self.board.read().await;
             let current_col = board.column_of(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
@@ -352,11 +353,32 @@ impl Dispatcher {
             current_col.prev()
                 .ok_or_else(|| anyhow::anyhow!("buffer column {current_col} has no previous column"))?
         };
+        self.reject_to(task_id, target_col, feedback).await
+    }
 
-        // Write to board: advance to prev, set priority, store feedback, record history
+    /// Send a task back to a specific target work column with feedback.
+    /// Used when the human decides to skip intermediate columns (e.g. ReviewBuffer → Coding
+    /// instead of ReviewBuffer → Reviewing, for "review valid, send back to coder").
+    pub async fn reject_to(&self, task_id: &str, target_col: Column, feedback: String) -> anyhow::Result<()> {
+        // Validate: task must be in a buffer column
+        {
+            let board = self.board.read().await;
+            let current_col = board.column_of(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
+            if !current_col.is_buffer() {
+                anyhow::bail!("task '{task_id}' is in {current_col}, not a buffer column");
+            }
+        }
+
+        // Validate: target must be a work column (has an agent role)
+        if target_col.agent_role().is_none() {
+            anyhow::bail!("target column {target_col} is not a work column");
+        }
+
+        // Write to board: advance to target, set priority, store feedback, record history
         {
             let mut board = self.board.write().await;
-            board.advance(task_id, prev_col)?;
+            board.advance(task_id, target_col)?;
             board.set_priority(task_id, 0);
             let task = board.task_mut(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
@@ -364,7 +386,7 @@ impl Dispatcher {
             task.history.push(crate::model::task::HistoryEntry::Rejection {
                 at: chrono::Utc::now(),
                 feedback: feedback.clone(),
-                returned_to: prev_col.into(),
+                returned_to: target_col.into(),
             });
         }
 
@@ -395,12 +417,12 @@ impl Dispatcher {
         // Emit event
         self.event_bus.emit(DispatchEvent::HumanRejectionReceived {
             task_id: task_id.to_string(),
-            returned_to: prev_col,
+            returned_to: target_col,
             feedback,
         });
 
-        // Signal the agent for the previous work column
-        if let Some(role) = prev_col.agent_role() {
+        // Signal the agent for the target work column
+        if let Some(role) = target_col.agent_role() {
             self.agent_pool.signal(role);
         }
 
@@ -1262,10 +1284,24 @@ impl Dispatcher {
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("")
                     .to_string();
+                let target_column = args
+                    .get("target_column")
+                    .and_then(serde_json::Value::as_str);
                 if task_id.is_empty() || feedback.is_empty() {
                     return "error: missing required argument: task_id or feedback".to_string();
                 }
-                match self.reject(&task_id, feedback).await {
+                let result = if let Some(col_name) = target_column {
+                    use serde::de::value::{Error as DeError, StrDeserializer};
+                    let deser: StrDeserializer<DeError> =
+                        serde::de::value::StrDeserializer::new(col_name);
+                    match Column::deserialize(deser) {
+                        Ok(col) => self.reject_to(&task_id, col, feedback).await,
+                        Err(_) => Err(anyhow::anyhow!("unknown target_column: {col_name}")),
+                    }
+                } else {
+                    self.reject(&task_id, feedback).await
+                };
+                match result {
                     Ok(()) => "ok: task sent back for rework".to_string(),
                     Err(e) => format!("error: {e}"),
                 }
