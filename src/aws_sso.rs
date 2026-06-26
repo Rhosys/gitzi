@@ -5,9 +5,14 @@
 //!
 //! The SSO access token is cached in the OS keyring (via `crate::secrets`)
 //! keyed by the SSO start URL, so gitzi only needs to re-open a browser when
-//! that token actually expires (SSO sessions are typically valid for hours).
-//! Short-lived role credentials are never cached — `gitzi creds-helper aws`
-//! re-exchanges them on every invocation via `get_role_credentials`.
+//! that token actually expires — its lifetime is set by the org's IAM
+//! Identity Center session-duration setting (15 minutes to 90 days, 8 hours
+//! by default), not by gitzi. The OIDC client registration (`client_id`/
+//! `client_secret` from `register_client`) is cached the same way, keyed by
+//! start URL, since AWS fixes its lifetime at 90 days and recommends reusing
+//! it rather than re-registering on every login. Short-lived role credentials
+//! are never cached — `gitzi creds-helper aws` re-exchanges them on every
+//! invocation via `get_role_credentials`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -17,6 +22,7 @@ use crate::secrets;
 
 const CLIENT_NAME: &str = "gitzi";
 const SSO_TOKEN_SERVICE: &str = "gitzi-sso-token";
+const SSO_CLIENT_SERVICE: &str = "gitzi-sso-client";
 
 /// A cached SSO access token plus its expiry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +33,23 @@ pub struct SsoToken {
 
 impl SsoToken {
     pub fn is_expired(&self) -> bool {
+        Utc::now() >= self.expires_at
+    }
+}
+
+/// A cached OIDC client registration from `register_client`. AWS fixes
+/// `clientSecretExpiresAt` at 90 days regardless of the org's session-duration
+/// setting, and recommends persisting it for reuse rather than re-registering
+/// on every login.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClientRegistration {
+    client_id: String,
+    client_secret: String,
+    expires_at: DateTime<Utc>,
+}
+
+impl ClientRegistration {
+    fn is_expired(&self) -> bool {
         Utc::now() >= self.expires_at
     }
 }
@@ -93,23 +116,43 @@ async fn sso_client(region: &str) -> aws_sdk_sso::Client {
 pub async fn start_device_login(region: &str, start_url: &str) -> Result<PendingLogin> {
     let client = ssooidc_client(region).await;
 
-    let registered = client
-        .register_client()
-        .client_name(CLIENT_NAME)
-        .client_type("public")
-        .scopes("sso:account:access")
-        .send()
-        .await
-        .map_err(|e| GitziError::Config(format!("AWS SSO register_client failed: {e}")))?;
+    let (client_id, client_secret) = match load_client_registration(start_url) {
+        Some(reg) => (reg.client_id, reg.client_secret),
+        None => {
+            let registered = client
+                .register_client()
+                .client_name(CLIENT_NAME)
+                .client_type("public")
+                .scopes("sso:account:access")
+                .send()
+                .await
+                .map_err(|e| GitziError::Config(format!("AWS SSO register_client failed: {e}")))?;
 
-    let client_id = registered
-        .client_id()
-        .ok_or_else(|| GitziError::Config("AWS SSO register_client returned no client_id".into()))?
-        .to_string();
-    let client_secret = registered
-        .client_secret()
-        .ok_or_else(|| GitziError::Config("AWS SSO register_client returned no client_secret".into()))?
-        .to_string();
+            let client_id = registered
+                .client_id()
+                .ok_or_else(|| GitziError::Config("AWS SSO register_client returned no client_id".into()))?
+                .to_string();
+            let client_secret = registered
+                .client_secret()
+                .ok_or_else(|| GitziError::Config("AWS SSO register_client returned no client_secret".into()))?
+                .to_string();
+            let expires_at = DateTime::from_timestamp(registered.client_secret_expires_at(), 0)
+                .ok_or_else(|| {
+                    GitziError::Config("AWS SSO register_client returned an invalid expiry".into())
+                })?;
+
+            store_client_registration(
+                start_url,
+                &ClientRegistration {
+                    client_id: client_id.clone(),
+                    client_secret: client_secret.clone(),
+                    expires_at,
+                },
+            )?;
+
+            (client_id, client_secret)
+        }
+    };
 
     let device_auth = client
         .start_device_authorization()
@@ -222,6 +265,23 @@ pub fn load_token(start_url: &str) -> Option<SsoToken> {
     let raw = secrets::resolve_secret(&pointer).ok()?;
     let token: SsoToken = serde_json::from_str(&raw).ok()?;
     if token.is_expired() { None } else { Some(token) }
+}
+
+/// Cache an OIDC client registration in the OS keyring, keyed by SSO start URL.
+fn store_client_registration(start_url: &str, reg: &ClientRegistration) -> Result<()> {
+    let serialized = serde_json::to_string(reg)
+        .map_err(|e| GitziError::Config(format!("failed to serialize SSO client registration: {e}")))?;
+    secrets::store_secret(SSO_CLIENT_SERVICE, start_url, &serialized)?;
+    Ok(())
+}
+
+/// Load a previously cached OIDC client registration for `start_url`, if any
+/// and if not expired.
+fn load_client_registration(start_url: &str) -> Option<ClientRegistration> {
+    let pointer = format!("keyring:{SSO_CLIENT_SERVICE}/{start_url}");
+    let raw = secrets::resolve_secret(&pointer).ok()?;
+    let reg: ClientRegistration = serde_json::from_str(&raw).ok()?;
+    if reg.is_expired() { None } else { Some(reg) }
 }
 
 /// List the AWS accounts assigned to the user behind `access_token`.
