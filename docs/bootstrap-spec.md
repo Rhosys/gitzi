@@ -115,6 +115,41 @@ Provider field populated (not commented). Pretty section headers.
   Use `/v1/models` HTTP endpoint to check what's loaded (more reliable than CLI).
 - **Running with model** → ready to go.
 
+### Q7–Q10: Pipeline agent behavior
+- Epic creation: conversational (10-20 questions), never one-shot
+- Task creation: suggest titles, iterate, only create after user confirms each
+- Coding agent: always runs tests+lint, fixes failures, never hands off broken code
+- Reviewer (adversarial auditor): assumes coder did everything wrong, structured rejection
+
+### Q11–Q14: Pipeline structure
+- Tester role removed — merged into Reviewer as adversarial auditor
+- Reviewer findings → surfaced to human in buffer → human triages → fix or ignore
+- If fix needed → task goes directly to Coding (not CodingBuffer)
+- Security Auditor: separate pass, same pattern (findings → human triage)
+- Never skip stages. Every task goes through every stage. Agent decides if there's work.
+
+### Q15–Q16: Infrarian + stage skipping
+- Infrarian validates infrastructure: reliability, durability, cost, non-destructive
+  migrations, enterprise patterns. Follows infrastructure skills.
+- Never skip stages. The agent at each stage decides what to do.
+
+### Q17: Agent context injection
+- Skills system needed (gitzi's own, not Kiro's)
+- Skills are NOT just markdown — can be executables, configs, structured data
+- Open design question: how to match skills to tasks (see Design section in todo.md)
+
+### Q18: Designer agent output
+- Produces: UI/UX design, architecture, critical considerations, "how to do the work"
+- Output goes in the `## Design` section of the task TOML (markdown content)
+- Coder reads the Design section to know HOW to implement
+
+### Q19: Prioritizer scope
+- Only reorders existing tasks
+- Epic splitting is exclusively a main agent + user conversation
+
+### Q20: Worktree cleanup
+- Delete `~/.gitzi/tmp/tasks/<id>/` when task reaches Done (after merge)
+
 ## Status Panel Forms
 
 The Status panel on the right side has different renderings based on system state:
