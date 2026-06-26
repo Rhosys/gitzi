@@ -440,3 +440,37 @@ Decision: TBD — needs further design.
 - [ ] Reviewer rejection → direct to Coding (not CodingBuffer), respects WIP limit
 - [ ] `gitzi skill install/uninstall SKILL` CLI commands
 - [ ] User-authored tools in `~/.gitzi/tools/` (exposed to agents as tool name = filename)
+
+---
+
+## Multi-cloud credential providers (Azure, GCP)
+
+AWS Bedrock support (`src/aws_sso.rs`) is the first cloud provider; Azure (Azure OpenAI /
+Azure AI Foundry) and GCP (Vertex AI) should follow the same shape — drive an interactive
+login, cache whatever the SDK returns in the OS keyring under `gitzi/<domain>/...`
+(`secrets::service_name`), never cache the short-lived bearer/role token.
+
+- [ ] Azure OpenAI / Azure AI Foundry provider + login flow
+- [ ] GCP Vertex AI provider + login flow
+
+### Implementation notes — candidate crates
+
+| Cloud | Drives a *new* interactive login (≈ `aws_sso.rs`) | Reads an *existing* CLI login (≈ bootstrap.rs's AWS-cache detection) |
+|---|---|---|
+| Azure | [`azure-identity-helpers`](https://github.com/demoray/azure-identity-helpers) (unofficial, v0.2.0) — `DeviceCodeCredential` implements the device-code flow on top of official [`azure_identity`](https://github.com/azure/azure-sdk-for-rust) (v1.0.0, Microsoft-official) | `azure-identity-helpers`'s `AzureAuthCliCredential` / `default_azure_credential`, or `azure_identity`'s `AzureCliCredential` |
+| GCP | [`yup-oauth2`](https://github.com/dermesser/yup-oauth2) (v12.1.2, mature) — implements the actual OAuth2 device/installed-app flows | [`gcp_auth`](https://github.com/djc/gcp_auth) (v0.12.7) — reads `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`'s cached file, the metadata server, or shells out to `gcloud`; **no Windows support**, drives no login of its own |
+
+Architectural differences from AWS to account for when designing these (confirmed from
+crate source, not just docs):
+
+- **No dynamic client self-registration.** AWS SSO's `register_client` (cached at
+  `gitzi/aws/sso-client`) has no Azure/GCP equivalent — both require a pre-registered
+  app/client ID configured ahead of time. Nothing analogous to cache there.
+- **No mandatory role-exchange step.** AWS needs SSO login *then* a separate
+  `get_role_credentials` (STS-style) call to scope to an account/role. Azure and GCP skip
+  that — the OAuth access token from login is usable directly as the API bearer token;
+  scoping happens server-side via Azure RBAC role assignments or (optionally) GCP
+  service-account impersonation, not a client-side exchange call.
+- Both crates keep tokens **in-memory only** — gitzi would own persisting whatever they
+  return into the keyring (`gitzi/azure/oauth-token` keyed by tenant ID, `gitzi/gcp/oauth-token`
+  keyed by account email), same shape as `aws_sso.rs`'s `store_token`/`load_token`.
