@@ -808,10 +808,10 @@ fn parse_chat_ctx(encoded: &str) -> (String, String) {
             if let Some(ref col) = ctx.selected_column {
                 parts.push(format!("column={col}"));
             }
-            if let Some(ref title) = ctx.selected_task_title {
-                if let Some(ref id) = ctx.selected_task_id {
-                    parts.push(format!("selected_task=\"{title}\" ({id})"));
-                }
+            if let Some(ref title) = ctx.selected_task_title
+                && let Some(ref id) = ctx.selected_task_id
+            {
+                parts.push(format!("selected_task=\"{title}\" ({id})"));
             }
             if ctx.pending_questions > 0 {
                 parts.push(format!("pending_questions={}", ctx.pending_questions));

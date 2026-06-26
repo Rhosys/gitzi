@@ -411,12 +411,12 @@ fn create_pull_request(
         .current_dir(repo_path)
         .output();
 
-    if let Ok(output) = gh_result {
-        if output.status.success() {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            tracing::info!(url = %url, "PR created via gh CLI");
-            return Ok(MergeOutcome::Merged);
-        }
+    if let Ok(output) = gh_result
+        && output.status.success()
+    {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        tracing::info!(url = %url, "PR created via gh CLI");
+        return Ok(MergeOutcome::Merged);
     }
 
     // Try glab mr create (GitLab CLI)
@@ -428,12 +428,12 @@ fn create_pull_request(
         .current_dir(repo_path)
         .output();
 
-    if let Ok(output) = glab_result {
-        if output.status.success() {
-            let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            tracing::info!(url = %url, "MR created via glab CLI");
-            return Ok(MergeOutcome::Merged);
-        }
+    if let Ok(output) = glab_result
+        && output.status.success()
+    {
+        let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        tracing::info!(url = %url, "MR created via glab CLI");
+        return Ok(MergeOutcome::Merged);
     }
 
     // Neither CLI available — branch is pushed, user can create PR manually

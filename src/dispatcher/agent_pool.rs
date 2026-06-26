@@ -85,6 +85,7 @@ impl AgentPool {
     /// 5. On pass: WIP check → advance task to next buffer, emit TaskStageChanged then AgentCompleted
     /// 6. On fail: retry once with verifier feedback, escalate to human review if still failing
     /// 7. On blocked: set blocked flag, emit AgentBlocked, sleep until unblocked
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         event_bus: Arc<EventBus>,
         board: Arc<RwLock<KanbanBoard>>,
@@ -431,7 +432,7 @@ async fn handle_agent_result(
             } else {
                 warn!(%role, task_id = %task.id, "retry also failed verification — escalating");
                 escalate_verification_failure(
-                    handle, event_bus, task, review_queue, &reason, &store,
+                    handle, event_bus, task, review_queue, &reason, store,
                 ).await;
             }
         }

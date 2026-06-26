@@ -187,23 +187,21 @@ fn resolve_path(relative: &str, root: &Path) -> Option<PathBuf> {
     // Prevent path traversal above the worktree root
     match path.canonicalize() {
         Ok(canonical) => {
-            if let Ok(root_canonical) = root.canonicalize() {
-                if canonical.starts_with(&root_canonical) {
-                    return Some(canonical);
-                }
+            if let Ok(root_canonical) = root.canonicalize()
+                && canonical.starts_with(&root_canonical)
+            {
+                return Some(canonical);
             }
             None
         }
         Err(_) => {
             // File might not exist yet (for write_file) — check parent
-            if let Some(parent) = path.parent() {
-                if let Ok(parent_canonical) = parent.canonicalize() {
-                    if let Ok(root_canonical) = root.canonicalize() {
-                        if parent_canonical.starts_with(&root_canonical) {
-                            return Some(path);
-                        }
-                    }
-                }
+            if let Some(parent) = path.parent()
+                && let Ok(parent_canonical) = parent.canonicalize()
+                && let Ok(root_canonical) = root.canonicalize()
+                && parent_canonical.starts_with(&root_canonical)
+            {
+                return Some(path);
             }
             None
         }

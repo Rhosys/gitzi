@@ -183,39 +183,39 @@ async fn cmd_log() -> Result<()> {
             frame.render_widget(Paragraph::new(visible), inner);
         })?;
 
-        if ct_event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = ct_event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+        if ct_event::poll(std::time::Duration::from_millis(50))?
+            && let Event::Key(key) = ct_event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Char('f') => {
+                    auto_follow = !auto_follow;
                 }
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('f') => {
-                        auto_follow = !auto_follow;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        auto_follow = false;
-                        scroll_offset = scroll_offset.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        auto_follow = false;
-                        if scroll_offset < log_lines.len().saturating_sub(1) {
-                            scroll_offset += 1;
-                        }
-                    }
-                    KeyCode::PageUp => {
-                        auto_follow = false;
-                        scroll_offset = scroll_offset.saturating_sub(20);
-                    }
-                    KeyCode::PageDown => {
-                        if scroll_offset + 20 >= log_lines.len() {
-                            auto_follow = true;
-                        }
-                        scroll_offset =
-                            (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
-                    }
-                    _ => {}
+                KeyCode::Up | KeyCode::Char('k') => {
+                    auto_follow = false;
+                    scroll_offset = scroll_offset.saturating_sub(1);
                 }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    auto_follow = false;
+                    if scroll_offset < log_lines.len().saturating_sub(1) {
+                        scroll_offset += 1;
+                    }
+                }
+                KeyCode::PageUp => {
+                    auto_follow = false;
+                    scroll_offset = scroll_offset.saturating_sub(20);
+                }
+                KeyCode::PageDown => {
+                    if scroll_offset + 20 >= log_lines.len() {
+                        auto_follow = true;
+                    }
+                    scroll_offset =
+                        (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
+                }
+                _ => {}
             }
         }
     }

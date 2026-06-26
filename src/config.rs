@@ -230,7 +230,7 @@ impl Config {
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
-            return Ok(crate::bootstrap::run()?);
+            return crate::bootstrap::run();
         }
         let text = std::fs::read_to_string(&path)?;
         let mut config: Self = toml::from_str(&text)?;
