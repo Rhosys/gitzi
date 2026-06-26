@@ -374,3 +374,50 @@ Full codebase audit against the intended agile SDLC harness. Organized by severi
       verifying UI changes (e.g. before/after a layout fix) without manual review. Decide
       whether this is a dev-only tool, a CI check, or both, and which capture mechanism
       (headless browser for the dashboard, terminal capture for the TUI) fits each.
+
+---
+
+## Design: Skills & Dynamic Tools
+
+### Skills system (`gitzi skill install/uninstall SKILL`)
+
+- Skills are installable convention/instruction docs that get injected into agent contexts
+- Stored at `~/.gitzi/skills/`
+- Public registry of community-contributed skills (mechanism TBD)
+- Each skill has metadata: keywords, file patterns, languages it applies to
+- At dispatch time, gitzi matches task/repo characteristics to skill metadata and injects relevant ones
+- Skills are NOT tied to Kiro, not tied to any IDE — gitzi's own skill system
+- `gitzi skill install <name>` — downloads from registry to `~/.gitzi/skills/`
+- `gitzi skill uninstall <name>` — removes it
+- Skills are injected as context (paths listed in system prompt, agent reads via `read_file` if needed)
+
+### Dynamic tools (WRONG DIRECTION — DO NOT IMPLEMENT AS DESCRIBED)
+
+Previous idea: "when gitzi observes repeated patterns in agent work, crystallize that
+into a first-class tool." This is wrong because:
+- It conflates observation with tool creation (who validates the tool is correct?)
+- It assumes patterns are stable (they may be one-off)
+- It creates magic that the user didn't ask for
+- Tools should be explicitly authored, not auto-generated from behavior
+
+The CORRECT direction for expanding gitzi's toolset:
+- When an agent calls a tool that doesn't exist → create a review item asking the user
+  whether to build it (already implemented)
+- User-authored tools live in `~/.gitzi/tools/` as executable scripts
+- gitzi exposes them to agents automatically (tool name = filename, description from
+  a header comment in the script)
+- No auto-generation. User decides. User builds. Or user tells gitzi to build it as a task.
+
+### Agent context injection (how agents find conventions)
+
+Open question: how does gitzi decide which skills/docs to inject into an agent's context
+at dispatch time?
+
+Approaches considered:
+1. Hardcoded mapping (label → skill file) — too narrow, assumes MY skills exist for everyone
+2. Metadata matching (skill declares keywords, repo has labels) — more general
+3. Agent discovers on its own via `list_steering` tool — slower but most flexible
+4. Combination: inject a short manifest of available skills (names + descriptions),
+   let the agent `read_file` the ones it wants
+
+Decision: TBD — needs further design.
