@@ -267,8 +267,8 @@ impl Config {
             {
                 continue;
             }
-            let service = format!("gitzi-provider-{name}");
-            match crate::secrets::store_secret(&service, "api-key", &provider.api_key) {
+            let service = crate::secrets::service_name("llm", "api-key");
+            match crate::secrets::store_secret(&service, name, &provider.api_key) {
                 Ok(pointer) => {
                     provider.api_key = pointer;
                     changed = true;
