@@ -31,11 +31,22 @@ Per-column work-in-progress limit overrides. Columns not listed keep built-in de
 - Type: table (column name → integer)
 - Example: `coding = 2`
 
+### `fallback_provider`
+The distinguished "control-plane" provider chosen during bootstrap setup
+(see ADR-002). It powers the setup experience and the recovery conversation
+when the main agent's own provider is absent or not responding. Set
+automatically on the first provider activation; names a key in `[providers]`.
+- Type: string (optional)
+- You normally never edit this by hand — it's written during setup.
+
 ### `[providers.<name>]`
-Named LLM provider endpoints. Providers found during first-run discovery (see
-`plan.md`'s "Bootstrapping" section) are recorded here automatically with `enabled = false` — use the
-main agent's `gitzi_rediscover_providers`/`gitzi_activate_provider` chat tools to see
-what's available and turn one on, rather than editing this file by hand.
+Named LLM provider endpoints. On first run gitzi has no valid provider and
+enters **setup mode** (ADR-002): the daemon scans for LM Studio / Ollama / AWS
+SSO sessions and the TUI shows a one-step picker to activate one. The chosen
+provider is wired into the main agent and recorded as `fallback_provider`.
+Providers discovered later are recorded here with `enabled = false` — use the
+main agent's `gitzi_rediscover_providers`/`gitzi_activate_provider` chat tools to
+see what's available and turn one on, rather than editing this file by hand.
 - `kind`: `"openai-compatible"` (default) or `"bedrock"`
 - `api_url`: OpenAI-compatible endpoint URL. Unused for `bedrock`.
 - `api_key`: API key for OpenAI-compatible providers — plaintext or a

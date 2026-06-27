@@ -53,6 +53,8 @@ async fn run_client(
                 let _ = msg_tx.send(DaemonMessage::Connected);
                 run_board_phase(&path, &mut cmd_rx, &msg_tx).await;
                 let _ = msg_tx.send(DaemonMessage::Disconnected("reconnecting…".to_string()));
+                // Brief backoff so a fast-failing board protocol can't hot-spin.
+                sleep(Duration::from_millis(200)).await;
             }
         }
     }

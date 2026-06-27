@@ -90,9 +90,23 @@ pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
     }
 }
 
-/// Build the main chat harness agent from its definition.
-pub fn build_main_agent(def: &AgentDef) -> MainAgent {
-    MainAgent::new(def)
+/// Build the main chat harness agent from its definition, resolving a named
+/// `[providers.*]` reference into the concrete endpoint URL the harness talks
+/// to. Without this the harness would silently fall back to its localhost
+/// default even after the user activated a provider (e.g. Ollama on :11434).
+/// The harness speaks OpenAI-compatible HTTP; Bedrock-backed main agents are
+/// not yet supported here (pipeline agents handle Bedrock separately).
+pub fn build_main_agent(config: &Config, def: &AgentDef) -> MainAgent {
+    let mut def = def.clone();
+    if def.api_url.is_none()
+        && let Some(provider) = def.provider.as_ref().and_then(|n| config.providers.get(n))
+        && provider.enabled
+        && provider.kind == ProviderKind::OpenaiCompatible
+        && !provider.api_url.is_empty()
+    {
+        def.api_url = Some(provider.api_url.clone());
+    }
+    MainAgent::new(&def)
 }
 
 #[cfg(test)]

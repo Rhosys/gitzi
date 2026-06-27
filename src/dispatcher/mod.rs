@@ -238,6 +238,11 @@ pub struct Dispatcher {
     pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
     /// The main coordination agent that drives the chat interface.
     pub main_agent: MainAgent,
+    /// The distinguished fallback "control-plane" brain (ADR-002). Built only
+    /// when a fallback provider is configured *and* distinct from main's own
+    /// provider, so it can run the recovery conversation when main is down.
+    /// `None` when main already is the fallback (recovery couldn't help).
+    pub fallback_agent: Option<MainAgent>,
     /// Token store for MCP sub-agent authorization.
     pub token_store: Arc<TokenStore>,
     /// Persistence layer for tasks, epics, and review items.
@@ -887,9 +892,11 @@ impl Dispatcher {
             Arc::new(Mutex::new(messages))
         };
 
-        // 11. Build main agent from config
+        // 11. Build main agent from config, plus the fallback control-plane
+        // brain used to drive recovery when main's own provider is down.
         let main_agent_def = config.resolve_agent("main");
-        let main_agent = build_main_agent(&main_agent_def);
+        let main_agent = build_main_agent(&config, &main_agent_def);
+        let fallback_agent = build_fallback_agent(&config);
 
         let dispatcher = Self {
             event_bus,
@@ -901,6 +908,7 @@ impl Dispatcher {
             wip_waiting,
             chat_history,
             main_agent,
+            fallback_agent,
             token_store,
             store,
             chat_stack: Mutex::new(Vec::new()),
@@ -1146,13 +1154,38 @@ impl Dispatcher {
             true,
         );
 
-        // 6. Tool-calling loop
+        // 6. Tool-calling loop. If main's provider is down, fall back *once* to
+        // the control-plane brain to run a recovery conversation (ADR-002) —
+        // never a silent swap for the user's real request.
+        let mut active_agent = &self.main_agent;
+        let mut recovered = false;
         let final_response = loop {
-            let (raw_assistant, turn) = self
-                .main_agent
-                .turn(&messages, &tools)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let (raw_assistant, turn) = match active_agent.turn(&messages, &tools).await {
+                Ok(t) => t,
+                Err(e) => {
+                    if !recovered
+                        && let Some(fallback) = self.fallback_agent.as_ref()
+                    {
+                        warn!(error = %e, "main provider failed — handing off to the fallback brain for recovery");
+                        recovered = true;
+                        active_agent = fallback;
+                        messages.push(OaiMessage {
+                            role: "system".to_string(),
+                            content: Some(format!(
+                                "The main model provider is not responding ({e}). You are the \
+                                 fallback assistant. Tell the user plainly that their main model \
+                                 is unavailable, then ask what they want to do — retry, switch to \
+                                 a different provider, or keep going with you. Do not attempt their \
+                                 original request as if nothing happened."
+                            )),
+                            tool_calls: vec![],
+                            tool_call_id: None,
+                        });
+                        continue;
+                    }
+                    return Err(anyhow::anyhow!("{e}"));
+                }
+            };
 
             match turn {
                 ChatTurn::Text(text) => break text,
@@ -1613,6 +1646,33 @@ impl Dispatcher {
 /// the entry if one doesn't exist yet. Other roles keep falling back to
 /// `main` (or the local `claude` CLI) per the agent-resolution rules in
 /// `config.rs` — only `main` is rewired here.
+/// Build the fallback control-plane brain (ADR-002): a chat agent bound to the
+/// distinguished `fallback_provider`, used to run the recovery conversation
+/// when main's own provider is down. Returns `None` unless the fallback is set,
+/// enabled, OpenAI-compatible, and *distinct* from main's provider — if main
+/// already is the fallback, falling back couldn't help.
+fn build_fallback_agent(config: &Config) -> Option<MainAgent> {
+    let fallback = config.fallback_provider.as_ref()?;
+    let provider = config.providers.get(fallback)?;
+    if !provider.enabled || provider.kind != crate::config::ProviderKind::OpenaiCompatible {
+        return None;
+    }
+    let main_def = config.resolve_agent("main");
+    if main_def.provider.as_deref() == Some(fallback.as_str()) {
+        return None;
+    }
+    let def = crate::config::AgentDef {
+        role: "main".to_string(),
+        provider: Some(fallback.clone()),
+        api_url: None,
+        model: provider
+            .model_id
+            .clone()
+            .unwrap_or_else(|| main_def.model.clone()),
+    };
+    Some(build_main_agent(config, &def))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1701,5 +1761,69 @@ mod tests {
             let col = role.column();
             assert_eq!(col.agent_role(), Some(*role));
         }
+    }
+
+    // ── Fallback control-plane brain (ADR-002) ──────────────────────────────
+
+    fn openai_provider(url: &str) -> crate::config::ProviderDef {
+        crate::config::ProviderDef {
+            api_url: url.to_string(),
+            enabled: true,
+            ..crate::config::ProviderDef::default()
+        }
+    }
+
+    #[test]
+    fn fallback_agent_none_when_fallback_is_also_main() {
+        // Main is bound to the same provider as the fallback — recovery via the
+        // fallback couldn't help, so there's no separate brain.
+        let config = Config {
+            providers: std::collections::HashMap::from([(
+                "local".to_string(),
+                openai_provider("http://localhost:1234/v1"),
+            )]),
+            agents: vec![crate::config::AgentDef {
+                role: "main".to_string(),
+                provider: Some("local".to_string()),
+                ..crate::config::AgentDef::default()
+            }],
+            fallback_provider: Some("local".to_string()),
+            ..Config::default()
+        };
+        assert!(build_fallback_agent(&config).is_none());
+    }
+
+    #[test]
+    fn fallback_agent_built_when_distinct_from_main() {
+        // Main points at one provider, the fallback brain at another — the
+        // fallback is built and aimed at the fallback provider's endpoint.
+        let config = Config {
+            providers: std::collections::HashMap::from([
+                ("remote".to_string(), openai_provider("http://remote:8080/v1")),
+                ("local".to_string(), openai_provider("http://localhost:11434/v1")),
+            ]),
+            agents: vec![crate::config::AgentDef {
+                role: "main".to_string(),
+                provider: Some("remote".to_string()),
+                ..crate::config::AgentDef::default()
+            }],
+            fallback_provider: Some("local".to_string()),
+            ..Config::default()
+        };
+        let fallback = build_fallback_agent(&config).expect("distinct fallback should build");
+        assert_eq!(fallback.base_url(), "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn fallback_agent_none_when_provider_disabled() {
+        let mut provider = openai_provider("http://localhost:11434/v1");
+        provider.enabled = false;
+        let config = Config {
+            providers: std::collections::HashMap::from([("local".to_string(), provider)]),
+            agents: Vec::new(),
+            fallback_provider: Some("local".to_string()),
+            ..Config::default()
+        };
+        assert!(build_fallback_agent(&config).is_none());
     }
 }
