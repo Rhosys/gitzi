@@ -1,7 +1,14 @@
 # ADR-002: Bootstrap Is a Backend-Owned "Setup or Use" Gate
 
-**Status:** Accepted  
+**Status:** Accepted — implemented  
 **Date:** 2026-06-27
+
+> **Implementation:** `crate::setup` (gate, `SetupState`, shared discover/
+> activate), the daemon setup phase in `crate::daemon` (`run_setup` + socket
+> commands `setup_state` / `setup_rescan` / `setup_select` streaming
+> `SetupState`), `Config::fallback_provider` + read-and-report `Config::load`,
+> the TUI thin renderer (`draw_setup` + the reconnecting `daemon_client` phase
+> probe), and the fallback-brain recovery path in `Dispatcher::run_main_agent_turn`.
 
 ## Context
 

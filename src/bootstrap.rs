@@ -1,14 +1,18 @@
-//! First-run bootstrapper: quickly scans for available LLM infrastructure and
-//! cloud credentials, then generates a starting `config.toml`.
+//! Environment scanner: quickly probes for available LLM infrastructure and
+//! cloud credentials. [`discover_providers`] is the scan reused by the daemon's
+//! bootstrap setup phase ([`crate::setup`]) and by the `gitzi_rediscover_providers`
+//! agent tool.
 //!
 //! This is a *quick, non-blocking* scan — it never starts servers, loads
 //! models, or opens a browser for SSO login. Every provider it finds is
-//! recorded in `[providers.*]` with `enabled = false`; none of them are
-//! wired into `[[agents]]`. Roles fall back to the local `claude` CLI until
-//! the user explicitly activates a provider via the main agent's
-//! `gitzi_rediscover_providers`/`gitzi_activate_provider` tools — see
-//! `crate::dispatcher`. This avoids onboarding ever getting stuck waiting on
-//! a server to start or a model to load.
+//! surfaced as a candidate; activation (which wires a provider into the main
+//! agent) is always an explicit user step driven by the setup gate (ADR-002).
+//! This avoids onboarding ever getting stuck waiting on a server to start or a
+//! model to load.
+//!
+//! [`run`] (force-regenerate a `config.toml` from a scan) remains available for
+//! the `gitzi generate-config` command, but is no longer invoked by
+//! `Config::load` — loading is pure read-and-report (ADR-002).
 
 use std::path::PathBuf;
 use tracing::info;

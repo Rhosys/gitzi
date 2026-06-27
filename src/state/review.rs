@@ -197,7 +197,7 @@ mod tests {
 
     fn arb_datetime() -> impl Strategy<Value = DateTime<Utc>> {
         (0i64..2_000_000_000).prop_map(|secs| {
-            DateTime::from_timestamp(secs, 0).unwrap_or_else(|| Utc::now())
+            DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
         })
     }
 
