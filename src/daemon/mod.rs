@@ -4,9 +4,12 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::{broadcast, Mutex as TokioMutex, Notify};
 use tracing::{error, info, warn};
 
+use crate::config::Config;
 use crate::dispatcher::Dispatcher;
+use crate::setup::{self, SetupState};
 use crate::state::home;
 
 // ── Socket paths ─────────────────────────────────────────────────────────────
@@ -82,6 +85,249 @@ pub async fn serve(dispatcher: Arc<Dispatcher>) -> Result<()> {
     }
 }
 
+// ── Bootstrap setup phase (ADR-002) ──────────────────────────────────────────
+
+/// Shared state for the setup phase, held by the accept loop and every client
+/// handler. All discovery/activation logic lives in `crate::setup`; this just
+/// publishes state and routes the frontend's selections into it.
+struct SetupSession {
+    /// Current state, queryable on demand via `setup_state`.
+    state: TokioMutex<SetupState>,
+    /// Broadcasts every state change to `subscribe`d frontends.
+    tx: broadcast::Sender<SetupState>,
+    /// The config under construction — mutated by activations, persisted on success.
+    config: TokioMutex<Config>,
+    /// Fired once the gate is satisfied; the accept loop stops on it.
+    ready: Notify,
+}
+
+impl SetupSession {
+    async fn set_state(&self, state: SetupState) {
+        *self.state.lock().await = state.clone();
+        let _ = self.tx.send(state);
+    }
+}
+
+/// Run the bootstrap "setup or use" phase on the daemon socket until a valid
+/// control-plane provider exists, then return the now-ready `Config` (with
+/// `main` bound to the activated provider). The dispatcher is only built from
+/// the value this returns, so no pipeline agents come alive until the gate
+/// clears (ADR-002).
+pub async fn run_setup(initial: Config) -> Result<Config> {
+    let path = socket_path();
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = UnixListener::bind(&path)?;
+    info!("entering setup mode — no LLM provider configured yet");
+
+    let (tx, _) = broadcast::channel(16);
+    let session = Arc::new(SetupSession {
+        state: TokioMutex::new(SetupState::Loading),
+        tx,
+        config: TokioMutex::new(initial),
+        ready: Notify::new(),
+    });
+
+    // Kick off the initial scan in the background so the splash shows promptly.
+    spawn_scan(Arc::clone(&session));
+
+    // Accept connections until the gate clears.
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                match accepted {
+                    Ok((stream, _)) => {
+                        tokio::spawn(handle_setup_client(stream, Arc::clone(&session)));
+                    }
+                    Err(e) => error!("setup: failed to accept connection: {e}"),
+                }
+            }
+            _ = session.ready.notified() => break,
+        }
+    }
+
+    // Tear down the setup listener so the real server can rebind the socket.
+    drop(listener);
+    let _ = std::fs::remove_file(&path);
+
+    let config = session.config.lock().await.clone();
+    info!("setup complete — a control-plane provider is configured");
+    Ok(config)
+}
+
+/// Run the (blocking) environment scan on a background task and publish the
+/// resulting `NeedsProvider`/`Error` state. Discovered providers are merged
+/// into the session config and persisted so activation has entries to work on.
+fn spawn_scan(session: Arc<SetupSession>) {
+    tokio::spawn(async move {
+        session.set_state(SetupState::Loading).await;
+        let cfg = session.config.lock().await.clone();
+        let scanned = tokio::task::spawn_blocking(move || {
+            let mut cfg = cfg;
+            let state = setup::scan_to_state(&mut cfg);
+            (state, cfg)
+        })
+        .await;
+        match scanned {
+            Ok((state, cfg)) => {
+                {
+                    let mut guard = session.config.lock().await;
+                    *guard = cfg;
+                    let _ = guard.write(std::path::Path::new("."));
+                }
+                session.set_state(state).await;
+            }
+            Err(e) => {
+                session
+                    .set_state(SetupState::Error {
+                        messages: vec![format!("scan failed: {e}")],
+                        can_rescan: true,
+                    })
+                    .await;
+            }
+        }
+    });
+}
+
+#[derive(serde::Deserialize)]
+struct SetupSelect {
+    name: String,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    role_name: Option<String>,
+}
+
+async fn handle_setup_client(stream: UnixStream, session: Arc<SetupSession>) {
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+
+    while let Ok(Some(line)) = lines.next_line().await {
+        let trimmed = line.trim();
+
+        if trimmed == "subscribe" {
+            stream_setup_state(&session, &mut writer).await;
+            return;
+        }
+
+        let response = match trimmed {
+            "ping" => "pong".to_string(),
+            "setup_state" => {
+                let state = session.state.lock().await.clone();
+                serde_json::to_string(&state).unwrap_or_else(|e| format!("error: {e}"))
+            }
+            "setup_rescan" => {
+                spawn_scan(Arc::clone(&session));
+                let state = session.state.lock().await.clone();
+                serde_json::to_string(&state).unwrap_or_else(|e| format!("error: {e}"))
+            }
+            cmd if cmd.starts_with("setup_select ") => {
+                let payload = cmd.strip_prefix("setup_select ").unwrap().trim();
+                handle_setup_select(&session, payload).await
+            }
+            // Any board-protocol command means a frontend connected expecting
+            // the live server. Tell it we're still in setup so it renders the
+            // setup screen instead of hanging on a board snapshot.
+            _ => "{\"setup\":true}".to_string(),
+        };
+
+        if writer.write_all(format!("{response}\n").as_bytes()).await.is_err() {
+            break;
+        }
+    }
+}
+
+/// Activate the selected provider. On success persist the config; if the gate
+/// is now satisfied, publish `Ready` and wake the accept loop. Returns a JSON
+/// envelope `{ok, message, done}` for the caller.
+async fn handle_setup_select(session: &Arc<SetupSession>, payload: &str) -> String {
+    let sel: SetupSelect = match serde_json::from_str(payload) {
+        Ok(s) => s,
+        Err(e) => return format!("{{\"ok\":false,\"message\":\"invalid selection: {e}\",\"done\":false}}"),
+    };
+
+    let result = {
+        let mut config = session.config.lock().await;
+        setup::activate(&mut config, &sel.name, sel.account_id, sel.role_name).await
+    };
+
+    match result {
+        Ok(setup::ActivationOutcome::Activated { message }) => {
+            let ready = {
+                let config = session.config.lock().await;
+                let _ = config.write(std::path::Path::new("."));
+                setup::gate_ready(&config)
+            };
+            if ready {
+                session.set_state(SetupState::Ready).await;
+                session.ready.notify_one();
+                json_ok(&message, true)
+            } else {
+                json_ok(&message, false)
+            }
+        }
+        Ok(setup::ActivationOutcome::NeedsMoreInput { message }) => json_ok(&message, false),
+        Err(e) => {
+            let msg = e.to_string();
+            // Surface the failure on the state stream too, keeping rescan available.
+            session
+                .set_state(SetupState::Error {
+                    messages: vec![msg.clone()],
+                    can_rescan: true,
+                })
+                .await;
+            format!(
+                "{{\"ok\":false,\"message\":{},\"done\":false}}",
+                serde_json::to_string(&msg).unwrap_or_else(|_| "\"error\"".to_string())
+            )
+        }
+    }
+}
+
+fn json_ok(message: &str, done: bool) -> String {
+    format!(
+        "{{\"ok\":true,\"message\":{},\"done\":{done}}}",
+        serde_json::to_string(message).unwrap_or_else(|_| "\"\"".to_string())
+    )
+}
+
+/// Stream JSON-encoded `SetupState` lines to a subscribed frontend until the
+/// connection closes. Emits the current state immediately so a late subscriber
+/// is never left blank.
+async fn stream_setup_state(
+    session: &Arc<SetupSession>,
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+) {
+    use tokio::sync::broadcast::error::RecvError;
+
+    let mut rx = session.tx.subscribe();
+    // Send current state first.
+    {
+        let state = session.state.lock().await.clone();
+        if let Ok(json) = serde_json::to_string(&state)
+            && writer.write_all(format!("{json}\n").as_bytes()).await.is_err()
+        {
+            return;
+        }
+    }
+    loop {
+        match rx.recv().await {
+            Ok(state) => {
+                let Ok(json) = serde_json::to_string(&state) else { continue };
+                if writer.write_all(format!("{json}\n").as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => break,
+        }
+    }
+}
+
 async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -98,6 +344,11 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
         let response = match trimmed {
             "ping" => "pong".to_string(),
             "status" => "running".to_string(),
+            // The live server is only reached once the bootstrap gate has
+            // cleared, so setup is always Ready here. Frontends query this
+            // first to decide between the setup screen and the board (ADR-002).
+            "setup_state" => serde_json::to_string(&SetupState::Ready)
+                .unwrap_or_else(|_| "{\"state\":\"ready\"}".to_string()),
             "peek_review" => handle_peek_review(&dispatcher).await,
             "board" => handle_board(&dispatcher).await,
             "epics" => handle_epics(&dispatcher).await,

@@ -720,29 +720,10 @@ impl Dispatcher {
         let gitzi_home = crate::state::home::gitzi_home();
         let mut config = Config::load(&gitzi_home)?;
 
+        // Shared scan + merge logic lives in `crate::setup` so the agent tool
+        // and the daemon's bootstrap setup phase stay in lockstep (ADR-002).
         let discovered = crate::bootstrap::discover_providers();
-        let mut added = Vec::new();
-        for provider in &discovered {
-            if config.providers.contains_key(&provider.name) {
-                continue;
-            }
-            let mut def = crate::config::ProviderDef {
-                kind: provider.kind,
-                enabled: false,
-                ..crate::config::ProviderDef::default()
-            };
-            match provider.kind {
-                crate::config::ProviderKind::OpenaiCompatible => {
-                    def.api_url = provider.api_url.clone();
-                }
-                crate::config::ProviderKind::Bedrock => {
-                    def.region = provider.region.clone();
-                    def.sso_start_url = provider.sso_start_url.clone();
-                }
-            }
-            config.providers.insert(provider.name.clone(), def);
-            added.push(provider.name.clone());
-        }
+        let added = crate::setup::merge_discovered(&mut config, &discovered);
 
         if !added.is_empty() {
             config.write(&gitzi_home)?;
@@ -795,83 +776,18 @@ impl Dispatcher {
         let gitzi_home = crate::state::home::gitzi_home();
         let mut config = Config::load(&gitzi_home)?;
 
-        let mut provider = config.providers.get(name).cloned().ok_or_else(|| {
-            anyhow::anyhow!("no provider named '{name}' — run gitzi_rediscover_providers first")
-        })?;
-
-        if provider.kind == crate::config::ProviderKind::OpenaiCompatible {
-            provider.enabled = true;
-            config.providers.insert(name.to_string(), provider);
-            wire_main_agent(&mut config, name);
-            config.write(&gitzi_home)?;
-            return Ok(format!(
-                "ok: activated '{name}' and wired it into the main agent. Restart gitzi for this to take effect."
-            ));
+        // Activation logic is shared with the daemon's bootstrap setup phase —
+        // both drive `crate::setup::activate` so there is one source of truth
+        // for "enable a provider and wire it into main" (ADR-002).
+        match crate::setup::activate(&mut config, name, account_id, role_name).await? {
+            crate::setup::ActivationOutcome::Activated { message } => {
+                config.write(&gitzi_home)?;
+                Ok(format!(
+                    "ok: {message} Restart gitzi for this to take effect."
+                ))
+            }
+            crate::setup::ActivationOutcome::NeedsMoreInput { message } => Ok(message),
         }
-
-        // Bedrock: AWS SSO login, then account/role selection, then validate.
-        let region = provider.region.clone().ok_or_else(|| {
-            anyhow::anyhow!("provider '{name}' has no AWS region configured — set one in config.toml under [providers.{name}] first")
-        })?;
-        let start_url = provider.sso_start_url.clone().ok_or_else(|| {
-            anyhow::anyhow!("provider '{name}' has no sso_start_url configured — set one in config.toml under [providers.{name}] first")
-        })?;
-
-        let token = match crate::aws_sso::load_token(&start_url) {
-            Some(t) => t,
-            None => {
-                let pending = crate::aws_sso::start_device_login(&region, &start_url).await?;
-                info!(provider = %name, "AWS SSO device login started — waiting for user approval in browser");
-                crate::aws_sso::poll_for_token(&pending, &start_url).await?
-            }
-        };
-
-        let Some(account_id) = account_id else {
-            let accounts = crate::aws_sso::list_accounts(&region, &token.access_token).await?;
-            if accounts.is_empty() {
-                anyhow::bail!("AWS SSO login succeeded but no accounts are assigned to this user");
-            }
-            let listing = accounts
-                .iter()
-                .map(|a| format!("- {} ({}) <{}>", a.account_id, a.account_name, a.email_address))
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Ok(format!(
-                "AWS SSO login confirmed. Choose an account and call gitzi_activate_provider again with name='{name}' and account_id set:\n{listing}"
-            ));
-        };
-
-        let Some(role_name) = role_name else {
-            let roles = crate::aws_sso::list_account_roles(&region, &token.access_token, &account_id).await?;
-            if roles.is_empty() {
-                anyhow::bail!("no SSO roles assigned to account '{account_id}'");
-            }
-            let listing = roles
-                .iter()
-                .map(|r| format!("- {}", r.role_name))
-                .collect::<Vec<_>>()
-                .join("\n");
-            return Ok(format!(
-                "Choose a role and call gitzi_activate_provider again with name='{name}', account_id='{account_id}', and role_name set:\n{listing}"
-            ));
-        };
-
-        // Validate the chosen account/role actually exchange for credentials.
-        crate::aws_sso::get_role_credentials(&region, &token.access_token, &account_id, &role_name).await?;
-
-        provider.enabled = true;
-        provider.sso_account_id = Some(account_id.clone());
-        provider.sso_role_name = Some(role_name.clone());
-        if provider.model_id.is_none() {
-            provider.model_id = Some("anthropic.claude-sonnet-4-6-v1:0".to_string());
-        }
-        config.providers.insert(name.to_string(), provider);
-        wire_main_agent(&mut config, name);
-        config.write(&gitzi_home)?;
-
-        Ok(format!(
-            "ok: activated Bedrock provider '{name}' (account {account_id}, role {role_name}) and wired it into the main agent. Restart gitzi for this to take effect."
-        ))
     }
 
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
@@ -1697,19 +1613,6 @@ impl Dispatcher {
 /// the entry if one doesn't exist yet. Other roles keep falling back to
 /// `main` (or the local `claude` CLI) per the agent-resolution rules in
 /// `config.rs` — only `main` is rewired here.
-fn wire_main_agent(config: &mut Config, provider_name: &str) {
-    if let Some(agent) = config.agents.iter_mut().find(|a| a.role == "main") {
-        agent.provider = Some(provider_name.to_string());
-        agent.api_url = None;
-    } else {
-        config.agents.push(crate::config::AgentDef {
-            role: "main".to_string(),
-            provider: Some(provider_name.to_string()),
-            ..crate::config::AgentDef::default()
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
