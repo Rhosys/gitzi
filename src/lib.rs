@@ -3,6 +3,7 @@ pub mod aws_sso;
 pub mod bootstrap;
 pub mod cli;
 pub mod config;
+pub mod error_relay;
 pub mod id;
 pub mod daemon;
 pub mod dispatcher;

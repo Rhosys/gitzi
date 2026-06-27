@@ -3,6 +3,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::broadcast;
 use tracing::{error, info};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::Layer as _;
 use gitzi::cli::{Cli, Commands, EpicCommands, TaskCommands};
 use gitzi::config::Config;
 use gitzi::daemon;
@@ -13,11 +16,17 @@ use gitzi::state::{reader, writer, home};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("gitzi=info".parse()?),
+    let _error_rx = gitzi::error_relay::init();
+
+    tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("gitzi=info".parse()?),
+                )
         )
+        .with(gitzi::error_relay::ErrorRelayLayer)
         .init();
 
     let cli = Cli::parse();
@@ -36,7 +45,7 @@ async fn main() -> Result<()> {
     match cli.command {
         None => cmd_default().await?,
         Some(Commands::Status) => cmd_status()?,
-        Some(Commands::GenerateConfig) => cmd_generate_config()?,
+        Some(Commands::GenerateConfig) => cmd_generate_config().await?,
         Some(Commands::Log) => {
             #[cfg(feature = "tui")]
             cmd_log().await?;
@@ -246,6 +255,20 @@ async fn cmd_daemon() -> Result<()> {
             .context("Failed to start dispatcher")?
     );
 
+    // Relay errors to the event bus for TUI
+    {
+        let bus = Arc::clone(&dispatcher.event_bus);
+        let mut error_rx = gitzi::error_relay::subscribe().unwrap();
+        tokio::spawn(async move {
+            while let Ok(msg) = error_rx.recv().await {
+                bus.emit(gitzi::dispatcher::event_bus::DispatchEvent::LogEntry {
+                    level: "ERROR".to_string(),
+                    message: msg,
+                });
+            }
+        });
+    }
+
     let token_store = Arc::clone(&dispatcher.token_store);
 
     tokio::select! {
@@ -282,8 +305,10 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-fn cmd_generate_config() -> Result<()> {
-    let config = gitzi::bootstrap::run()?;
+async fn cmd_generate_config() -> Result<()> {
+    let config = tokio::task::spawn_blocking(gitzi::bootstrap::run)
+        .await
+        .map_err(|e| anyhow::anyhow!("bootstrap task panicked: {e}"))??;
     let path = home::global_config_file();
     println!("Generated config at {}", path.display());
     println!("  providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));

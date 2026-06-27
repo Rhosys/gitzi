@@ -371,12 +371,12 @@ impl App {
     }
 
     /// Map board_col (which indexes all columns) to a visible-only index.
-    /// The board only displays non-buffer columns, so this maps the internal
-    /// col index to the display index used by draw_board.
+    /// The board only displays non-buffer, non-Done columns, so this maps the
+    /// internal col index to the display index used by draw_board.
     pub fn board_col_visible(&self) -> usize {
         let visible: Vec<&Column> = column_order()
             .iter()
-            .filter(|c| !c.is_buffer())
+            .filter(|c| !c.is_buffer() && **c != Column::Done)
             .collect();
         let current_col = &column_order()[self.board_col];
         // If we're on a buffer column, find its preceding work column
@@ -393,7 +393,7 @@ impl App {
     pub fn tasks_in_visible_column(&self, visible_idx: usize) -> Vec<&BoardTask> {
         let visible: Vec<&Column> = column_order()
             .iter()
-            .filter(|c| !c.is_buffer())
+            .filter(|c| !c.is_buffer() && **c != Column::Done)
             .collect();
         let Some(col) = visible.get(visible_idx) else {
             return Vec::new();
@@ -471,8 +471,8 @@ impl App {
         }
     }
 
-    // Navigation — only traverses visible (non-buffer) columns
-    pub fn move_left(&mut self) {
+    // Navigation — vertical board: up/down moves between columns, left/right between tasks
+    pub fn move_up(&mut self) {
         let vis_idx = self.board_col_visible();
         if vis_idx > 0 {
             self.board_col = self.visible_to_all_index(vis_idx - 1);
@@ -480,7 +480,7 @@ impl App {
         }
     }
 
-    pub fn move_right(&mut self) {
+    pub fn move_down(&mut self) {
         let visible_count = self.visible_column_count();
         let vis_idx = self.board_col_visible();
         if vis_idx < visible_count - 1 {
@@ -489,13 +489,13 @@ impl App {
         }
     }
 
-    pub fn move_up(&mut self) {
+    pub fn move_left(&mut self) {
         if self.board_task > 0 {
             self.board_task -= 1;
         }
     }
 
-    pub fn move_down(&mut self) {
+    pub fn move_right(&mut self) {
         let vis_idx = self.board_col_visible();
         let n = self.tasks_in_visible_column(vis_idx).len();
         if n > 0 && self.board_task < n - 1 {
@@ -537,9 +537,9 @@ impl App {
         }
     }
 
-    /// Number of visible (non-buffer) columns.
+    /// Number of visible (non-buffer, non-Done) columns.
     fn visible_column_count(&self) -> usize {
-        column_order().iter().filter(|c| !c.is_buffer()).count()
+        column_order().iter().filter(|c| !c.is_buffer() && **c != Column::Done).count()
     }
 
     /// Convert a visible-column index to an all-columns index.
@@ -547,7 +547,7 @@ impl App {
         column_order()
             .iter()
             .enumerate()
-            .filter(|(_, c)| !c.is_buffer())
+            .filter(|(_, c)| !c.is_buffer() && **c != Column::Done)
             .nth(visible_idx)
             .map(|(i, _)| i)
             .unwrap_or(0)

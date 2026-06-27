@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use crate::dispatcher::Column;
 use super::app::{App, Panel, column_order, column_abbrev};
@@ -689,100 +689,62 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
 
-    // Only display non-buffer columns
+    // Visible columns: non-buffer, skip Done
     let visible_columns: Vec<&Column> = column_order()
         .iter()
-        .filter(|c| !c.is_buffer())
+        .filter(|c| !c.is_buffer() && **c != Column::Done)
         .collect();
 
-    let col_constraints: Vec<Constraint> = (0..visible_columns.len())
-        .map(|_| Constraint::Ratio(1, visible_columns.len() as u32))
+    // One row per column (vertical layout)
+    let row_constraints: Vec<Constraint> = (0..visible_columns.len())
+        .map(|_| Constraint::Length(1))
         .collect();
-    let col_areas = Layout::horizontal(col_constraints).split(inner);
+    let row_areas = Layout::vertical(row_constraints).split(inner);
+
+    let label_width: usize = 5;
 
     for (i, col) in visible_columns.iter().enumerate() {
-        // Combine the column's own tasks with any tasks from the next buffer column
-        let own_tasks = app.board.get(&col.to_string())
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
-        let buffer_col = col.next().filter(|c| c.is_buffer());
-        let buffer_tasks = buffer_col
-            .and_then(|bc| app.board.get(&bc.to_string()))
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
-
         let active = i == app.board_col_visible();
-        let border_color = if active { Color::Green } else { Color::DarkGray };
-        let title_color = column_title_color(col);
+        let tasks = app.tasks_in_visible_column(i);
 
-        let col_block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", column_abbrev(col)))
-            .title_style(Style::default().fg(title_color))
-            .border_style(Style::default().fg(border_color));
+        // Build task string: comma-separated titles, selected gets ">" prefix
+        let available_width = inner.width.saturating_sub(label_width as u16 + 3) as usize;
+        let task_str = if tasks.is_empty() {
+            String::new()
+        } else {
+            let parts: Vec<String> = tasks.iter().enumerate().map(|(ti, t)| {
+                let selected = active && ti == app.board_task;
+                if selected {
+                    format!(">{}", t.title)
+                } else {
+                    t.title.clone()
+                }
+            }).collect();
+            let joined = parts.join(", ");
+            truncate(&joined, available_width)
+        };
 
-        let col_inner = col_block.inner(col_areas[i]);
-        frame.render_widget(col_block, col_areas[i]);
+        // Label style
+        let label_style = if active {
+            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(column_title_color(col))
+        };
 
-        if own_tasks.is_empty() && buffer_tasks.is_empty() {
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    ".",
-                    Style::default().fg(Color::DarkGray),
-                )),
-                col_inner,
-            );
-            continue;
-        }
+        let task_style = if active {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Gray)
+        };
 
-        let mut items: Vec<ListItem> = Vec::new();
-        let mut task_idx = 0;
+        let label = format!("{:<width$}", column_abbrev(col), width = label_width);
+        let line = Line::from(vec![
+            Span::styled(label, label_style),
+            Span::styled(" \u{2502} ", Style::default().fg(Color::DarkGray)),
+            Span::styled(task_str, task_style),
+        ]);
 
-        // Buffer tasks first (highlighted in orange with asterisk)
-        for task in buffer_tasks {
-            let selected = active && task_idx == app.board_task;
-            let prefix = if selected { ">*" } else { " *" };
-            let title = truncate(
-                &task.title,
-                col_inner.width.saturating_sub(3) as usize,
-            );
-            let style = if selected {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Rgb(255, 165, 0))
-            } else {
-                Style::default().fg(Color::Rgb(255, 165, 0))
-            };
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{prefix}{title}"),
-                style,
-            ))));
-            task_idx += 1;
-        }
-
-        // Own tasks (normal styling)
-        for task in own_tasks {
-            let selected = active && task_idx == app.board_task;
-            let prefix = if selected { "> " } else { "  " };
-            let title = truncate(
-                &task.title,
-                col_inner.width.saturating_sub(3) as usize,
-            );
-            let style = if selected {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
-                    .fg(Color::Green)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("{prefix}{title}"),
-                style,
-            ))));
-            task_idx += 1;
-        }
-
-        frame.render_widget(List::new(items), col_inner);
+        frame.render_widget(Paragraph::new(line), row_areas[i]);
     }
 }
 

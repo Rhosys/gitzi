@@ -187,14 +187,23 @@ impl WipLimits {
     /// Keys are column names as they serialize on the wire (kebab-case, e.g.
     /// `"coding-buffer"`). Returns an error naming the offending key if any
     /// override doesn't match a known column.
+    /// Unknown columns are silently ignored (logged as warnings).
     pub fn from_config(overrides: &HashMap<String, u32>) -> Result<Self, String> {
         let mut limits = Self::default().limits;
         for (name, &value) in overrides {
-            let column = parse_column_name(name)
-                .ok_or_else(|| format!("unknown WIP column '{name}' in config"))?;
-            limits.insert(column, value);
+            match parse_column_name(name) {
+                Some(column) => { limits.insert(column, value); }
+                None => {
+                    tracing::warn!("ignoring unknown WIP column '{name}' in config");
+                }
+            }
         }
         Ok(Self { limits })
+    }
+
+    /// Check if a column name string is a valid/known column.
+    pub fn is_valid_column(name: &str) -> bool {
+        parse_column_name(name).is_some()
     }
 }
 
