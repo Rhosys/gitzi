@@ -859,12 +859,9 @@ impl Dispatcher {
         // Validate the chosen account/role actually exchange for credentials.
         crate::aws_sso::get_role_credentials(&region, &token.access_token, &account_id, &role_name).await?;
 
-        crate::aws_sso::write_credential_process_profile(name, name, &region)?;
-
         provider.enabled = true;
         provider.sso_account_id = Some(account_id.clone());
         provider.sso_role_name = Some(role_name.clone());
-        provider.profile = Some(name.to_string());
         if provider.model_id.is_none() {
             provider.model_id = Some("anthropic.claude-sonnet-4-6-v1:0".to_string());
         }

@@ -46,8 +46,8 @@ pub enum ProviderKind {
     /// Ollama, etc.) — reached over `api_url` with `api_key`.
     #[default]
     OpenaiCompatible,
-    /// AWS Bedrock, reached through the AWS SDK credential chain via a named
-    /// profile (see `profile`) rather than a URL/key pair.
+    /// AWS Bedrock, reached through an in-process credentials provider (see
+    /// `crate::aws_sso::SsoCredentialsProvider`) rather than a URL/key pair.
     Bedrock,
 }
 
@@ -69,12 +69,6 @@ pub struct ProviderDef {
     /// AWS region for Bedrock (e.g. "us-east-1").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
-    /// Named AWS CLI profile carrying credentials for Bedrock. gitzi writes
-    /// this profile into `~/.aws/config` with
-    /// `credential_process = gitzi creds-helper aws --provider <name>`
-    /// pointing back at the keyring-stored SSO session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profile: Option<String>,
     /// AWS SSO start URL — re-used to resume/refresh login and to key the
     /// keyring entry holding the SSO access token.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,7 +103,6 @@ impl Default for ProviderDef {
             api_url: String::new(),
             api_key: String::new(),
             region: None,
-            profile: None,
             sso_start_url: None,
             sso_account_id: None,
             sso_role_name: None,
@@ -604,7 +597,7 @@ mod tests {
                 ProviderDef {
                     kind: ProviderKind::Bedrock,
                     region: Some("us-east-1".to_string()),
-                    profile: Some("gitzi-bedrock".to_string()),
+                    sso_start_url: Some("https://example.awsapps.com/start".to_string()),
                     model_id: Some("anthropic.claude-sonnet-4-6-v1:0".to_string()),
                     enabled: false,
                     ..ProviderDef::default()
@@ -618,7 +611,7 @@ mod tests {
         let provider = parsed.providers.get("bedrock").unwrap();
         assert_eq!(provider.kind, ProviderKind::Bedrock);
         assert_eq!(provider.region.as_deref(), Some("us-east-1"));
-        assert_eq!(provider.profile.as_deref(), Some("gitzi-bedrock"));
+        assert_eq!(provider.sso_start_url.as_deref(), Some("https://example.awsapps.com/start"));
         assert!(!provider.enabled);
     }
 
