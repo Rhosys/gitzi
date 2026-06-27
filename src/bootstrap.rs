@@ -131,59 +131,25 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
 
 /// Check if a provider has at least one model loaded via the /v1/models endpoint.
 fn has_models_loaded(base_url: &str) -> bool {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-
     let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = reqwest::blocking::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send();
 
-    // Parse host:port from URL
-    let host_port = url
-        .strip_prefix("http://")
-        .unwrap_or(&url)
-        .split('/')
-        .next()
-        .unwrap_or("localhost:1234");
-
-    let addr: std::net::SocketAddr = host_port
-        .parse()
-        .unwrap_or_else(|_| std::net::SocketAddr::from(([127, 0, 0, 1], 1234)));
-
-    let mut stream = match TcpStream::connect_timeout(
-        &addr,
-        std::time::Duration::from_secs(2),
-    ) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
-
-    let path = url
-        .strip_prefix("http://")
-        .and_then(|s| s.find('/').map(|i| &s[i..]))
-        .unwrap_or("/v1/models");
-
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
-    );
-    if stream.write_all(request.as_bytes()).is_err() {
-        return false;
-    }
-
-    let mut response = String::new();
-    let _ = stream.read_to_string(&mut response);
-
-    // Check if response contains a non-empty "data" array
-    if let Some(body_start) = response.find("\r\n\r\n") {
-        let body = &response[body_start + 4..];
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(body) {
-            return json.get("data")
-                .and_then(|d| d.as_array())
-                .map(|arr| !arr.is_empty())
-                .unwrap_or(false);
+    match resp {
+        Ok(r) if r.status().is_success() => {
+            if let Ok(body) = r.json::<serde_json::Value>() {
+                body.get("data")
+                    .and_then(|d| d.as_array())
+                    .map(|arr| !arr.is_empty())
+                    .unwrap_or(false)
+            } else {
+                false
+            }
         }
+        _ => false,
     }
-    false
 }
 
 /// Attempt to load a model for the given provider.
