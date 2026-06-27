@@ -168,7 +168,22 @@ impl Config {
         valid_roles.push("verifier".to_string());
         let before_len = config.agents.len();
         config.agents.retain(|a| valid_roles.contains(&a.role));
-        if config.agents.len() != before_len {
+        let mut dirty = config.agents.len() != before_len;
+
+        // Strip unknown WIP column names (e.g. removed "testing" column).
+        let wip_before = config.wip_limits.overrides.len();
+        config.wip_limits.overrides.retain(|name, _| {
+            let valid = crate::dispatcher::board::WipLimits::is_valid_column(name);
+            if !valid {
+                tracing::warn!("stripping unknown WIP column '{name}' from config");
+            }
+            valid
+        });
+        if config.wip_limits.overrides.len() != wip_before {
+            dirty = true;
+        }
+
+        if dirty {
             let _ = config.write(_repo_root);
         }
 
