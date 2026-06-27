@@ -25,6 +25,8 @@ pub enum DispatchEvent {
     ForkCreated { id: String, name: String },
     /// A fork was closed (popped from stack).
     ForkClosed { id: String, summary: String },
+    /// A log entry relayed from tracing (errors only).
+    LogEntry { level: String, message: String },
 }
 
 // ─── EventBus ─────────────────────────────────────────────────────────────────

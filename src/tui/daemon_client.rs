@@ -151,6 +151,19 @@ async fn run_client(
                             });
                             continue;
                         }
+                        // Check for log_entry events (error relay)
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str()) == Some("log_entry")
+                            && let Some(message) = val.get("message").and_then(|v| v.as_str())
+                        {
+                            let level = val.get("level")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("ERROR");
+                            let _ = msg_tx.send(DaemonMessage::Event(
+                                format!("[{level}] {message}")
+                            ));
+                            continue;
+                        }
                         let _ = msg_tx.send(DaemonMessage::Event(line));
                     }
                     Ok(None) | Err(_) => {

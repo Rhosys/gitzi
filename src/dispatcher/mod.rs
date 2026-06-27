@@ -1493,6 +1493,10 @@ impl Dispatcher {
                 DispatchEvent::ForkCreated { .. } | DispatchEvent::ForkClosed { .. } => {
                     // TUI-only events — no-op in dispatcher run loop.
                 }
+
+                DispatchEvent::LogEntry { .. } => {
+                    // TUI-only — no-op in dispatcher run loop.
+                }
             }
         }
     }
