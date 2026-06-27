@@ -188,6 +188,14 @@ pub struct Config {
     #[serde(default = "default_providers")]
     pub providers: HashMap<String, ProviderDef>,
 
+    /// The distinguished "control-plane" provider established during bootstrap
+    /// setup (ADR-002). It powers the setup experience and the recovery
+    /// conversation when the main agent's own provider is absent or not
+    /// responding. Set on first provider activation; names a key in
+    /// `providers`. `None` until the user completes setup.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_provider: Option<String>,
+
     /// All agent definitions. Override built-in defaults for any role.
     #[serde(default)]
     pub agents: Vec<AgentDef>,
@@ -208,6 +216,7 @@ impl Default for Config {
         Self {
             wip_limits: WipLimits::default(),
             providers: default_providers(),
+            fallback_provider: None,
             agents: Vec::new(),
             integrations: HashMap::new(),
             repo_paths: Vec::new(),
@@ -223,7 +232,11 @@ impl Config {
     pub fn load(_repo_root: &Path) -> Result<Self> {
         let path = crate::state::home::global_config_file();
         if !path.exists() {
-            return crate::bootstrap::run();
+            // First run: `load` is pure read-and-report (ADR-002). Discovery is
+            // owned by the daemon's setup phase, not by config loading, so we
+            // return defaults here rather than scanning + writing. The setup
+            // gate then evaluates to "needs setup" and drives discovery.
+            return Ok(Self::default());
         }
         let text = std::fs::read_to_string(&path)?;
         let mut config: Self = toml::from_str(&text)?;

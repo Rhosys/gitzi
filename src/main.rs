@@ -241,7 +241,16 @@ async fn cmd_daemon() -> Result<()> {
     home::ensure_dirs()?;
 
     let gitzi_home = home::gitzi_home();
-    let config = Config::load(&gitzi_home).context("Failed to load config")?;
+    let mut config = Config::load(&gitzi_home).context("Failed to load config")?;
+
+    // ADR-002: the experience is binary — set up an LLM or use one. If no valid
+    // control-plane provider exists, enter setup mode on the socket and don't
+    // build the dispatcher (so no agents come alive) until the gate clears.
+    if !gitzi::setup::gate_ready(&config) {
+        config = daemon::run_setup(config)
+            .await
+            .context("setup phase failed")?;
+    }
 
     // Populate repo cache from config globs
     if !config.repo_paths.is_empty() {
