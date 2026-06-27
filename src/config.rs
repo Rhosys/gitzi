@@ -237,9 +237,20 @@ impl Config {
         config.agents.retain(|a| valid_roles.contains(&a.role));
         let roles_changed = config.agents.len() != before_len;
 
+        // Strip unknown WIP column names (e.g. removed "testing" column).
+        let wip_before = config.wip_limits.overrides.len();
+        config.wip_limits.overrides.retain(|name, _| {
+            let valid = crate::dispatcher::board::WipLimits::is_valid_column(name);
+            if !valid {
+                tracing::warn!("stripping unknown WIP column '{name}' from config");
+            }
+            valid
+        });
+        let wip_changed = config.wip_limits.overrides.len() != wip_before;
+
         let secrets_changed = config.migrate_secrets();
 
-        if roles_changed || secrets_changed {
+        if roles_changed || wip_changed || secrets_changed {
             let _ = config.write(_repo_root);
         }
 
