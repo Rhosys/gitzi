@@ -192,6 +192,15 @@ pub struct App {
     pub editor_target_id: Option<String>,
     /// Whether we're editing an epic or task
     pub editor_target_type: Option<EditorTarget>,
+
+    /// Current bootstrap setup state (ADR-002). `None` until the first state
+    /// arrives or once the app is past setup; `Some(non-Ready)` means the
+    /// frontend renders the setup screen instead of the board.
+    pub setup_state: Option<crate::setup::SetupState>,
+    /// Selected candidate index in the setup provider picker.
+    pub setup_selected: usize,
+    /// Last activation message/error to surface beneath the picker.
+    pub setup_message: Option<String>,
 }
 
 /// Commands sent from the TUI event loop to the daemon client task.
@@ -204,6 +213,10 @@ pub enum DaemonCommand {
     RefreshEpics,
     RefreshQueueLen,
     UpdateEntity { id: String, target: EditorTarget, title: String, description: Option<String> },
+    /// Activate the named provider during bootstrap setup (ADR-002).
+    SetupSelect { name: String },
+    /// Re-run the environment scan during bootstrap setup.
+    SetupRescan,
 }
 
 /// Describes what the user is currently looking at in the TUI.
@@ -238,6 +251,10 @@ pub enum DaemonMessage {
     SwitchPanel(String),
     Connected,
     Disconnected(String),
+    /// Bootstrap setup state pushed from the daemon (ADR-002).
+    SetupState(crate::setup::SetupState),
+    /// Result of a setup_select / activation attempt (message to surface).
+    SetupMessage(String),
 }
 
 impl App {
@@ -267,7 +284,68 @@ impl App {
             editor_esc_warned: false,
             editor_target_id: None,
             editor_target_type: None,
+            // Start on the setup splash; the daemon's first state (Ready or a
+            // setup state) flips us to the board or the picker within a tick.
+            setup_state: Some(crate::setup::SetupState::Loading),
+            setup_selected: 0,
+            setup_message: None,
         }
+    }
+
+    // ── Bootstrap setup (ADR-002) ───────────────────────────────────────────
+
+    /// True while the bootstrap gate is unsatisfied — the setup screen owns the
+    /// whole UI and normal board/chat input is suppressed.
+    pub fn in_setup(&self) -> bool {
+        !matches!(self.setup_state, None | Some(crate::setup::SetupState::Ready))
+    }
+
+    /// Apply a fresh setup state from the daemon, clamping the picker selection.
+    pub fn apply_setup_state(&mut self, state: crate::setup::SetupState) {
+        if let crate::setup::SetupState::NeedsProvider { candidates } = &state {
+            if candidates.is_empty() {
+                self.setup_selected = 0;
+            } else if self.setup_selected >= candidates.len() {
+                self.setup_selected = candidates.len() - 1;
+            }
+        }
+        self.setup_state = Some(state);
+    }
+
+    /// Candidates currently offered, if we're on the picker.
+    pub fn setup_candidates(&self) -> &[crate::setup::ProviderCandidate] {
+        match &self.setup_state {
+            Some(crate::setup::SetupState::NeedsProvider { candidates }) => candidates,
+            _ => &[],
+        }
+    }
+
+    pub fn setup_move_up(&mut self) {
+        if self.setup_selected > 0 {
+            self.setup_selected -= 1;
+        }
+    }
+
+    pub fn setup_move_down(&mut self) {
+        let n = self.setup_candidates().len();
+        if n > 0 && self.setup_selected < n - 1 {
+            self.setup_selected += 1;
+        }
+    }
+
+    /// Activate the highlighted provider candidate.
+    pub fn setup_select(&mut self) {
+        if let Some(candidate) = self.setup_candidates().get(self.setup_selected) {
+            let name = candidate.name.clone();
+            self.setup_message = Some(format!("Activating {name}…"));
+            let _ = self.cmd_tx.send(DaemonCommand::SetupSelect { name });
+        }
+    }
+
+    /// Request a fresh environment scan.
+    pub fn setup_rescan(&mut self) {
+        self.setup_message = Some("Rescanning…".to_string());
+        let _ = self.cmd_tx.send(DaemonCommand::SetupRescan);
     }
 
     /// Apply a board snapshot from the daemon.

@@ -1,9 +1,11 @@
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
+use tokio::time::{sleep, Duration};
 use tracing::warn;
 
 use crate::daemon::socket_path;
+use crate::setup::SetupState;
 use crate::state::chat::{ChatMessage as StoredMessage, Role};
 use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, EditorTarget};
 
@@ -17,21 +19,167 @@ pub fn spawn(
     msg_rx
 }
 
+/// Which phase the daemon is in, probed via the `setup_state` command. The
+/// daemon serves a bootstrap *setup* phase on the socket before the dispatcher
+/// exists, then the live *board* server once the gate clears (ADR-002).
+enum Phase {
+    Setup,
+    Board,
+    Unreachable,
+}
+
+/// Outer reconnect loop. Probes the daemon's phase and runs the matching
+/// sub-protocol, reconnecting across the setup→board handoff (the setup server
+/// drops its listener when the gate clears, briefly making the socket
+/// unreachable before the live server rebinds).
 async fn run_client(
     mut cmd_rx: mpsc::UnboundedReceiver<DaemonCommand>,
     msg_tx: mpsc::UnboundedSender<DaemonMessage>,
 ) {
-    // Connect to daemon
     let path = socket_path();
-    let stream = match UnixStream::connect(&path).await {
+    loop {
+        match probe_phase(&path).await {
+            Phase::Unreachable => {
+                let _ = msg_tx.send(DaemonMessage::Disconnected("connecting…".to_string()));
+                sleep(Duration::from_millis(300)).await;
+            }
+            Phase::Setup => {
+                let _ = msg_tx.send(DaemonMessage::Connected);
+                run_setup_phase(&path, &mut cmd_rx, &msg_tx).await;
+                // Returns when Ready is observed or the connection drops — either
+                // way, loop back to re-probe (the live server may now be up).
+            }
+            Phase::Board => {
+                let _ = msg_tx.send(DaemonMessage::Connected);
+                run_board_phase(&path, &mut cmd_rx, &msg_tx).await;
+                let _ = msg_tx.send(DaemonMessage::Disconnected("reconnecting…".to_string()));
+            }
+        }
+    }
+}
+
+/// Connect and ask `setup_state` to learn which phase the daemon is in.
+async fn probe_phase(path: &std::path::Path) -> Phase {
+    let stream = match UnixStream::connect(path).await {
+        Ok(s) => s,
+        Err(_) => return Phase::Unreachable,
+    };
+    let (reader, mut writer) = stream.into_split();
+    let mut lines = BufReader::new(reader).lines();
+    if writer.write_all(b"setup_state\n").await.is_err() {
+        return Phase::Unreachable;
+    }
+    match lines.next_line().await {
+        Ok(Some(line)) => match serde_json::from_str::<SetupState>(&line) {
+            Ok(SetupState::Ready) => Phase::Board,
+            Ok(_) => Phase::Setup,
+            // Unknown/legacy response — treat as the live board server.
+            Err(_) => Phase::Board,
+        },
+        _ => Phase::Unreachable,
+    }
+}
+
+// ── Setup phase (ADR-002) ─────────────────────────────────────────────────────
+
+/// Render-and-relay loop for the bootstrap setup phase: subscribe to streamed
+/// `SetupState`, and relay the user's provider selection / rescan back. Returns
+/// once `Ready` is observed (so the outer loop reconnects to the board server)
+/// or the connection drops.
+async fn run_setup_phase(
+    path: &std::path::Path,
+    cmd_rx: &mut mpsc::UnboundedReceiver<DaemonCommand>,
+    msg_tx: &mpsc::UnboundedSender<DaemonMessage>,
+) {
+    // Command connection.
+    let cmd_stream = match UnixStream::connect(path).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let (cmd_reader, mut cmd_writer) = cmd_stream.into_split();
+    let mut cmd_lines = BufReader::new(cmd_reader).lines();
+
+    // Subscription connection — streams SetupState (current state first).
+    let sub_stream = match UnixStream::connect(path).await {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let (sub_reader, mut sub_writer) = sub_stream.into_split();
+    if sub_writer.write_all(b"subscribe\n").await.is_err() {
+        return;
+    }
+    let mut sub_lines = BufReader::new(sub_reader).lines();
+
+    loop {
+        tokio::select! {
+            sub = sub_lines.next_line() => {
+                match sub {
+                    Ok(Some(line)) => {
+                        if let Ok(state) = serde_json::from_str::<SetupState>(&line) {
+                            let ready = matches!(state, SetupState::Ready);
+                            let _ = msg_tx.send(DaemonMessage::SetupState(state));
+                            if ready {
+                                return;
+                            }
+                        }
+                    }
+                    _ => return,
+                }
+            }
+            cmd = cmd_rx.recv() => {
+                let Some(cmd) = cmd else { return };
+                match cmd {
+                    DaemonCommand::SetupSelect { name } => {
+                        let payload = serde_json::json!({
+                            "name": name,
+                            "account_id": serde_json::Value::Null,
+                            "role_name": serde_json::Value::Null,
+                        });
+                        let line = format!("setup_select {payload}\n");
+                        if cmd_writer.write_all(line.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        if let Ok(Some(resp)) = cmd_lines.next_line().await
+                            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&resp)
+                            && let Some(msg) = v.get("message").and_then(|m| m.as_str())
+                        {
+                            let _ = msg_tx.send(DaemonMessage::SetupMessage(msg.to_string()));
+                        }
+                    }
+                    DaemonCommand::SetupRescan => {
+                        if cmd_writer.write_all(b"setup_rescan\n").await.is_err() {
+                            return;
+                        }
+                        // Ack is the current state JSON; the subscribe stream
+                        // delivers the post-scan state, so just drain it.
+                        let _ = cmd_lines.next_line().await;
+                    }
+                    // Board commands are meaningless during setup — drop them.
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+// ── Board phase ───────────────────────────────────────────────────────────────
+
+async fn run_board_phase(
+    path: &std::path::Path,
+    cmd_rx: &mut mpsc::UnboundedReceiver<DaemonCommand>,
+    msg_tx: &mpsc::UnboundedSender<DaemonMessage>,
+) {
+    // Tell the frontend setup is behind us so it renders the board, not the
+    // splash, even if it never saw a Ready over a setup subscription.
+    let _ = msg_tx.send(DaemonMessage::SetupState(SetupState::Ready));
+
+    let stream = match UnixStream::connect(path).await {
         Ok(s) => s,
         Err(e) => {
             let _ = msg_tx.send(DaemonMessage::Disconnected(format!("connect failed: {e}")));
             return;
         }
     };
-
-    let _ = msg_tx.send(DaemonMessage::Connected);
 
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -49,7 +197,7 @@ async fn run_client(
     }
 
     // Now open a second connection for subscription (subscribe holds the connection)
-    let sub_stream = match UnixStream::connect(&path).await {
+    let sub_stream = match UnixStream::connect(path).await {
         Ok(s) => s,
         Err(e) => {
             warn!("subscribe connect failed: {e}");
@@ -257,6 +405,8 @@ async fn run_client(
                         // Read response but don't block the loop on failure
                         if let Ok(Some(_resp)) = lines.next_line().await {}
                     }
+                    // Setup commands are meaningless once on the board — drop them.
+                    DaemonCommand::SetupSelect { .. } | DaemonCommand::SetupRescan => {}
                 }
             }
         }
