@@ -9,6 +9,12 @@ use crate::dispatcher::Column;
 use super::app::{App, Panel, column_order, column_abbrev};
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    // Bootstrap setup (ADR-002) owns the whole screen until the gate clears.
+    if app.in_setup() {
+        draw_setup(frame, app, frame.area());
+        return;
+    }
+
     let area = frame.area();
     let [header_area, body_area, footer_area] = Layout::vertical([
         Constraint::Length(1),
@@ -19,6 +25,111 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_header(frame, app, header_area);
     draw_body(frame, app, body_area);
     draw_footer(frame, app, footer_area);
+}
+
+// -- Bootstrap setup screen (ADR-002) ---------------------------------------
+
+/// Full-screen setup renderer. A thin switch over the daemon-owned
+/// `SetupState`: splash while loading, a provider picker, or an error with a
+/// rescan hint. All logic lives in the backend; this only draws.
+fn draw_setup(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::setup::SetupState;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" gitzi setup ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let [title_area, body_area, msg_area, footer_area] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Fill(1),
+        Constraint::Length(2),
+        Constraint::Length(1),
+    ]).areas(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Set up a language model to get started",
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ))),
+        title_area,
+    );
+
+    let (body, footer): (Vec<Line>, &str) = match &app.setup_state {
+        Some(SetupState::Loading) | None => (
+            vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Discovering LLM providers on this machine…",
+                    Style::default().fg(Color::Gray),
+                )),
+            ],
+            "Ctrl+Q quit",
+        ),
+        Some(SetupState::NeedsProvider { candidates }) => {
+            let mut lines = vec![Line::from(Span::styled(
+                "  Choose a provider to activate:",
+                Style::default().fg(Color::Gray),
+            )), Line::from("")];
+            for (i, c) in candidates.iter().enumerate() {
+                let selected = i == app.setup_selected;
+                let marker = if selected { "▶ " } else { "  " };
+                let style = if selected {
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let ready = if c.ready { "" } else { "  (needs setup)" };
+                lines.push(Line::from(Span::styled(
+                    format!("{marker}{}  [{}]  {}{ready}", c.name, c.kind, c.status),
+                    style,
+                )));
+            }
+            (lines, "↑/↓ select   Enter activate   r rescan   Ctrl+Q quit")
+        }
+        Some(SetupState::Error { messages, can_rescan }) => {
+            let mut lines = vec![Line::from(Span::styled(
+                "  Setup can't continue yet:",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )), Line::from("")];
+            for m in messages {
+                lines.push(Line::from(Span::styled(
+                    format!("  {m}"),
+                    Style::default().fg(Color::Red),
+                )));
+            }
+            let footer = if *can_rescan {
+                "r rescan   Ctrl+Q quit"
+            } else {
+                "Ctrl+Q quit"
+            };
+            (lines, footer)
+        }
+        Some(SetupState::Ready) => (vec![Line::from("  Ready — launching…")], "Ctrl+Q quit"),
+    };
+
+    frame.render_widget(Paragraph::new(body).wrap(Wrap { trim: false }), body_area);
+
+    if let Some(msg) = &app.setup_message {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {msg}"),
+                Style::default().fg(Color::Yellow),
+            )))
+            .wrap(Wrap { trim: false }),
+            msg_area,
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            footer,
+            Style::default().fg(Color::DarkGray),
+        ))),
+        footer_area,
+    );
 }
 
 // -- Body (conditionally includes fork strip) -------------------------------
