@@ -36,7 +36,7 @@ async fn main() -> Result<()> {
     match cli.command {
         None => cmd_default().await?,
         Some(Commands::Status) => cmd_status()?,
-        Some(Commands::GenerateConfig) => cmd_generate_config()?,
+        Some(Commands::GenerateConfig) => cmd_generate_config().await?,
         Some(Commands::Log) => {
             #[cfg(feature = "tui")]
             cmd_log().await?;
@@ -282,8 +282,10 @@ fn cmd_status() -> Result<()> {
     Ok(())
 }
 
-fn cmd_generate_config() -> Result<()> {
-    let config = gitzi::bootstrap::run()?;
+async fn cmd_generate_config() -> Result<()> {
+    let config = tokio::task::spawn_blocking(gitzi::bootstrap::run)
+        .await
+        .map_err(|e| anyhow::anyhow!("bootstrap task panicked: {e}"))??;
     let path = home::global_config_file();
     println!("Generated config at {}", path.display());
     println!("  providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));
