@@ -11,11 +11,21 @@
 //! `client_secret` from `register_client`) is cached the same way, keyed by
 //! start URL, since AWS fixes its lifetime at 90 days and recommends reusing
 //! it rather than re-registering on every login. Short-lived role credentials
-//! are never cached — `gitzi creds-helper aws` re-exchanges them on every
-//! invocation via `get_role_credentials`.
+//! are never cached on disk — [`SsoCredentialsProvider`] re-exchanges them via
+//! `get_role_credentials` whenever the AWS SDK's own identity cache decides
+//! the previous set has expired.
+//!
+//! gitzi never writes to `~/.aws/config`/`~/.aws/credentials` or any other
+//! cloud CLI's config files — [`SsoCredentialsProvider`] hands credentials to
+//! the AWS SDK directly, in-process, via `aws_config`'s
+//! `credentials_provider()` builder method.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, UNIX_EPOCH};
+
+use aws_credential_types::provider::{error::CredentialsError, future, ProvideCredentials};
+use aws_credential_types::Credentials as AwsCredentials;
 
 use crate::error::{GitziError, Result};
 use crate::secrets;
@@ -390,65 +400,79 @@ pub async fn get_role_credentials(
     })
 }
 
-/// Write or update a named profile block in `~/.aws/config` so the AWS SDK's
-/// `credential_process` chain can resolve Bedrock credentials for
-/// `provider_name` via `gitzi creds-helper aws --provider <provider_name>`.
-/// Replaces an existing `[profile <profile_name>]` block in place if one is
-/// already present, otherwise appends a new one.
-pub fn write_credential_process_profile(
-    profile_name: &str,
-    provider_name: &str,
-    region: &str,
-) -> Result<()> {
-    let path = dirs::home_dir()
-        .ok_or_else(|| GitziError::Config("could not determine home directory".into()))?
-        .join(".aws/config");
-    upsert_profile_block(&path, profile_name, provider_name, region)
+/// Hands AWS-Bedrock-bound SDK clients temporary role credentials directly,
+/// in-process — no `credential_process` subprocess, no `~/.aws/config` entry.
+/// Pass this to `aws_config`'s `.credentials_provider()`; the SDK's own
+/// identity cache calls `provide_credentials` again once the previous
+/// credentials approach their `expiration_ms`, so callers don't need to
+/// re-fetch or cache role credentials themselves.
+///
+/// Reuses the cached SSO access token (see module docs) and falls back to a
+/// fresh device-authorization login (opening a browser) only if that token is
+/// missing or expired — same as every other AWS SSO entry point in this
+/// module.
+#[derive(Debug, Clone)]
+pub struct SsoCredentialsProvider {
+    region: String,
+    start_url: String,
+    account_id: String,
+    role_name: String,
 }
 
-fn upsert_profile_block(
-    path: &std::path::Path,
-    profile_name: &str,
-    provider_name: &str,
-    region: &str,
-) -> Result<()> {
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let header = format!("[profile {profile_name}]");
-    let new_block = format!(
-        "{header}\ncredential_process = gitzi creds-helper aws --provider {provider_name}\nregion = {region}\n"
-    );
+impl SsoCredentialsProvider {
+    pub fn new(
+        region: impl Into<String>,
+        start_url: impl Into<String>,
+        account_id: impl Into<String>,
+        role_name: impl Into<String>,
+    ) -> Self {
+        Self {
+            region: region.into(),
+            start_url: start_url.into(),
+            account_id: account_id.into(),
+            role_name: role_name.into(),
+        }
+    }
 
-    let mut out = String::new();
-    let mut lines = existing.lines().peekable();
-    let mut replaced = false;
-    while let Some(line) = lines.next() {
-        if line.trim() == header {
-            replaced = true;
-            out.push('\n');
-            out.push_str(&new_block);
-            while let Some(&next) = lines.peek() {
-                if next.trim_start().starts_with('[') {
-                    break;
-                }
-                lines.next();
+    async fn load(&self) -> Result<AwsCredentials> {
+        let token = match load_token(&self.start_url) {
+            Some(token) => token,
+            None => {
+                let pending = start_device_login(&self.region, &self.start_url).await?;
+                poll_for_token(&pending, &self.start_url).await?
             }
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    if !replaced {
-        if !out.is_empty() {
-            out.push('\n');
-        }
-        out.push_str(&new_block);
-    }
+        };
 
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+        let creds = get_role_credentials(
+            &self.region,
+            &token.access_token,
+            &self.account_id,
+            &self.role_name,
+        )
+        .await?;
+
+        let expires_after = UNIX_EPOCH + Duration::from_millis(creds.expiration_ms.max(0) as u64);
+        Ok(AwsCredentials::new(
+            creds.access_key_id,
+            creds.secret_access_key,
+            Some(creds.session_token),
+            Some(expires_after),
+            "gitzi-sso",
+        ))
     }
-    std::fs::write(path, out)?;
-    Ok(())
+}
+
+impl ProvideCredentials for SsoCredentialsProvider {
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        future::ProvideCredentials::new(async move {
+            self.load()
+                .await
+                .map_err(|e| CredentialsError::provider_error(e.to_string()))
+        })
+    }
 }
 
 #[cfg(test)]
@@ -473,39 +497,4 @@ mod tests {
         assert!(!token.is_expired());
     }
 
-    #[test]
-    fn upsert_profile_block_appends_to_missing_file() {
-        let dir = std::env::temp_dir().join(format!("gitzi-aws-test-{}", crate::id::new_id("a")));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config");
-
-        upsert_profile_block(&path, "bedrock-acme", "bedrock-acme", "us-east-1").unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("[profile bedrock-acme]"));
-        assert!(text.contains("credential_process = gitzi creds-helper aws --provider bedrock-acme"));
-        assert!(text.contains("region = us-east-1"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn upsert_profile_block_replaces_existing_block_in_place() {
-        let dir = std::env::temp_dir().join(format!("gitzi-aws-test-{}", crate::id::new_id("b")));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config");
-        std::fs::write(
-            &path,
-            "[profile other]\nregion = eu-west-1\n\n[profile bedrock-acme]\nregion = us-west-2\n\n[profile after]\nregion = ap-south-1\n",
-        )
-        .unwrap();
-
-        upsert_profile_block(&path, "bedrock-acme", "bedrock-acme", "us-east-1").unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("[profile other]"));
-        assert!(text.contains("[profile after]"));
-        assert!(text.contains("region = us-east-1"));
-        assert!(!text.contains("us-west-2"));
-
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 }

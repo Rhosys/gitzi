@@ -71,7 +71,10 @@ pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
                 .map(|r| r.default_system_prompt().to_string());
             match provider.kind {
                 ProviderKind::Bedrock => PipelineAgent::Bedrock(BedrockAgent::new(
-                    provider.profile.clone().unwrap_or_default(),
+                    provider.region.clone().unwrap_or_default(),
+                    provider.sso_start_url.clone().unwrap_or_default(),
+                    provider.sso_account_id.clone().unwrap_or_default(),
+                    provider.sso_role_name.clone().unwrap_or_default(),
                     provider.model_id.clone().unwrap_or_else(|| def.model.clone()),
                     role_prompt,
                 )),
@@ -156,7 +159,10 @@ mod tests {
                 "bedrock".to_string(),
                 ProviderDef {
                     kind: crate::config::ProviderKind::Bedrock,
-                    profile: Some("gitzi-bedrock".to_string()),
+                    region: Some("us-east-1".to_string()),
+                    sso_start_url: Some("https://example.awsapps.com/start".to_string()),
+                    sso_account_id: Some("123456789012".to_string()),
+                    sso_role_name: Some("AdministratorAccess".to_string()),
                     model_id: Some("anthropic.claude-sonnet-4-6-v1:0".to_string()),
                     ..ProviderDef::default()
                 },

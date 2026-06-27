@@ -42,10 +42,10 @@ what's available and turn one on, rather than editing this file by hand.
   `keyring:<service>/<account>` pointer (gitzi migrates plaintext keys into the OS
   keyring automatically on load).
 - `region`: AWS region, for `bedrock` providers.
-- `profile`: Named AWS CLI profile gitzi writes to `~/.aws/config` for `bedrock`
-  providers, with `credential_process = gitzi creds-helper aws --provider <name>`.
 - `sso_start_url`, `sso_account_id`, `sso_role_name`: AWS SSO identifiers for `bedrock`
-  providers, filled in during activation.
+  providers, filled in during activation. Credentials are handed to the AWS SDK
+  in-process via `crate::aws_sso::SsoCredentialsProvider` — gitzi never writes to
+  `~/.aws/config` or any other cloud CLI's config files.
 - `model_id`: Bedrock model ID, e.g. `"anthropic.claude-sonnet-4-6-v1:0"`.
 - `enabled`: Whether this provider is actually wired into any agent. Discovered
   providers default to `false` until explicitly activated.

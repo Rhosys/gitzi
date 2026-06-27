@@ -45,25 +45,6 @@ pub enum Commands {
         #[command(subcommand)]
         command: EpicCommands,
     },
-
-    /// AWS `credential_process` helper — invoked by the AWS SDK via a profile's
-    /// `credential_process` line, not meant for interactive use.
-    #[command(hide = true)]
-    CredsHelper {
-        #[command(subcommand)]
-        command: CredsHelperCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum CredsHelperCommands {
-    /// Print temporary AWS credentials as `credential_process` JSON for the
-    /// named Bedrock provider, logging into AWS SSO (opening a browser) if
-    /// no cached session is available.
-    Aws {
-        #[arg(long)]
-        provider: String,
-    },
 }
 
 #[derive(Subcommand)]

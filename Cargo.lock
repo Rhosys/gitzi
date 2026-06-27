@@ -1689,6 +1689,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aws-config",
+ "aws-credential-types",
+ "aws-sdk-bedrockruntime",
  "aws-sdk-sso",
  "aws-sdk-ssooidc",
  "axum",
