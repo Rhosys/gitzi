@@ -14,7 +14,6 @@ fn stage_kebab_case_roundtrip() {
         (Stage::Prioritized, "prioritized"),
         (Stage::InProgress, "in-progress"),
         (Stage::WaitingForReview, "waiting-for-review"),
-        (Stage::InTesting, "in-testing"),
         (Stage::Done, "done"),
     ];
     for (stage, expected) in cases {
@@ -163,8 +162,6 @@ fn new_column_stages_kebab_case_roundtrip() {
         (Stage::Coding, "coding"),
         (Stage::ReviewBuffer, "review-buffer"),
         (Stage::Reviewing, "reviewing"),
-        (Stage::TestBuffer, "test-buffer"),
-        (Stage::Testing, "testing"),
         (Stage::SecurityAuditBuffer, "security-audit-buffer"),
         (Stage::Auditing, "auditing"),
         (Stage::DeploymentBuffer, "deployment-buffer"),

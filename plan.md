@@ -925,31 +925,43 @@ First-time experience when a user runs `gitzi` with no existing `~/.gitzi/`.
 ### First-run flow
 
 ```
-loader/spinner (auto-discover LLM providers + repos)
-    → generate config.toml
-    → if multiple providers: onboarding selection UI
-    → launch TUI (Status panel shows discovery results)
+quick non-blocking scan (discover LLM providers + repos)
+    → generate config.toml (providers recorded, none enabled/wired)
+    → launch TUI immediately (Status panel shows discovery results)
     → main agent: "So what are we going to do next?"
 ```
 
+Discovery never starts a server, loads a model, or opens a browser for SSO login —
+onboarding must never block waiting on any of those. Every provider found is written to
+`[providers.*]` with `enabled = false` and not wired into `[[agents]]`; every role falls
+back to the local `claude` CLI subprocess until the user explicitly activates a provider
+through the main agent's `gitzi_rediscover_providers`/`gitzi_activate_provider` tools
+(see `src/bootstrap.rs`, `src/agent/main_agent.rs`).
+
 ### Provider discovery priority order
 
-1. **CLI-based LLMs already running** (highest — zero friction)
-2. **Installed but not running** — show guidance, do NOT auto-start
-3. **Not installed** — skip
+Priority only affects *display* sort on the Status panel — discovery never auto-starts,
+auto-loads a model, or auto-activates a provider:
 
-| Provider | Binary | Detection | Start |
-|----------|--------|-----------|-------|
-| LM Studio | `~/.lmstudio/bin/lms` | `lms server status` | `lms server start` |
-| Ollama | `ollama` | `ollama list` / port 11434 | `ollama serve` |
-| Claude CLI | `claude` | `which claude` | N/A (API key) |
-| OpenCode | `opencode` | `which opencode` | TBD |
-| Goose | `goose` | `which goose` | TBD |
-| Aider | `aider` | `which aider` | TBD |
+1. **Running with a model loaded** — zero friction to activate
+2. **Running but no model loaded**
+3. **Installed but not running**
+4. **Not installed** — skipped, not recorded
 
-For "installed but not running": display guidance on Status panel ("X is installed but
-not running. Please start it and load a model."). For "running but no model loaded":
-use `/v1/models` HTTP endpoint to check, then force-load first downloaded text model.
+| Provider | Detected via | Kind |
+|----------|---------------|------|
+| LM Studio | `~/.lmstudio/bin/lms` exists; port 1234 + `/v1/models` for running/model-loaded | `openai-compatible` |
+| Ollama | `which ollama`; port 11434 + `/v1/models` for running/model-loaded | `openai-compatible` |
+| AWS Bedrock | `[sso-session NAME]` blocks in `~/.aws/config` (one candidate per session), else a generic candidate if the `aws` CLI is installed | `bedrock` |
+
+Claude CLI/OpenCode/Goose/Aider are not auto-discovered providers — they remain
+available as the implicit fallback (the local `claude` CLI subprocess) for any role not
+wired to a provider.
+
+For "installed but not running": Status panel shows "X is installed but not running.
+Start it and load a model, then ask me to rediscover providers." For "running but no
+model loaded": same guidance, using `/v1/models` to check what's loaded (more reliable
+than the CLI) — never force-loads a model.
 
 ### Config three-layer architecture
 
@@ -972,11 +984,17 @@ Resolution: `Final = hardcoded ?? user_config ?? default`
 - Invalid roles → silently stripped, config.toml rewritten
 - Removed fields: `default_agent`, `test_command`, `system_prompt` in `[[agents]]`
 
-### Selection logic
+### Activation logic
 
-- Single provider found → auto-use, no question
-- Multiple in same category → ask user which to use (onboarding selection flow)
-- Prefer: already-running > needs-start, local > API-key-required
+Nothing is enabled or wired into `[[agents]]` by discovery — activation is always an
+explicit, user-initiated step via chat:
+
+- 1 or many providers found → all listed, none enabled; the user picks which (if any) to
+  activate.
+- Activating an OpenAI-compatible provider (LM Studio, Ollama) is immediate.
+- Activating Bedrock walks the user through AWS SSO device-authorization login, then
+  account and role selection, across multiple `gitzi_activate_provider` calls.
+- A `gitzi` restart is required after activation for the rewired agent to take effect.
 
 ### Status panel states
 

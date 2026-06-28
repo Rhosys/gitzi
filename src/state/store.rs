@@ -82,6 +82,12 @@ pub struct InMemoryStore {
     reviews: Mutex<HashMap<String, PersistedReviewItem>>,
 }
 
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {
