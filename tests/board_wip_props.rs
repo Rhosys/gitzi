@@ -7,21 +7,18 @@ use gitzi::dispatcher::Column;
 use gitzi::model::task::{Stage, Task};
 use proptest::prelude::*;
 
-/// Strategy that generates an arbitrary `Stage` value (all 17 variants).
+/// Strategy that generates an arbitrary `Stage` value (all 14 variants).
 fn arb_stage() -> impl Strategy<Value = Stage> {
     prop_oneof![
         Just(Stage::Backlog),
         Just(Stage::InProgress),
         Just(Stage::WaitingForReview),
-        Just(Stage::InTesting),
         Just(Stage::Prioritized),
         Just(Stage::Designing),
         Just(Stage::CodingBuffer),
         Just(Stage::Coding),
         Just(Stage::ReviewBuffer),
         Just(Stage::Reviewing),
-        Just(Stage::TestBuffer),
-        Just(Stage::Testing),
         Just(Stage::SecurityAuditBuffer),
         Just(Stage::Auditing),
         Just(Stage::DeploymentBuffer),
@@ -109,7 +106,7 @@ proptest! {
     /// - allows(col, count) returns true iff count < limit
     #[test]
     fn wip_limit_enforcement(
-        col_idx in 0usize..13,
+        col_idx in 0usize..11,
         count in 0u32..100
     ) {
         let wip = WipLimits::default();
@@ -143,7 +140,7 @@ proptest! {
     /// Property 4 (boundary): allows(col, 0) is always true for every column
     /// (even finite limits, since 0 < any positive limit).
     #[test]
-    fn wip_allows_zero_is_always_true(col_idx in 0usize..13) {
+    fn wip_allows_zero_is_always_true(col_idx in 0usize..11) {
         let wip = WipLimits::default();
         let col = Column::all()[col_idx];
         prop_assert!(
@@ -155,7 +152,7 @@ proptest! {
 
     /// Property 4 (at-limit): For finite-limit columns, allows(col, limit) is always false.
     #[test]
-    fn wip_blocks_at_limit(col_idx in 0usize..13) {
+    fn wip_blocks_at_limit(col_idx in 0usize..11) {
         let wip = WipLimits::default();
         let col = Column::all()[col_idx];
 

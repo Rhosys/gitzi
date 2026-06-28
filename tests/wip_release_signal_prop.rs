@@ -20,7 +20,6 @@ fn arb_work_column() -> impl Strategy<Value = Column> {
         Just(Column::Designing),
         Just(Column::Coding),
         Just(Column::Reviewing),
-        Just(Column::Testing),
         Just(Column::Auditing),
         Just(Column::Deploying),
     ]
@@ -33,7 +32,6 @@ fn arb_role() -> impl Strategy<Value = AgentRole> {
         Just(AgentRole::Designer),
         Just(AgentRole::Coder),
         Just(AgentRole::Reviewer),
-        Just(AgentRole::Tester),
         Just(AgentRole::Auditor),
         Just(AgentRole::Infrarian),
     ]
@@ -76,7 +74,7 @@ proptest! {
             let agent_pool = AgentPool::inert();
 
             let main_agent_def = config.resolve_agent("main");
-            let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
+            let main_agent = gitzi::agent::build_main_agent(&config, &main_agent_def);
 
             let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
                 std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
@@ -91,6 +89,7 @@ proptest! {
                 wip_waiting: Arc::clone(&wip_waiting),
                 chat_history: Arc::new(Mutex::new(vec![])),
                 main_agent,
+                fallback_agent: None,
                 token_store,
                 store,
                 chat_stack: Mutex::new(Vec::new()),
@@ -168,7 +167,7 @@ proptest! {
             let agent_pool = AgentPool::inert();
 
             let main_agent_def = config.resolve_agent("main");
-            let main_agent = gitzi::agent::build_main_agent(&main_agent_def);
+            let main_agent = gitzi::agent::build_main_agent(&config, &main_agent_def);
 
             let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
                 std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
@@ -183,6 +182,7 @@ proptest! {
                 wip_waiting: Arc::clone(&wip_waiting),
                 chat_history: Arc::new(Mutex::new(vec![])),
                 main_agent,
+                fallback_agent: None,
                 token_store,
                 store,
                 chat_stack: Mutex::new(Vec::new()),

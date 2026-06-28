@@ -23,7 +23,6 @@ fn arb_role() -> impl Strategy<Value = AgentRole> {
         Just(AgentRole::Designer),
         Just(AgentRole::Coder),
         Just(AgentRole::Reviewer),
-        Just(AgentRole::Tester),
         Just(AgentRole::Auditor),
         Just(AgentRole::Infrarian),
     ]

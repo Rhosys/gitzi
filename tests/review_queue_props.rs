@@ -7,18 +7,17 @@ use gitzi::dispatcher::review_queue::{HumanReviewItem, HumanReviewQueue, ReviewI
 use gitzi::dispatcher::Column;
 use proptest::prelude::*;
 
-/// The 5 buffer columns in pipeline order (left to right on the board).
-const BUFFER_COLUMNS: [Column; 5] = [
+/// The 4 buffer columns in pipeline order (left to right on the board).
+const BUFFER_COLUMNS: [Column; 4] = [
     Column::CodingBuffer,
     Column::ReviewBuffer,
-    Column::TestBuffer,
     Column::SecurityAuditBuffer,
     Column::DeploymentBuffer,
 ];
 
 /// Strategy for an arbitrary buffer column.
 fn arb_buffer_column() -> impl Strategy<Value = Column> {
-    (0usize..5).prop_map(|i| BUFFER_COLUMNS[i])
+    (0usize..4).prop_map(|i| BUFFER_COLUMNS[i])
 }
 
 /// Strategy for an arbitrary timestamp (seconds from epoch, spread out to avoid collisions).

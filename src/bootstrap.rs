@@ -1,81 +1,58 @@
-//! First-run bootstrapper: discovers LLM providers, scans for repos, generates config.
+//! Environment scanner: quickly probes for available LLM infrastructure and
+//! cloud credentials. [`discover_providers`] is the scan reused by the daemon's
+//! bootstrap setup phase ([`crate::setup`]) and by the `gitzi_rediscover_providers`
+//! agent tool.
+//!
+//! This is a *quick, non-blocking* scan — it never starts servers, loads
+//! models, or opens a browser for SSO login. Every provider it finds is
+//! surfaced as a candidate; activation (which wires a provider into the main
+//! agent) is always an explicit user step driven by the setup gate (ADR-002).
+//! This avoids onboarding ever getting stuck waiting on a server to start or a
+//! model to load.
+//!
+//! [`run`] (force-regenerate a `config.toml` from a scan) remains available for
+//! the `gitzi generate-config` command, but is no longer invoked by
+//! `Config::load` — loading is pure read-and-report (ADR-002).
 
 use std::path::PathBuf;
 use tracing::info;
 
-use crate::config::{AgentDef, Config, ProviderDef, WipLimits, atomic_write};
+use crate::config::{Config, ProviderDef, ProviderKind, WipLimits, atomic_write};
 use crate::state::home;
 
-/// A discovered LLM provider.
+/// A discovered LLM/model provider, surfaced for the user to choose from.
 #[derive(Debug, Clone)]
 pub struct DiscoveredProvider {
     pub name: String,
+    pub kind: ProviderKind,
+    /// Base URL for OpenAI-compatible providers.
     pub api_url: String,
-    /// Whether the server process is running (port is open).
+    /// AWS region, for Bedrock providers.
+    pub region: Option<String>,
+    /// AWS SSO start URL, for Bedrock providers (if found in `~/.aws/config`).
+    pub sso_start_url: Option<String>,
+    /// Whether the server process is running (port is open). N/A for Bedrock.
     pub running: bool,
-    /// Whether at least one model is loaded and ready to serve.
+    /// Whether at least one model is loaded and ready to serve. N/A for Bedrock.
     pub model_loaded: bool,
     /// Whether the binary/CLI is installed on the system.
     pub installed: bool,
 }
 
 /// Run the full bootstrap: discover providers, discover repos, generate config.
-/// Returns the generated config.
+/// Returns the generated config. Never auto-wires a provider into `[[agents]]`
+/// or starts/loads anything — see module docs.
 pub fn run() -> crate::error::Result<Config> {
     info!("bootstrapping gitzi — discovering environment...");
 
-    // 1. Discover LLM providers
     let providers = discover_providers();
-    info!("found {} LLM provider(s)", providers.len());
+    info!("found {} provider candidate(s)", providers.len());
 
-    // 2. Pick the best provider (first running one, or first installed)
-    let chosen = providers.first().cloned();
-
-    // 3. Discover repos
     let repo_paths = discover_repo_paths();
     info!("found {} repo path(s)", repo_paths.len());
 
-    // 4. Build config
-    let mut config = Config::default();
+    let config = build_config_from_discovery(&providers, repo_paths);
 
-    // Set WIP limits to 1 for all agent columns
-    let mut overrides = std::collections::HashMap::new();
-    overrides.insert("designing".to_string(), 1);
-    overrides.insert("coding".to_string(), 1);
-    overrides.insert("reviewing".to_string(), 1);
-    overrides.insert("auditing".to_string(), 1);
-    overrides.insert("deploying".to_string(), 1);
-    config.wip_limits = WipLimits { overrides };
-
-    // Set providers
-    config.providers.clear();
-    for provider in &providers {
-        config.providers.insert(
-            provider.name.clone(),
-            ProviderDef {
-                api_url: provider.api_url.clone(),
-                api_key: String::new(),
-            },
-        );
-    }
-
-    // Set agents (all roles pointing to the chosen provider)
-    let provider_name = chosen.as_ref().map(|p| p.name.clone());
-    let roles = [
-        "main", "prioritizer", "designer", "coder",
-        "reviewer", "auditor", "infrarian",
-    ];
-    config.agents = roles.iter().map(|role| AgentDef {
-        role: role.to_string(),
-        model: "local-model".to_string(),
-        api_url: None,
-        provider: provider_name.clone(),
-    }).collect();
-
-    // Set repo_paths
-    config.repo_paths = repo_paths;
-
-    // 5. Write config
     let path = home::global_config_file();
     home::ensure_dirs()?;
     write_config_with_comments(&path, &config)?;
@@ -84,25 +61,69 @@ pub fn run() -> crate::error::Result<Config> {
     Ok(config)
 }
 
-/// Discover available LLM providers on this machine.
-/// Priority: running processes first, then installed-but-not-running.
+/// Build a `Config` from discovery results: every provider is recorded
+/// disabled, and `[[agents]]` is always left empty (every role falls back
+/// to the local `claude` CLI until the user explicitly activates a
+/// provider). Split out from `run()` so it can be tested without touching
+/// the real `~/.gitzi/` or `~/.aws/` on disk.
+fn build_config_from_discovery(providers: &[DiscoveredProvider], repo_paths: Vec<String>) -> Config {
+    let mut config = Config::default();
+
+    let mut overrides = std::collections::HashMap::new();
+    overrides.insert("designing".to_string(), 1);
+    overrides.insert("coding".to_string(), 1);
+    overrides.insert("reviewing".to_string(), 1);
+    overrides.insert("auditing".to_string(), 1);
+    overrides.insert("deploying".to_string(), 1);
+    config.wip_limits = WipLimits { overrides };
+
+    config.providers.clear();
+    for provider in providers {
+        let mut def = ProviderDef {
+            kind: provider.kind,
+            enabled: false,
+            ..ProviderDef::default()
+        };
+        match provider.kind {
+            ProviderKind::OpenaiCompatible => {
+                def.api_url = provider.api_url.clone();
+            }
+            ProviderKind::Bedrock => {
+                def.region = provider.region.clone();
+                def.sso_start_url = provider.sso_start_url.clone();
+            }
+        }
+        config.providers.insert(provider.name.clone(), def);
+    }
+
+    config.repo_paths = repo_paths;
+    config
+}
+
+/// Quickly scan this machine for LLM providers and AWS Bedrock access.
+/// Every check here is fast (short timeouts, no process spawning that
+/// blocks longer than a couple seconds) — this never starts a server, loads
+/// a model, or initiates an SSO login.
 pub fn discover_providers() -> Vec<DiscoveredProvider> {
     let mut providers = Vec::new();
 
     // LM Studio
     let lms_path = dirs::home_dir().map(|h| h.join(".lmstudio/bin/lms"));
-    if let Some(ref path) = lms_path {
-        if path.exists() {
-            let running = check_port_open(1234);
-            let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
-            providers.push(DiscoveredProvider {
-                name: "lmstudio".to_string(),
-                api_url: "http://localhost:1234/v1".to_string(),
-                running,
-                model_loaded,
-                installed: true,
-            });
-        }
+    if let Some(ref path) = lms_path
+        && path.exists()
+    {
+        let running = check_port_open(1234);
+        let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
+        providers.push(DiscoveredProvider {
+            name: "lmstudio".to_string(),
+            kind: ProviderKind::OpenaiCompatible,
+            api_url: "http://localhost:1234/v1".to_string(),
+            region: None,
+            sso_start_url: None,
+            running,
+            model_loaded,
+            installed: true,
+        });
     }
 
     // Ollama
@@ -111,11 +132,46 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
         let model_loaded = running && has_models_loaded("http://localhost:11434/v1");
         providers.push(DiscoveredProvider {
             name: "ollama".to_string(),
+            kind: ProviderKind::OpenaiCompatible,
             api_url: "http://localhost:11434/v1".to_string(),
+            region: None,
+            sso_start_url: None,
             running,
             model_loaded,
             installed: true,
         });
+    }
+
+    // AWS Bedrock — surfaced if the AWS CLI is present, or if `~/.aws/config`
+    // already has SSO sessions configured (one candidate per session).
+    let aws_cli_installed = which("aws");
+    let sso_sessions = discover_aws_sso_sessions();
+    if sso_sessions.is_empty() {
+        if aws_cli_installed {
+            providers.push(DiscoveredProvider {
+                name: "bedrock".to_string(),
+                kind: ProviderKind::Bedrock,
+                api_url: String::new(),
+                region: None,
+                sso_start_url: None,
+                running: false,
+                model_loaded: false,
+                installed: true,
+            });
+        }
+    } else {
+        for (session_name, start_url, region) in sso_sessions {
+            providers.push(DiscoveredProvider {
+                name: format!("bedrock-{session_name}"),
+                kind: ProviderKind::Bedrock,
+                api_url: String::new(),
+                region: if region.is_empty() { None } else { Some(region) },
+                sso_start_url: Some(start_url),
+                running: false,
+                model_loaded: false,
+                installed: true,
+            });
+        }
     }
 
     // Sort: running+model first, then running-no-model, then installed-not-running
@@ -127,6 +183,62 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
     });
 
     providers
+}
+
+/// Parse `~/.aws/config` for `[sso-session NAME]` blocks, returning
+/// `(session_name, sso_start_url, sso_region)` for each one that has a
+/// start URL set.
+fn discover_aws_sso_sessions() -> Vec<(String, String, String)> {
+    match dirs::home_dir() {
+        Some(h) => parse_aws_sso_sessions(&h.join(".aws/config")),
+        None => Vec::new(),
+    }
+}
+
+/// Parse SSO sessions out of an `~/.aws/config`-formatted file at `path`.
+/// Split out from `discover_aws_sso_sessions` so it can be tested against a
+/// temp file instead of mutating the process-wide `$HOME`.
+fn parse_aws_sso_sessions(path: &std::path::Path) -> Vec<(String, String, String)> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut sessions = Vec::new();
+    let mut current: Option<String> = None;
+    let mut start_url = String::new();
+    let mut region = String::new();
+
+    let flush = |current: &mut Option<String>, start_url: &mut String, region: &mut String, sessions: &mut Vec<(String, String, String)>| {
+        if let Some(name) = current.take()
+            && !start_url.is_empty()
+        {
+            sessions.push((name, start_url.clone(), region.clone()));
+        }
+        start_url.clear();
+        region.clear();
+    };
+
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix("[sso-session ").and_then(|s| s.strip_suffix(']')) {
+            flush(&mut current, &mut start_url, &mut region, &mut sessions);
+            current = Some(name.trim().to_string());
+        } else if line.starts_with('[') {
+            flush(&mut current, &mut start_url, &mut region, &mut sessions);
+        } else if current.is_some()
+            && let Some((key, val)) = line.split_once('=')
+        {
+            match key.trim() {
+                "sso_start_url" => start_url = val.trim().to_string(),
+                "sso_region" => region = val.trim().to_string(),
+                _ => {}
+            }
+        }
+    }
+    flush(&mut current, &mut start_url, &mut region, &mut sessions);
+
+    sessions
 }
 
 /// Check if a provider has at least one model loaded via the /v1/models endpoint.
@@ -152,8 +264,10 @@ fn has_models_loaded(base_url: &str) -> bool {
     }
 }
 
-/// Attempt to load a model for the given provider.
-/// Returns true if a model is now available.
+/// Attempt to load a model for the given provider. Not called automatically
+/// during boot (that's what got onboarding stuck before) — only invoked
+/// explicitly when the user activates a provider via the main agent's
+/// `gitzi_activate_provider` tool. Returns true if a model is now available.
 pub fn ensure_model_loaded(provider: &DiscoveredProvider) -> bool {
     if provider.model_loaded {
         return true;
@@ -243,14 +357,12 @@ pub fn discover_repo_paths() -> Vec<String> {
     }
 
     // Also check if cwd contains a .git
-    if let Ok(cwd) = std::env::current_dir() {
-        if cwd.join(".git").is_dir() {
-            if let Some(parent) = cwd.parent() {
-                if !found_parents.iter().any(|p| p == parent) {
-                    found_parents.push(parent.to_path_buf());
-                }
-            }
-        }
+    if let Ok(cwd) = std::env::current_dir()
+        && cwd.join(".git").is_dir()
+        && let Some(parent) = cwd.parent()
+        && !found_parents.iter().any(|p| p == parent)
+    {
+        found_parents.push(parent.to_path_buf());
     }
 
     // Convert to glob patterns
@@ -319,6 +431,14 @@ fn write_config_with_comments(
         out,
         "# Each role handles one pipeline stage. Set model and provider only."
     ).unwrap();
+    writeln!(
+        out,
+        "# Empty by default: every role falls back to the local `claude` CLI."
+    ).unwrap();
+    writeln!(
+        out,
+        "# Ask the main agent to activate a discovered provider below to wire it in."
+    ).unwrap();
     writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         .unwrap();
     writeln!(out).unwrap();
@@ -342,17 +462,36 @@ fn write_config_with_comments(
     writeln!(out, "# Providers").unwrap();
     writeln!(
         out,
-        "# LLM endpoints. api_key is plaintext — never commit this file."
+        "# Discovered LLM endpoints and cloud credentials. All start disabled —"
+    ).unwrap();
+    writeln!(
+        out,
+        "# ask the main agent to activate the one(s) you want to use."
+    ).unwrap();
+    writeln!(
+        out,
+        "# api_key, if set, is a keyring: pointer, not a plaintext secret."
     ).unwrap();
     writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         .unwrap();
     writeln!(out).unwrap();
     for (name, provider) in &config.providers {
         writeln!(out, "[providers.{name}]").unwrap();
-        writeln!(out, "api_url = \"{}\"", provider.api_url).unwrap();
+        if provider.kind == crate::config::ProviderKind::Bedrock {
+            writeln!(out, "kind = \"bedrock\"").unwrap();
+            if let Some(ref region) = provider.region {
+                writeln!(out, "region = \"{region}\"").unwrap();
+            }
+            if let Some(ref start_url) = provider.sso_start_url {
+                writeln!(out, "sso_start_url = \"{start_url}\"").unwrap();
+            }
+        } else if !provider.api_url.is_empty() {
+            writeln!(out, "api_url = \"{}\"", provider.api_url).unwrap();
+        }
         if !provider.api_key.is_empty() {
             writeln!(out, "api_key = \"{}\"", provider.api_key).unwrap();
         }
+        writeln!(out, "enabled = {}", provider.enabled).unwrap();
         writeln!(out).unwrap();
     }
     writeln!(out).unwrap();
@@ -403,4 +542,84 @@ fn write_config_with_comments(
         .unwrap();
 
     atomic_write(path, &out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_config_from_discovery_never_auto_wires_agents() {
+        // Bootstrap must leave `[[agents]]` empty and every provider
+        // disabled regardless of what's discovered — activation is always
+        // an explicit, user-driven step.
+        let providers = vec![
+            DiscoveredProvider {
+                name: "lmstudio".to_string(),
+                kind: ProviderKind::OpenaiCompatible,
+                api_url: "http://localhost:1234/v1".to_string(),
+                region: None,
+                sso_start_url: None,
+                running: true,
+                model_loaded: true,
+                installed: true,
+            },
+            DiscoveredProvider {
+                name: "bedrock-mycompany".to_string(),
+                kind: ProviderKind::Bedrock,
+                api_url: String::new(),
+                region: Some("us-east-1".to_string()),
+                sso_start_url: Some("https://mycompany.awsapps.com/start".to_string()),
+                running: false,
+                model_loaded: false,
+                installed: true,
+            },
+        ];
+
+        let config = build_config_from_discovery(&providers, vec!["/home/user/git/*".to_string()]);
+
+        assert!(config.agents.is_empty());
+        assert_eq!(config.providers.len(), 2);
+        assert!(config.providers.values().all(|p| !p.enabled));
+        assert_eq!(
+            config.providers["bedrock-mycompany"].region.as_deref(),
+            Some("us-east-1")
+        );
+        assert_eq!(
+            config.providers["bedrock-mycompany"].sso_start_url.as_deref(),
+            Some("https://mycompany.awsapps.com/start")
+        );
+        assert_eq!(config.providers["lmstudio"].api_url, "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn parse_aws_sso_sessions_reads_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config");
+        std::fs::write(
+            &config_path,
+            "[sso-session mycompany]\n\
+             sso_start_url = https://mycompany.awsapps.com/start\n\
+             sso_region = us-east-1\n\
+             sso_registration_scopes = sso:account:access\n\
+             \n\
+             [profile dev]\n\
+             sso_session = mycompany\n\
+             region = us-east-1\n",
+        )
+        .unwrap();
+
+        let sessions = parse_aws_sso_sessions(&config_path);
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].0, "mycompany");
+        assert_eq!(sessions[0].1, "https://mycompany.awsapps.com/start");
+        assert_eq!(sessions[0].2, "us-east-1");
+    }
+
+    #[test]
+    fn parse_aws_sso_sessions_returns_empty_for_missing_file() {
+        let sessions = parse_aws_sso_sessions(std::path::Path::new("/nonexistent/.aws/config"));
+        assert!(sessions.is_empty());
+    }
 }

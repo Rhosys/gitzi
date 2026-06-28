@@ -189,39 +189,39 @@ async fn cmd_log() -> Result<()> {
             frame.render_widget(Paragraph::new(visible), inner);
         })?;
 
-        if ct_event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = ct_event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
+        if ct_event::poll(std::time::Duration::from_millis(50))?
+            && let Event::Key(key) = ct_event::read()?
+        {
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            match key.code {
+                KeyCode::Char('q') => break,
+                KeyCode::Char('f') => {
+                    auto_follow = !auto_follow;
                 }
-                match key.code {
-                    KeyCode::Char('q') => break,
-                    KeyCode::Char('f') => {
-                        auto_follow = !auto_follow;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        auto_follow = false;
-                        scroll_offset = scroll_offset.saturating_sub(1);
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        auto_follow = false;
-                        if scroll_offset < log_lines.len().saturating_sub(1) {
-                            scroll_offset += 1;
-                        }
-                    }
-                    KeyCode::PageUp => {
-                        auto_follow = false;
-                        scroll_offset = scroll_offset.saturating_sub(20);
-                    }
-                    KeyCode::PageDown => {
-                        if scroll_offset + 20 >= log_lines.len() {
-                            auto_follow = true;
-                        }
-                        scroll_offset =
-                            (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
-                    }
-                    _ => {}
+                KeyCode::Up | KeyCode::Char('k') => {
+                    auto_follow = false;
+                    scroll_offset = scroll_offset.saturating_sub(1);
                 }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    auto_follow = false;
+                    if scroll_offset < log_lines.len().saturating_sub(1) {
+                        scroll_offset += 1;
+                    }
+                }
+                KeyCode::PageUp => {
+                    auto_follow = false;
+                    scroll_offset = scroll_offset.saturating_sub(20);
+                }
+                KeyCode::PageDown => {
+                    if scroll_offset + 20 >= log_lines.len() {
+                        auto_follow = true;
+                    }
+                    scroll_offset =
+                        (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
+                }
+                _ => {}
             }
         }
     }
@@ -241,7 +241,16 @@ async fn cmd_daemon() -> Result<()> {
     home::ensure_dirs()?;
 
     let gitzi_home = home::gitzi_home();
-    let config = Config::load(&gitzi_home).context("Failed to load config")?;
+    let mut config = Config::load(&gitzi_home).context("Failed to load config")?;
+
+    // ADR-002: the experience is binary — set up an LLM or use one. If no valid
+    // control-plane provider exists, enter setup mode on the socket and don't
+    // build the dispatcher (so no agents come alive) until the gate clears.
+    if !gitzi::setup::gate_ready(&config) {
+        config = daemon::run_setup(config)
+            .await
+            .context("setup phase failed")?;
+    }
 
     // Populate repo cache from config globs
     if !config.repo_paths.is_empty() {

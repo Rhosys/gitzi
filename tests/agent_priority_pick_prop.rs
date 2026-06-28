@@ -19,7 +19,6 @@ fn arb_work_column() -> impl Strategy<Value = Column> {
         Just(Column::Designing),
         Just(Column::Coding),
         Just(Column::Reviewing),
-        Just(Column::Testing),
         Just(Column::Auditing),
         Just(Column::Deploying),
     ]

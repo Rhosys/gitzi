@@ -43,7 +43,7 @@ where
         let mut visitor = MessageVisitor(String::new());
         event.record(&mut visitor);
         let message = if visitor.0.is_empty() {
-            format!("{}", event.metadata().target())
+            event.metadata().target().to_string()
         } else {
             visitor.0
         };

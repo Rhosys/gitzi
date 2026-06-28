@@ -290,6 +290,49 @@ fn main_agent_tools() -> Vec<OaiTool> {
         OaiTool {
             r#type: "function",
             function: OaiFunctionDef {
+                name: "gitzi_rediscover_providers",
+                description: "Quickly re-scan this machine for LLM providers (LM Studio, Ollama) \
+                              and AWS Bedrock/SSO access, merging any newly-found ones into \
+                              config.toml as disabled candidates. Use this when the user asks what \
+                              model providers are available, or after they've installed/started \
+                              something new. Returns every known provider with its status so you \
+                              can present the list and ask which one(s) to activate with \
+                              gitzi_activate_provider.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_activate_provider",
+                description: "Activate a discovered provider so agents actually use it. For \
+                              OpenAI-compatible providers (LM Studio, Ollama) this is immediate. \
+                              For Bedrock providers, this may take multiple calls: the first call \
+                              kicks off (or resumes) an AWS SSO browser login and returns a \
+                              verification code; once the user confirms login in the browser, call \
+                              again to get the list of AWS accounts (pass account_id once chosen), \
+                              then the list of roles in that account (pass role_name once chosen) — \
+                              the final call with both account_id and role_name validates the \
+                              credentials and activates the provider. A gitzi restart is required \
+                              for the newly-wired agent to take effect; always tell the user this.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "The provider's name, as shown by gitzi_rediscover_providers." },
+                        "account_id": { "type": "string", "description": "Bedrock only. AWS account ID chosen from the list returned by a previous call." },
+                        "role_name": { "type": "string", "description": "Bedrock only. AWS SSO role/permission-set name chosen from the list returned by a previous call." }
+                    },
+                    "required": ["name"]
+                }),
+            },
+        },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
                 name: "gitzi_search_kb",
                 description: "Search the gitzi knowledge base to answer questions about \
                               how gitzi works, its configuration, features, and behavior. \

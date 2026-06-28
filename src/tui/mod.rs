@@ -104,6 +104,12 @@ async fn run_event_loop(
                 DaemonMessage::ForkClosed { id } => {
                     app.apply_fork_closed(&id);
                 }
+                DaemonMessage::SetupState(state) => {
+                    app.apply_setup_state(state);
+                }
+                DaemonMessage::SetupMessage(msg) => {
+                    app.setup_message = Some(msg);
+                }
             }
         }
 
@@ -121,6 +127,19 @@ async fn run_event_loop(
             && key.code == KeyCode::Char('q')
         {
             break;
+        }
+
+        // Bootstrap setup (ADR-002) owns all input until the gate clears: pick a
+        // provider to activate, or rescan. Nothing else is reachable.
+        if app.in_setup() {
+            match key.code {
+                KeyCode::Up => app.setup_move_up(),
+                KeyCode::Down => app.setup_move_down(),
+                KeyCode::Enter => app.setup_select(),
+                KeyCode::Char('r') | KeyCode::Char('R') => app.setup_rescan(),
+                _ => {}
+            }
+            continue;
         }
 
         // Global: Ctrl+Up/Down switch panels and focus them (works in any state)

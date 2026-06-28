@@ -238,6 +238,11 @@ pub struct Dispatcher {
     pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
     /// The main coordination agent that drives the chat interface.
     pub main_agent: MainAgent,
+    /// The distinguished fallback "control-plane" brain (ADR-002). Built only
+    /// when a fallback provider is configured *and* distinct from main's own
+    /// provider, so it can run the recovery conversation when main is down.
+    /// `None` when main already is the fallback (recovery couldn't help).
+    pub fallback_agent: Option<MainAgent>,
     /// Token store for MCP sub-agent authorization.
     pub token_store: Arc<TokenStore>,
     /// Persistence layer for tasks, epics, and review items.
@@ -468,10 +473,9 @@ impl Dispatcher {
                     repo_config.main_branch
                 );
                 crate::state::repo_cache::increment_commits(
-                    &repo_path.file_name()
+                    repo_path.file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("default")
-                        .to_string()
                 );
             }
             Ok(MergeOutcome::Skipped(reason)) => {
@@ -711,6 +715,86 @@ impl Dispatcher {
         Ok(persisted)
     }
 
+    /// Re-scan this machine for LLM providers and AWS Bedrock/SSO access,
+    /// merging any newly-found ones into `~/.gitzi/config.toml` as disabled
+    /// candidates (never auto-activated — see `bootstrap` module docs).
+    /// Reads and writes the config file directly rather than `self.config`,
+    /// since the latter is an immutable snapshot for the life of the daemon.
+    /// Returns a human-readable summary for the main agent to relay.
+    pub async fn gitzi_rediscover_providers(&self) -> anyhow::Result<String> {
+        let gitzi_home = crate::state::home::gitzi_home();
+        let mut config = Config::load(&gitzi_home)?;
+
+        // Shared scan + merge logic lives in `crate::setup` so the agent tool
+        // and the daemon's bootstrap setup phase stay in lockstep (ADR-002).
+        let discovered = crate::bootstrap::discover_providers();
+        let added = crate::setup::merge_discovered(&mut config, &discovered);
+
+        if !added.is_empty() {
+            config.write(&gitzi_home)?;
+            info!(added = ?added, "rediscovered new providers — merged into config.toml as disabled");
+        }
+
+        if discovered.is_empty() {
+            return Ok("No LLM providers or AWS Bedrock access discovered on this machine.".to_string());
+        }
+
+        let lines: Vec<String> = discovered.iter().map(|p| {
+            let enabled = config.providers.get(&p.name).map(|d| d.enabled).unwrap_or(false);
+            let status = if p.model_loaded {
+                "running, model loaded"
+            } else if p.running {
+                "running, no model loaded"
+            } else if p.installed {
+                "installed, not running"
+            } else {
+                "not installed"
+            };
+            let kind = match p.kind {
+                crate::config::ProviderKind::OpenaiCompatible => "openai-compatible",
+                crate::config::ProviderKind::Bedrock => "bedrock",
+            };
+            format!("- {} [{kind}] {status}, enabled={enabled}", p.name)
+        }).collect();
+
+        let added_note = if added.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nNewly discovered: {}", added.join(", "))
+        };
+
+        Ok(format!("Discovered providers:\n{}{added_note}", lines.join("\n")))
+    }
+
+    /// Activate a discovered provider so agents actually use it. For
+    /// OpenAI-compatible providers this is immediate. For Bedrock, this may
+    /// span multiple calls — see the `gitzi_activate_provider` tool
+    /// description. Operates on `~/.gitzi/config.toml` directly; the caller
+    /// must tell the user a gitzi restart is needed for the rewired agent to
+    /// take effect (the running daemon's `self.config` is immutable).
+    pub async fn gitzi_activate_provider(
+        &self,
+        name: &str,
+        account_id: Option<String>,
+        role_name: Option<String>,
+    ) -> anyhow::Result<String> {
+        let gitzi_home = crate::state::home::gitzi_home();
+        let mut config = Config::load(&gitzi_home)?;
+
+        // Activation logic is shared with the daemon's bootstrap setup phase —
+        // both drive `crate::setup::activate` so there is one source of truth
+        // for "enable a provider and wire it into main" (ADR-002).
+        match crate::setup::activate(&mut config, name, account_id, role_name).await? {
+            crate::setup::ActivationOutcome::Activated { message } => {
+                config.write(&gitzi_home)?;
+                Ok(format!(
+                    "ok: {message} Restart gitzi for this to take effect."
+                ))
+            }
+            crate::setup::ActivationOutcome::NeedsMoreInput { message } => Ok(message),
+        }
+    }
+
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
     /// and signal agents whose columns contain work.
     pub async fn start(config: Config) -> anyhow::Result<Self> {
@@ -808,9 +892,11 @@ impl Dispatcher {
             Arc::new(Mutex::new(messages))
         };
 
-        // 11. Build main agent from config
+        // 11. Build main agent from config, plus the fallback control-plane
+        // brain used to drive recovery when main's own provider is down.
         let main_agent_def = config.resolve_agent("main");
-        let main_agent = build_main_agent(&main_agent_def);
+        let main_agent = build_main_agent(&config, &main_agent_def);
+        let fallback_agent = build_fallback_agent(&config);
 
         let dispatcher = Self {
             event_bus,
@@ -822,6 +908,7 @@ impl Dispatcher {
             wip_waiting,
             chat_history,
             main_agent,
+            fallback_agent,
             token_store,
             store,
             chat_stack: Mutex::new(Vec::new()),
@@ -1067,13 +1154,38 @@ impl Dispatcher {
             true,
         );
 
-        // 6. Tool-calling loop
+        // 6. Tool-calling loop. If main's provider is down, fall back *once* to
+        // the control-plane brain to run a recovery conversation (ADR-002) —
+        // never a silent swap for the user's real request.
+        let mut active_agent = &self.main_agent;
+        let mut recovered = false;
         let final_response = loop {
-            let (raw_assistant, turn) = self
-                .main_agent
-                .turn(&messages, &tools)
-                .await
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let (raw_assistant, turn) = match active_agent.turn(&messages, &tools).await {
+                Ok(t) => t,
+                Err(e) => {
+                    if !recovered
+                        && let Some(fallback) = self.fallback_agent.as_ref()
+                    {
+                        warn!(error = %e, "main provider failed — handing off to the fallback brain for recovery");
+                        recovered = true;
+                        active_agent = fallback;
+                        messages.push(OaiMessage {
+                            role: "system".to_string(),
+                            content: Some(format!(
+                                "The main model provider is not responding ({e}). You are the \
+                                 fallback assistant. Tell the user plainly that their main model \
+                                 is unavailable, then ask what they want to do — retry, switch to \
+                                 a different provider, or keep going with you. Do not attempt their \
+                                 original request as if nothing happened."
+                            )),
+                            tool_calls: vec![],
+                            tool_call_id: None,
+                        });
+                        continue;
+                    }
+                    return Err(anyhow::anyhow!("{e}"));
+                }
+            };
 
             match turn {
                 ChatTurn::Text(text) => break text,
@@ -1347,6 +1459,34 @@ impl Dispatcher {
                 format!("ok: fork closed — {summary}")
             }
 
+            "gitzi_rediscover_providers" => match self.gitzi_rediscover_providers().await {
+                Ok(summary) => summary,
+                Err(e) => format!("error: {e}"),
+            },
+
+            "gitzi_activate_provider" => {
+                let name = args
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if name.is_empty() {
+                    return "error: missing required argument: name".to_string();
+                }
+                let account_id = args
+                    .get("account_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                let role_name = args
+                    .get("role_name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+                match self.gitzi_activate_provider(&name, account_id, role_name).await {
+                    Ok(summary) => summary,
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+
             "gitzi_search_kb" => {
                 let query = args
                     .get("query")
@@ -1502,6 +1642,37 @@ impl Dispatcher {
     }
 }
 
+/// Point the `main` role's `[[agents]]` entry at `provider_name`, creating
+/// the entry if one doesn't exist yet. Other roles keep falling back to
+/// `main` (or the local `claude` CLI) per the agent-resolution rules in
+/// `config.rs` — only `main` is rewired here.
+/// Build the fallback control-plane brain (ADR-002): a chat agent bound to the
+/// distinguished `fallback_provider`, used to run the recovery conversation
+/// when main's own provider is down. Returns `None` unless the fallback is set,
+/// enabled, OpenAI-compatible, and *distinct* from main's provider — if main
+/// already is the fallback, falling back couldn't help.
+fn build_fallback_agent(config: &Config) -> Option<MainAgent> {
+    let fallback = config.fallback_provider.as_ref()?;
+    let provider = config.providers.get(fallback)?;
+    if !provider.enabled || provider.kind != crate::config::ProviderKind::OpenaiCompatible {
+        return None;
+    }
+    let main_def = config.resolve_agent("main");
+    if main_def.provider.as_deref() == Some(fallback.as_str()) {
+        return None;
+    }
+    let def = crate::config::AgentDef {
+        role: "main".to_string(),
+        provider: Some(fallback.clone()),
+        api_url: None,
+        model: provider
+            .model_id
+            .clone()
+            .unwrap_or_else(|| main_def.model.clone()),
+    };
+    Some(build_main_agent(config, &def))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1590,5 +1761,69 @@ mod tests {
             let col = role.column();
             assert_eq!(col.agent_role(), Some(*role));
         }
+    }
+
+    // ── Fallback control-plane brain (ADR-002) ──────────────────────────────
+
+    fn openai_provider(url: &str) -> crate::config::ProviderDef {
+        crate::config::ProviderDef {
+            api_url: url.to_string(),
+            enabled: true,
+            ..crate::config::ProviderDef::default()
+        }
+    }
+
+    #[test]
+    fn fallback_agent_none_when_fallback_is_also_main() {
+        // Main is bound to the same provider as the fallback — recovery via the
+        // fallback couldn't help, so there's no separate brain.
+        let config = Config {
+            providers: std::collections::HashMap::from([(
+                "local".to_string(),
+                openai_provider("http://localhost:1234/v1"),
+            )]),
+            agents: vec![crate::config::AgentDef {
+                role: "main".to_string(),
+                provider: Some("local".to_string()),
+                ..crate::config::AgentDef::default()
+            }],
+            fallback_provider: Some("local".to_string()),
+            ..Config::default()
+        };
+        assert!(build_fallback_agent(&config).is_none());
+    }
+
+    #[test]
+    fn fallback_agent_built_when_distinct_from_main() {
+        // Main points at one provider, the fallback brain at another — the
+        // fallback is built and aimed at the fallback provider's endpoint.
+        let config = Config {
+            providers: std::collections::HashMap::from([
+                ("remote".to_string(), openai_provider("http://remote:8080/v1")),
+                ("local".to_string(), openai_provider("http://localhost:11434/v1")),
+            ]),
+            agents: vec![crate::config::AgentDef {
+                role: "main".to_string(),
+                provider: Some("remote".to_string()),
+                ..crate::config::AgentDef::default()
+            }],
+            fallback_provider: Some("local".to_string()),
+            ..Config::default()
+        };
+        let fallback = build_fallback_agent(&config).expect("distinct fallback should build");
+        assert_eq!(fallback.base_url(), "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn fallback_agent_none_when_provider_disabled() {
+        let mut provider = openai_provider("http://localhost:11434/v1");
+        provider.enabled = false;
+        let config = Config {
+            providers: std::collections::HashMap::from([("local".to_string(), provider)]),
+            agents: Vec::new(),
+            fallback_provider: Some("local".to_string()),
+            ..Config::default()
+        };
+        assert!(build_fallback_agent(&config).is_none());
     }
 }

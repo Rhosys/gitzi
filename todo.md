@@ -426,12 +426,51 @@ Decision: TBD — needs further design.
 
 ## Bootstrapping
 
-- [ ] Implement first-run bootstrapper TUI flow (loader/spinner during discovery)
-- [ ] Add onboarding selection UI when multiple providers found
+- [x] Implement first-run bootstrapper flow (`src/bootstrap.rs`) — quick, non-blocking
+      scan; no loader/spinner needed since it never starts servers, loads models, or
+      blocks on SSO login before the TUI launches
+- [x] Status panel: first-run view shows providers + repos with summaries
+- [x] Activation flow via main agent chat tools (`gitzi_rediscover_providers`,
+      `gitzi_activate_provider`) instead of a separate blocking onboarding selection UI
+- [ ] Detect installed-but-not-running providers and surface per-provider guidance text
+      directly on the Status panel (today this status is only relayed through
+      `gitzi_rediscover_providers`'s chat response)
 - [ ] Add `design` field to Task model (markdown content from Designer agent)
 - [ ] Worktree cleanup: delete `~/.gitzi/tmp/tasks/<id>/` when task reaches Done
 - [ ] Reviewer rejection → direct to Coding (not CodingBuffer), respects WIP limit
 - [ ] `gitzi skill install/uninstall SKILL` CLI commands
 - [ ] User-authored tools in `~/.gitzi/tools/` (exposed to agents as tool name = filename)
-- [ ] Status panel: first-run view shows providers + repos with summaries
-- [ ] Detect installed-but-not-running providers and display guidance on Status panel
+
+---
+
+## Multi-cloud credential providers (Azure, GCP)
+
+AWS Bedrock support (`src/aws_sso.rs`) is the first cloud provider; Azure (Azure OpenAI /
+Azure AI Foundry) and GCP (Vertex AI) should follow the same shape — drive an interactive
+login, cache whatever the SDK returns in the OS keyring under `gitzi/<domain>/...`
+(`secrets::service_name`), never cache the short-lived bearer/role token.
+
+- [ ] Azure OpenAI / Azure AI Foundry provider + login flow
+- [ ] GCP Vertex AI provider + login flow
+
+### Implementation notes — candidate crates
+
+| Cloud | Drives a *new* interactive login (≈ `aws_sso.rs`) | Reads an *existing* CLI login (≈ bootstrap.rs's AWS-cache detection) |
+|---|---|---|
+| Azure | [`azure-identity-helpers`](https://github.com/demoray/azure-identity-helpers) (unofficial, v0.2.0) — `DeviceCodeCredential` implements the device-code flow on top of official [`azure_identity`](https://github.com/azure/azure-sdk-for-rust) (v1.0.0, Microsoft-official) | `azure-identity-helpers`'s `AzureAuthCliCredential` / `default_azure_credential`, or `azure_identity`'s `AzureCliCredential` |
+| GCP | [`yup-oauth2`](https://github.com/dermesser/yup-oauth2) (v12.1.2, mature) — implements the actual OAuth2 device/installed-app flows | [`gcp_auth`](https://github.com/djc/gcp_auth) (v0.12.7) — reads `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud auth application-default login`'s cached file, the metadata server, or shells out to `gcloud`; **no Windows support**, drives no login of its own |
+
+Architectural differences from AWS to account for when designing these (confirmed from
+crate source, not just docs):
+
+- **No dynamic client self-registration.** AWS SSO's `register_client` (cached at
+  `gitzi/aws/sso-client`) has no Azure/GCP equivalent — both require a pre-registered
+  app/client ID configured ahead of time. Nothing analogous to cache there.
+- **No mandatory role-exchange step.** AWS needs SSO login *then* a separate
+  `get_role_credentials` (STS-style) call to scope to an account/role. Azure and GCP skip
+  that — the OAuth access token from login is usable directly as the API bearer token;
+  scoping happens server-side via Azure RBAC role assignments or (optionally) GCP
+  service-account impersonation, not a client-side exchange call.
+- Both crates keep tokens **in-memory only** — gitzi would own persisting whatever they
+  return into the keyring (`gitzi/azure/oauth-token` keyed by tenant ID, `gitzi/gcp/oauth-token`
+  keyed by account email), same shape as `aws_sso.rs`'s `store_token`/`load_token`.
