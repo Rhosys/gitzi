@@ -169,7 +169,7 @@ async fn unknown_method_returns_method_not_found() {
 // ── Tool discovery tests ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn tools_list_returns_all_seven_tools() {
+async fn tools_list_returns_all_gitzi_tools() {
     let (app, _) = build_test_app().await;
     let req = json!({
         "jsonrpc": "2.0",
@@ -184,7 +184,7 @@ async fn tools_list_returns_all_seven_tools() {
     let tools = body["result"]["tools"]
         .as_array()
         .expect("result.tools should be an array");
-    assert_eq!(tools.len(), 7, "should expose exactly 7 gitzi_* tools");
+    assert_eq!(tools.len(), 8, "should expose exactly 8 gitzi_* tools");
 
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for expected in &[
@@ -195,6 +195,7 @@ async fn tools_list_returns_all_seven_tools() {
         "gitzi_create_review_item",
         "gitzi_update_task",
         "gitzi_park_task",
+        "gitzi_block_task",
     ] {
         assert!(names.contains(expected), "missing tool: {expected}");
     }

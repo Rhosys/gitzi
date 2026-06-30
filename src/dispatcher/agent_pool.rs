@@ -206,17 +206,14 @@ async fn agent_loop(
 
         debug!(%role, "agent woke, checking for work");
 
-        // Pick highest-priority task from our column
+        // Pick highest-priority unblocked task from our column
         let task_snapshot = {
             let b = board.read().await;
-            let task_ids = b.tasks_in(column);
-            if task_ids.is_empty() {
-                debug!(%role, "no tasks in column, sleeping");
+            let Some(task) = b.next_unblocked(column) else {
+                debug!(%role, "no unblocked tasks in column, sleeping");
                 continue;
-            }
-            // First task is highest priority (sorted by board)
-            let task_id = &task_ids[0];
-            b.task(task_id).cloned()
+            };
+            Some(task.clone())
         };
 
         let Some(task) = task_snapshot else {

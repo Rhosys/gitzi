@@ -159,6 +159,10 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub history: Vec<HistoryEntry>,
+    /// Task IDs that must reach `Stage::Done` before this task is eligible to
+    /// be picked up by its column's agent. Set via `gitzi_block_task`.
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
 }
 
 fn default_priority() -> u32 {
@@ -184,6 +188,7 @@ impl Task {
             created_at: now,
             updated_at: now,
             history: Vec::new(),
+            blocked_by: Vec::new(),
         }
     }
 

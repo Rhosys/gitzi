@@ -112,6 +112,20 @@ impl KanbanBoard {
         self.sort_column(column);
     }
 
+    /// First task in `column` (priority order) whose blockers have all reached
+    /// `Stage::Done`. Tasks with no blockers are always eligible. A blocker ID
+    /// not found on the board is treated as not-yet-done (fails closed).
+    pub fn next_unblocked(&self, column: Column) -> Option<&Task> {
+        self.tasks_in(column).iter().find_map(|id| {
+            let task = self.tasks.get(id)?;
+            let ready = task
+                .blocked_by
+                .iter()
+                .all(|b| self.tasks.get(b).is_some_and(|bt| bt.stage == crate::model::Stage::Done));
+            ready.then_some(task)
+        })
+    }
+
     /// Update a task's priority and re-sort its column.
     pub fn set_priority(&mut self, task_id: &str, priority: u32) {
         if let Some(task) = self.tasks.get_mut(task_id) {
@@ -333,6 +347,47 @@ mod tests {
         board.set_priority("a", 99);
         assert_eq!(board.tasks_in(Column::Coding), &["b", "a"]);
         assert_eq!(board.task("a").unwrap().priority, 99);
+    }
+
+    #[test]
+    fn next_unblocked_skips_tasks_with_unfinished_blockers() {
+        let mut blocked = make_task("blocked", Stage::Prioritized, 0);
+        blocked.blocked_by = vec!["blocker".to_string()];
+        let blocker = make_task("blocker", Stage::Coding, 50);
+        let free = make_task("free", Stage::Prioritized, 10);
+        let board = KanbanBoard::from_tasks(vec![blocked, blocker, free]);
+
+        // "blocked" sorts first (priority 0) but its blocker isn't Done yet.
+        let next = board.next_unblocked(Column::Prioritized).unwrap();
+        assert_eq!(next.id, "free");
+    }
+
+    #[test]
+    fn next_unblocked_allows_task_once_blocker_is_done() {
+        let mut blocked = make_task("blocked", Stage::Prioritized, 0);
+        blocked.blocked_by = vec!["blocker".to_string()];
+        let blocker = make_task("blocker", Stage::Done, 50);
+        let board = KanbanBoard::from_tasks(vec![blocked, blocker]);
+
+        let next = board.next_unblocked(Column::Prioritized).unwrap();
+        assert_eq!(next.id, "blocked");
+    }
+
+    #[test]
+    fn next_unblocked_treats_unknown_blocker_as_not_done() {
+        let mut blocked = make_task("blocked", Stage::Prioritized, 0);
+        blocked.blocked_by = vec!["ghost".to_string()];
+        let board = KanbanBoard::from_tasks(vec![blocked]);
+
+        assert!(board.next_unblocked(Column::Prioritized).is_none());
+    }
+
+    #[test]
+    fn next_unblocked_with_no_blockers_is_always_eligible() {
+        let tasks = vec![make_task("a", Stage::Prioritized, 10)];
+        let board = KanbanBoard::from_tasks(tasks);
+
+        assert_eq!(board.next_unblocked(Column::Prioritized).unwrap().id, "a");
     }
 
     #[test]
