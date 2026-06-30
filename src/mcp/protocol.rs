@@ -209,5 +209,30 @@ pub fn sub_agent_tools() -> Vec<Tool> {
                 "required": ["task_id", "reason"]
             }),
         },
+        Tool {
+            name: "gitzi_block_task",
+            description: "Structurally block the task you are currently working on until one \
+                          or more other tasks reach Done. The task_id must match the task \
+                          assigned to your session token. Moves the task back to the top of \
+                          Prioritized; it will not be picked up again until every task listed \
+                          in blocked_by has reached Done. Use this for the refactor-first flow: \
+                          after the human accepts a proposed refactor ticket, block this task \
+                          on that ticket's ID.",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "The ID of the task to block. Must match the task in your session token."
+                    },
+                    "blocked_by": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "IDs of the tasks that must reach Done before this task can resume."
+                    }
+                },
+                "required": ["task_id", "blocked_by"]
+            }),
+        },
     ]
 }

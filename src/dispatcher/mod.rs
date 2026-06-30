@@ -199,7 +199,20 @@ terminating case first and return, instead of nesting the main logic inside an `
 or a `match`/`switch` over the discriminant, instead.\n\
 - For value lookups from a map, prefer a default/fallback expression \
 (e.g. `dict[key] || default` or `map.get(key).unwrap_or(default)`) over an `if`/`else` \
-that assigns the value in each branch.",
+that assigns the value in each branch.\n\n\
+REFACTOR FIRST:\n\
+- Before implementing, check whether refactoring existing code first would make this task \
+trivial and clean to implement.\n\
+- If so, do NOT refactor inline and do NOT implement the original task yet. Call gitzi_create_task \
+to create a separate refactor ticket under the same epic describing exactly what needs to change.\n\
+- Then call gitzi_create_review_item on your current task asking the human to confirm the \
+refactor-first plan, and stop.\n\
+- Once a later run shows the decision was accepted, call gitzi_block_task on your current \
+task_id with blocked_by set to the new refactor ticket's ID, then stop. Your task moves back \
+to the top of Prioritized and waits until the refactor ticket reaches Done.\n\
+- If the decision was declined, implement the original task directly with no refactor.\n\
+- Never implement the refactor ticket in the same run as the original task — it goes through \
+the normal pipeline and may be picked up later in its own run.",
             AgentRole::Reviewer => "\
 You are an adversarial code auditor. Your job is to find everything wrong with the \
 coder's work. Assume the coder attempted to:\n\
@@ -690,6 +703,46 @@ impl Dispatcher {
                 t.updated_at = task.updated_at;
             }
         }
+
+        Ok(())
+    }
+
+    /// Block the task on one or more other tasks (e.g. a refactor ticket the
+    /// Coder decided must land first). Moves the task back to the top of
+    /// Prioritized; it becomes eligible for pick-up again once every task in
+    /// `blocked_by` reaches `Stage::Done` (see `KanbanBoard::next_unblocked`).
+    /// Unlike `gitzi_park_task` (a free-text note only), this creates a
+    /// structural link the pipeline actually enforces.
+    pub async fn gitzi_block_task(&self, task_id: &str, blocked_by: Vec<String>) -> anyhow::Result<()> {
+        let from_col = {
+            let mut board = self.board.write().await;
+            let from_col = board.column_of(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
+            board.advance(task_id, Column::Prioritized)?;
+            board.set_priority(task_id, 0);
+            let task = board.task_mut(task_id)
+                .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
+            task.blocked_by = blocked_by;
+            task.updated_at = chrono::Utc::now();
+            from_col
+        };
+
+        // Persist the now-fully-updated board copy, not a separately reloaded
+        // one, so the on-disk `stage` never diverges from the in-memory board.
+        {
+            let board = self.board.read().await;
+            if let Some(task) = board.task(task_id)
+                && let Err(e) = self.store.write_task(task) {
+                warn!(%task_id, error = %e, "failed to persist task after block");
+            }
+        }
+
+        self.event_bus.emit(DispatchEvent::TaskStageChanged {
+            task_id: task_id.to_string(),
+            from: from_col,
+            to: Column::Prioritized,
+        });
+        self.agent_pool.signal(AgentRole::Prioritizer);
 
         Ok(())
     }
