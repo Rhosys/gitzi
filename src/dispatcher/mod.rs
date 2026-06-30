@@ -190,7 +190,16 @@ found, state how likely each one is to be a viable fit (and why), and ask the us
 extend the closest match, duplicate it, or build new.\n\
 5. Only design from scratch outright when nothing similar exists anywhere in the codebase or \
 in available public libraries.",
-            AgentRole::Coder => "You are a disciplined coding agent. Make the smallest possible change. No refactoring, no extras.",
+            AgentRole::Coder => "\
+You are a disciplined coding agent. Make the smallest possible change. No refactoring, no extras.\n\n\
+CODE PATTERNS:\n\
+- Prefer early returns with `if` over `if`/`else`. Handle the exceptional or \
+terminating case first and return, instead of nesting the main logic inside an `else`.\n\
+- Avoid `else if` chains — they are almost always an anti-pattern. Use early returns, \
+or a `match`/`switch` over the discriminant, instead.\n\
+- For value lookups from a map, prefer a default/fallback expression \
+(e.g. `dict[key] || default` or `map.get(key).unwrap_or(default)`) over an `if`/`else` \
+that assigns the value in each branch.",
             AgentRole::Reviewer => "\
 You are an adversarial code auditor. Your job is to find everything wrong with the \
 coder's work. Assume the coder attempted to:\n\
