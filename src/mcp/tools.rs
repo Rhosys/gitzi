@@ -13,8 +13,8 @@ use crate::dispatcher::Dispatcher;
 /// The caller is expected to have already validated the Bearer token and
 /// produced a `TokenEntry` before calling this function.  For write operations
 /// that are scoped to a specific task (`gitzi_create_review_item`, `gitzi_update_task`,
-/// `gitzi_park_task`) the `entry.task_id` must match the `task_id` argument
-/// supplied by the agent.
+/// `gitzi_park_task`, `gitzi_block_task`) the `entry.task_id` must match the
+/// `task_id` argument supplied by the agent.
 ///
 /// # Errors
 ///
@@ -168,6 +168,32 @@ pub async fn dispatch(
                 .gitzi_park_task(task_id, reason)
                 .await
                 .map_err(|e| format!("gitzi_park_task failed: {e}"))?;
+            Ok(serde_json::to_value(()).unwrap_or(Value::Null))
+        }
+
+        "gitzi_block_task" => {
+            let task_id = args
+                .get("task_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "missing required argument: task_id".to_string())?;
+            if entry.task_id != task_id {
+                return Err(format!(
+                    "token is scoped to task '{}' but request targets task '{task_id}'",
+                    entry.task_id
+                ));
+            }
+            let blocked_by = args
+                .get("blocked_by")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "missing required argument: blocked_by".to_string())?
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect();
+            dispatcher
+                .gitzi_block_task(task_id, blocked_by)
+                .await
+                .map_err(|e| format!("gitzi_block_task failed: {e}"))?;
             Ok(serde_json::to_value(()).unwrap_or(Value::Null))
         }
 

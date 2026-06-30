@@ -147,6 +147,26 @@ pub fn coding_agent_tools() -> Vec<OaiTool> {
                 }),
             },
         },
+        OaiTool {
+            r#type: "function",
+            function: OaiFunctionDef {
+                name: "gitzi_block_task",
+                description: "Structurally block the current task until other tasks reach Done. \
+                              Moves the task back to the top of Prioritized.",
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "task_id": { "type": "string", "description": "The task to block." },
+                        "blocked_by": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "IDs of tasks that must reach Done before this task can resume."
+                        }
+                    },
+                    "required": ["task_id", "blocked_by"]
+                }),
+            },
+        },
     ]
 }
 
@@ -165,7 +185,7 @@ pub fn execute_tool(
         "list_dir" => exec_list_dir(args, worktree_root),
         "grep" => exec_grep(args, worktree_root),
         // gitzi tools are handled by the dispatcher, not here
-        "gitzi_create_review_item" | "gitzi_park_task" | "gitzi_create_task" => {
+        "gitzi_create_review_item" | "gitzi_park_task" | "gitzi_create_task" | "gitzi_block_task" => {
             ToolResult::DelegateToDispatcher
         }
         other => ToolResult::UnknownTool(other.to_string()),
