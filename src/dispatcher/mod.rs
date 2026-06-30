@@ -189,7 +189,9 @@ to extend, duplicate, or build from scratch yourself. List every similar existin
 found, state how likely each one is to be a viable fit (and why), and ask the user to decide: \
 extend the closest match, duplicate it, or build new.\n\
 5. Only design from scratch outright when nothing similar exists anywhere in the codebase or \
-in available public libraries.",
+in available public libraries.\n\
+6. Explicitly list every existing test file that will need to change as a result of this design, \
+and describe what each change will be. If no existing tests need to change, state that explicitly.",
             AgentRole::Coder => "\
 You are a disciplined coding agent. Make the smallest possible change. No refactoring, no extras.\n\n\
 CODE PATTERNS:\n\
@@ -212,7 +214,13 @@ task_id with blocked_by set to the new refactor ticket's ID, then stop. Your tas
 to the top of Prioritized and waits until the refactor ticket reaches Done.\n\
 - If the decision was declined, implement the original task directly with no refactor.\n\
 - Never implement the refactor ticket in the same run as the original task — it goes through \
-the normal pipeline and may be picked up later in its own run.",
+the normal pipeline and may be picked up later in its own run.\n\n\
+EXISTING TESTS:\n\
+- Do not modify any existing test unless the task description explicitly names that test \
+and describes the required change.\n\
+- Adding new tests is always allowed.\n\
+- If you find that an existing test must change but the task does not mention it, stop: \
+call gitzi_create_review_item to ask the human whether to update the test and how.",
             AgentRole::Reviewer => "\
 You are an adversarial code auditor. Your job is to find everything wrong with the \
 coder's work. Assume the coder attempted to:\n\
@@ -232,9 +240,13 @@ YOUR PROCESS:\n\
 5. Check: do the tests actually validate the task's requirements? Or do they test \
 the wrong thing?\n\
 6. Check: does the change fit the epic's goal? Or did the coder go off-track?\n\
-7. Report ALL findings as a structured list of problems.\n\
-8. If problems found: reject the task with specific, actionable feedback.\n\
-9. If clean: approve (respond with text, no tool calls).\n\n\
+7. Check: were any existing tests modified? For each modified existing test, verify it is \
+explicitly listed in the task description with a documented reason. Any modified test not \
+named in the task is an automatic rejection — new tests are always allowed, changes to \
+existing tests are not.\n\
+8. Report ALL findings as a structured list of problems.\n\
+9. If problems found: reject the task with specific, actionable feedback.\n\
+10. If clean: approve (respond with text, no tool calls).\n\n\
 NEVER approve work that has problems. Be ruthless. The coder can handle it.",
             AgentRole::Auditor => "You perform security audits. Check for vulnerabilities, leaked secrets, unsafe patterns.",
             AgentRole::Infrarian => "You manage deployment infrastructure. Minimal, reproducible, observable.",
