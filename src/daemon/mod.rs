@@ -162,6 +162,10 @@ pub async fn run_setup(initial: Config) -> Result<Config> {
 /// Run the (blocking) environment scan on a background task and publish the
 /// resulting `NeedsProvider`/`Error` state. Discovered providers are merged
 /// into the session config and persisted so activation has entries to work on.
+///
+/// If the only available providers are Bedrock (no local LLMs), auto-activates
+/// the first one immediately — driving the AWS SSO device flow without waiting
+/// for manual selection.
 fn spawn_scan(session: Arc<SetupSession>) {
     tokio::spawn(async move {
         session.set_state(SetupState::Loading).await;
@@ -179,6 +183,59 @@ fn spawn_scan(session: Arc<SetupSession>) {
                     *guard = cfg;
                     let _ = guard.write(std::path::Path::new("."));
                 }
+
+                // Auto-activate if only Bedrock providers are available — don't
+                // make the user manually select what's obvious.
+                if let SetupState::NeedsProvider { ref candidates } = state {
+                    let all_bedrock = !candidates.is_empty()
+                        && candidates.iter().all(|c| c.kind == "bedrock");
+                    let single_candidate = candidates.len() == 1;
+
+                    if all_bedrock || single_candidate {
+                        let name = candidates[0].name.clone();
+                        info!("auto-activating provider '{name}' (only available option)");
+                        session.set_state(SetupState::Loading).await;
+                        let result = {
+                            let mut config = session.config.lock().await;
+                            setup::activate(&mut config, &name, None, None).await
+                        };
+                        match result {
+                            Ok(setup::ActivationOutcome::Activated { message }) => {
+                                let ready = {
+                                    let config = session.config.lock().await;
+                                    let _ = config.write(std::path::Path::new("."));
+                                    setup::gate_ready(&config)
+                                };
+                                if ready {
+                                    session.set_state(SetupState::Ready).await;
+                                    session.ready.notify_one();
+                                } else {
+                                    session.set_state(SetupState::NeedsProvider {
+                                        candidates: candidates.clone(),
+                                    }).await;
+                                }
+                                info!("{message}");
+                            }
+                            Ok(setup::ActivationOutcome::NeedsMoreInput { message }) => {
+                                // SSO flow needs account/role selection — fall through
+                                // to the picker so the user can choose.
+                                info!("{message}");
+                                session.set_state(SetupState::NeedsProvider {
+                                    candidates: candidates.clone(),
+                                }).await;
+                            }
+                            Err(e) => {
+                                warn!("auto-activation failed: {e}");
+                                session.set_state(SetupState::Error {
+                                    messages: vec![format!("Auto-activation of '{name}' failed: {e}")],
+                                    can_rescan: true,
+                                }).await;
+                            }
+                        }
+                        return;
+                    }
+                }
+
                 session.set_state(state).await;
             }
             Err(e) => {

@@ -92,12 +92,12 @@ fn draw_setup(frame: &mut Frame, app: &App, area: Rect) {
         Some(SetupState::Error { messages, can_rescan }) => {
             let mut lines = vec![Line::from(Span::styled(
                 "  Setup can't continue yet:",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
             )), Line::from("")];
             for m in messages {
                 lines.push(Line::from(Span::styled(
                     format!("  {m}"),
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(Color::LightYellow),
                 )));
             }
             let footer = if *can_rescan {
@@ -594,34 +594,24 @@ fn draw_status_no_llm(frame: &mut Frame, _app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Status ")
-        .border_style(Style::default().fg(Color::Red));
+        .border_style(Style::default().fg(Color::LightRed));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  No LLM provider available",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            "  No LLM provider configured",
+            Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  gitzi needs a local LLM to operate. Install one of:",
-            Style::default().fg(Color::Gray),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  * LM Studio  — lmstudio.ai",
-            Style::default().fg(Color::White),
+            "  Run `gitzi generate-config` to rescan,",
+            Style::default().fg(Color::LightYellow),
         )),
         Line::from(Span::styled(
-            "  * Ollama     — ollama.com",
-            Style::default().fg(Color::White),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Then restart gitzi.",
-            Style::default().fg(Color::Gray),
+            "  or press 'r' to rescan from here.",
+            Style::default().fg(Color::LightYellow),
         )),
     ];
 
