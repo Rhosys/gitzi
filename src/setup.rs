@@ -103,21 +103,27 @@ pub fn gate_ready(config: &Config) -> bool {
 /// candidates were found, or `Error` (with a rescannable "nothing found"
 /// message) when the machine has no LLM to offer. `config` is mutated with the
 /// merged providers; the caller persists.
+///
+/// Only providers that are actually installed/configured on this machine are
+/// surfaced — we never suggest providers the user doesn't have.
 pub fn scan_to_state(config: &mut Config) -> SetupState {
     let discovered = discover_providers();
-    if discovered.is_empty() {
+    // Filter to only providers that are actually installed on this machine.
+    let usable: Vec<_> = discovered.iter().filter(|p| p.installed).collect();
+    if usable.is_empty() {
         return SetupState::Error {
             messages: vec![
-                "No LLM provider found on this machine. Start LM Studio or Ollama, \
-                 or run `aws sso login`, then rescan."
+                "No LLM provider found on this machine. Install a provider \
+                 (LM Studio, Ollama, or configure AWS Bedrock in ~/.aws/config), \
+                 then rescan."
                     .to_string(),
             ],
             can_rescan: true,
         };
     }
-    let candidates = discovered
+    let candidates: Vec<_> = usable
         .iter()
-        .map(ProviderCandidate::from_discovered)
+        .map(|p| ProviderCandidate::from_discovered(p))
         .collect();
     merge_discovered(config, &discovered);
     SetupState::NeedsProvider { candidates }
