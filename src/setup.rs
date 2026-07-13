@@ -94,7 +94,7 @@ fn fallback_enabled(config: &Config) -> bool {
 /// provider is enabled. This is re-evaluated on every load — file existence is
 /// never the signal (ADR-002).
 pub fn gate_ready(config: &Config) -> bool {
-    main_provider_enabled(config) || fallback_enabled(config)
+    config.onboarding_complete && (main_provider_enabled(config) || fallback_enabled(config))
 }
 
 /// Run the (blocking) environment scan, merging anything new into `config` as
@@ -207,6 +207,11 @@ pub async fn activate(
         provider.enabled = true;
         config.providers.insert(name.to_string(), provider);
         wire_main_agent(config, name);
+        // Auto-discover repos if none configured yet
+        if config.repo_paths.is_empty() {
+            config.repo_paths = crate::bootstrap::discover_repo_paths();
+        }
+        config.onboarding_complete = true;
         return Ok(ActivationOutcome::Activated {
             message: format!("Activated '{name}' and wired it into the main agent."),
         });
@@ -275,6 +280,11 @@ pub async fn activate(
     }
     config.providers.insert(name.to_string(), provider);
     wire_main_agent(config, name);
+    // Auto-discover repos if none configured yet
+    if config.repo_paths.is_empty() {
+        config.repo_paths = crate::bootstrap::discover_repo_paths();
+    }
+    config.onboarding_complete = true;
 
     Ok(ActivationOutcome::Activated {
         message: format!(
@@ -320,6 +330,7 @@ mod tests {
                 ..AgentDef::default()
             }],
             fallback_provider: None,
+            onboarding_complete: true,
             ..Config::default()
         };
         assert!(gate_ready(&config));
@@ -331,6 +342,7 @@ mod tests {
             providers: HashMap::from([("lmstudio".to_string(), provider(true))]),
             agents: Vec::new(),
             fallback_provider: Some("lmstudio".to_string()),
+            onboarding_complete: true,
             ..Config::default()
         };
         assert!(gate_ready(&config));
@@ -370,6 +382,7 @@ mod tests {
         );
         // The gate now passes — the app is usable.
         assert!(gate_ready(&config));
+        assert!(config.onboarding_complete);
     }
 
     #[tokio::test]
