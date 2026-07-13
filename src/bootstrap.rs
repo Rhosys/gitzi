@@ -37,6 +37,8 @@ pub struct DiscoveredProvider {
     pub model_loaded: bool,
     /// Whether the binary/CLI is installed on the system.
     pub installed: bool,
+    /// Pre-populated default model identifier discovered from the local system.
+    pub default_model: Option<String>,
 }
 
 /// Run the full bootstrap: discover providers, discover repos, generate config.
@@ -93,6 +95,7 @@ fn build_config_from_discovery(providers: &[DiscoveredProvider], repo_paths: Vec
                 def.sso_start_url = provider.sso_start_url.clone();
             }
         }
+        def.default_model = provider.default_model.clone();
         config.providers.insert(provider.name.clone(), def);
     }
 
@@ -107,13 +110,15 @@ fn build_config_from_discovery(providers: &[DiscoveredProvider], repo_paths: Vec
 pub fn discover_providers() -> Vec<DiscoveredProvider> {
     let mut providers = Vec::new();
 
-    // LM Studio
+    // LM Studio — prefer daemon over GUI
     let lms_path = dirs::home_dir().map(|h| h.join(".lmstudio/bin/lms"));
     if let Some(ref path) = lms_path
         && path.exists()
     {
         let running = check_port_open(1234);
         let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
+        let default_model = discover_lmstudio_model(path)
+            .or_else(|| Some("qwen3-8b".to_string()));
         providers.push(DiscoveredProvider {
             name: "lmstudio".to_string(),
             kind: ProviderKind::OpenaiCompatible,
@@ -123,6 +128,7 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
             running,
             model_loaded,
             installed: true,
+            default_model,
         });
     }
 
@@ -130,6 +136,11 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
     if which("ollama") {
         let running = check_port_open(11434);
         let model_loaded = running && has_models_loaded("http://localhost:11434/v1");
+        let default_model = if running {
+            discover_ollama_model()
+        } else {
+            None
+        }.or_else(|| Some("qwen3:8b".to_string()));
         providers.push(DiscoveredProvider {
             name: "ollama".to_string(),
             kind: ProviderKind::OpenaiCompatible,
@@ -139,6 +150,7 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
             running,
             model_loaded,
             installed: true,
+            default_model,
         });
     }
 
@@ -157,6 +169,7 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
                 running: false,
                 model_loaded: false,
                 installed: true,
+                default_model: None,
             });
         }
     } else {
@@ -170,6 +183,7 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
                 running: false,
                 model_loaded: false,
                 installed: true,
+                default_model: None,
             });
         }
     }
@@ -243,6 +257,13 @@ fn parse_aws_sso_sessions(path: &std::path::Path) -> Vec<(String, String, String
 
 /// Check if a provider has at least one model loaded via the /v1/models endpoint.
 fn has_models_loaded(base_url: &str) -> bool {
+    query_loaded_model(base_url).is_some()
+}
+
+/// Query the /v1/models endpoint and return the first loaded model's ID.
+/// Used both for checking readiness and for runtime model resolution when
+/// no explicit model is configured (e.g. LM Studio GUI mode).
+pub fn query_loaded_model(base_url: &str) -> Option<String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let resp = reqwest::blocking::Client::new()
         .get(&url)
@@ -254,13 +275,15 @@ fn has_models_loaded(base_url: &str) -> bool {
             if let Ok(body) = r.json::<serde_json::Value>() {
                 body.get("data")
                     .and_then(|d| d.as_array())
-                    .map(|arr| !arr.is_empty())
-                    .unwrap_or(false)
+                    .and_then(|arr| arr.first())
+                    .and_then(|m| m.get("id"))
+                    .and_then(|id| id.as_str())
+                    .map(str::to_string)
             } else {
-                false
+                None
             }
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -319,6 +342,62 @@ pub fn ensure_model_loaded(provider: &DiscoveredProvider) -> bool {
         }
         _ => false,
     }
+}
+
+/// Query LM Studio for downloaded text models via `lms ls`.
+/// Returns the model key of the first text model found, or None.
+fn discover_lmstudio_model(lms_path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new(lms_path)
+        .args(["ls"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // lms ls outputs a table; model keys are lines containing '/' (org/model format)
+    // Skip header lines and embedding models
+    let mut in_llm_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("LLM")
+            && (trimmed.contains("PARAMS") || trimmed.contains("Size"))
+        {
+            in_llm_section = true;
+            continue;
+        }
+        if trimmed.contains("EMBEDDING") || trimmed.contains("VLM") {
+            break;
+        }
+        if in_llm_section && !trimmed.is_empty() {
+            let key = trimmed.split_whitespace().next().unwrap_or("");
+            if key.contains('/') {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Query Ollama for available models via `ollama list`.
+/// Returns the first model tag found, or None.
+fn discover_ollama_model() -> Option<String> {
+    let output = std::process::Command::new("ollama")
+        .args(["list"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    // ollama list outputs: NAME ID SIZE MODIFIED (header), then rows
+    for line in text.lines().skip(1) {
+        let name = line.split_whitespace().next().unwrap_or("");
+        if !name.is_empty() && name != "NAME" {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 /// Scan common locations for git repositories.
@@ -563,6 +642,7 @@ mod tests {
                 running: true,
                 model_loaded: true,
                 installed: true,
+                default_model: Some("qwen3-8b".to_string()),
             },
             DiscoveredProvider {
                 name: "bedrock-mycompany".to_string(),
@@ -573,6 +653,7 @@ mod tests {
                 running: false,
                 model_loaded: false,
                 installed: true,
+                default_model: None,
             },
         ];
 

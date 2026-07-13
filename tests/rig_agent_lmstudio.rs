@@ -41,7 +41,7 @@ async fn rig_agent_calls_chat_completions_on_lmstudio_compatible_server() {
     let addr = spawn_mock_server().await;
     let base_url = format!("http://{addr}/v1");
 
-    let agent = RigAgent::new(base_url, "unused-key", "local-model", None);
+    let agent = RigAgent::new(base_url, "unused-key", "managed-by-provider", None);
     let task = Task::new("task-1", "epic-1", "Do the thing");
     let ctx = RunContext::default();
 
