@@ -1,18 +1,22 @@
 pub mod backend;
 mod bedrock_agent;
+pub mod bedrock_main;
 pub mod classifier;
 pub mod claude_code;
 pub mod coding_agent;
 pub mod coding_tools;
 pub mod llm_client;
 pub mod main_agent;
+pub mod main_chat;
 mod prompt;
 mod rig_agent;
 
 pub use backend::{AgentBackend, AgentResult, RunContext};
 pub use bedrock_agent::BedrockAgent;
+pub use bedrock_main::BedrockMainAgent;
 pub use claude_code::ClaudeCodeCli;
 pub use main_agent::{ChatTurn, MainAgent, OaiMessage, OaiTool, ToolCallRequest};
+pub use main_chat::MainChatBackend;
 pub use rig_agent::RigAgent;
 
 use crate::config::{AgentDef, Config, ProviderKind};
@@ -91,22 +95,34 @@ pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
 }
 
 /// Build the main chat harness agent from its definition, resolving a named
-/// `[providers.*]` reference into the concrete endpoint URL the harness talks
-/// to. Without this the harness would silently fall back to its localhost
-/// default even after the user activated a provider (e.g. Ollama on :11434).
-/// The harness speaks OpenAI-compatible HTTP; Bedrock-backed main agents are
-/// not yet supported here (pipeline agents handle Bedrock separately).
-pub fn build_main_agent(config: &Config, def: &AgentDef) -> MainAgent {
-    let mut def = def.clone();
-    if def.api_url.is_none()
-        && let Some(provider) = def.provider.as_ref().and_then(|n| config.providers.get(n))
+/// `[providers.*]` reference into the concrete backend. Returns a boxed
+/// `MainChatBackend` that drives the chat tool loop identically regardless
+/// of whether the underlying model is OpenAI-compatible or Bedrock.
+pub fn build_main_agent(config: &Config, def: &AgentDef) -> Box<dyn MainChatBackend> {
+    if let Some(provider) = def.provider.as_ref().and_then(|n| config.providers.get(n))
         && provider.enabled
-        && provider.kind == ProviderKind::OpenaiCompatible
-        && !provider.api_url.is_empty()
     {
-        def.api_url = Some(provider.api_url.clone());
+        match provider.kind {
+            ProviderKind::Bedrock => {
+                return Box::new(BedrockMainAgent::new(
+                    provider.region.clone().unwrap_or_default(),
+                    provider.sso_start_url.clone().unwrap_or_default(),
+                    provider.sso_account_id.clone().unwrap_or_default(),
+                    provider.sso_role_name.clone().unwrap_or_default(),
+                    provider.model_id.clone().unwrap_or_else(|| def.model.clone()),
+                    main_agent::default_system_prompt(),
+                ));
+            }
+            ProviderKind::OpenaiCompatible => {
+                let mut def = def.clone();
+                if !provider.api_url.is_empty() {
+                    def.api_url = Some(provider.api_url.clone());
+                }
+                return Box::new(MainAgent::new(&def));
+            }
+        }
     }
-    MainAgent::new(&def)
+    Box::new(MainAgent::new(def))
 }
 
 #[cfg(test)]

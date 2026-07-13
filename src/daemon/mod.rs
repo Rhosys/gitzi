@@ -614,7 +614,8 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
                 .collect()
         };
 
-        let base_url = dispatcher.main_agent.base_url();
+        let base_url = dispatcher.main_agent.base_url()
+            .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
         let model = dispatcher.main_agent.model();
 
         let action = classifier::classify(
