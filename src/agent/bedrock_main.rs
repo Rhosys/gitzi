@@ -73,7 +73,7 @@ impl MainChatBackend for BedrockMainAgent {
         &'a self,
         messages: &'a [OaiMessage],
         tools: &'a [OaiTool],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(OaiMessage, ChatTurn)>> + Send + 'a>> {
+    ) -> super::main_chat::TurnFuture<'a> {
         Box::pin(self.do_turn(messages, tools))
     }
 
@@ -107,10 +107,10 @@ impl BedrockMainAgent {
 
         // Inject any inline system messages from the conversation (e.g. fallback notices)
         for msg in messages {
-            if msg.role == "system" {
-                if let Some(content) = &msg.content {
-                    system_blocks.push(SystemContentBlock::Text(content.clone()));
-                }
+            if msg.role == "system"
+                && let Some(content) = &msg.content
+            {
+                system_blocks.push(SystemContentBlock::Text(content.clone()));
             }
         }
 
@@ -272,10 +272,10 @@ fn convert_messages(messages: &[OaiMessage]) -> Vec<BedrockMessage> {
             }
             "assistant" => {
                 let mut blocks = Vec::new();
-                if let Some(text) = &msg.content {
-                    if !text.is_empty() {
-                        blocks.push(ContentBlock::Text(text.clone()));
-                    }
+                if let Some(text) = &msg.content
+                    && !text.is_empty()
+                {
+                    blocks.push(ContentBlock::Text(text.clone()));
                 }
                 for tc in &msg.tool_calls {
                     let input_doc = serde_json::from_str::<serde_json::Value>(

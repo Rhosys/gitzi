@@ -526,7 +526,7 @@ impl MainChatBackend for MainAgent {
         &'a self,
         messages: &'a [OaiMessage],
         tools: &'a [OaiTool],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(OaiMessage, ChatTurn)>> + Send + 'a>> {
+    ) -> super::main_chat::TurnFuture<'a> {
         Box::pin(self.turn(messages, tools))
     }
 

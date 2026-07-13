@@ -14,6 +14,9 @@ use std::pin::Pin;
 use crate::error::Result;
 use super::main_agent::{OaiMessage, OaiTool, ChatTurn};
 
+/// Boxed future returned by [`MainChatBackend::turn`].
+pub type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<(OaiMessage, ChatTurn)>> + Send + 'a>>;
+
 /// Trait abstracting one "turn" of the main chat agent. The dispatcher calls
 /// `turn()` in a loop, feeding tool results back as messages, until the model
 /// emits a text response.
@@ -27,7 +30,7 @@ pub trait MainChatBackend: Send + Sync {
         &'a self,
         messages: &'a [OaiMessage],
         tools: &'a [OaiTool],
-    ) -> Pin<Box<dyn Future<Output = Result<(OaiMessage, ChatTurn)>> + Send + 'a>>;
+    ) -> TurnFuture<'a>;
 
     /// The model identifier (for diagnostics / logging).
     fn model(&self) -> String;
