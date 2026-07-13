@@ -151,6 +151,7 @@ pub fn merge_discovered(config: &mut Config, discovered: &[DiscoveredProvider]) 
                 def.sso_start_url = provider.sso_start_url.clone();
             }
         }
+        def.default_model = provider.default_model.clone();
         config.providers.insert(provider.name.clone(), def);
         added.push(provider.name.clone());
     }
@@ -396,6 +397,7 @@ mod tests {
                 running: true,
                 model_loaded: true,
                 installed: true,
+                default_model: Some("qwen3-8b".to_string()),
             },
             DiscoveredProvider {
                 name: "ollama".to_string(),
@@ -406,6 +408,7 @@ mod tests {
                 running: false,
                 model_loaded: false,
                 installed: true,
+                default_model: Some("qwen3:8b".to_string()),
             },
         ];
         let added = merge_discovered(&mut config, &discovered);

@@ -83,6 +83,13 @@ pub struct ProviderDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_id: Option<String>,
 
+    /// Default model identifier for this provider. Used by agents that don't
+    /// specify their own model. For LM Studio daemon and Ollama, this is the
+    /// model key sent in API requests. For LM Studio GUI, the server ignores
+    /// this value (routes to whatever is loaded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+
     /// Whether this provider is actually wired up for use. Providers found
     /// during discovery are recorded here so they show up for the user to
     /// choose from, but stay `enabled = false` (and unreferenced by any
@@ -107,6 +114,7 @@ impl Default for ProviderDef {
             sso_account_id: None,
             sso_role_name: None,
             model_id: None,
+            default_model: None,
             enabled: true,
         }
     }
@@ -136,7 +144,7 @@ pub struct WipLimits {
 /// ```toml
 /// [[agents]]
 /// role = "main"
-/// model = "local-model"
+/// model = ""
 /// provider = "lmstudio"
 ///
 /// [[agents]]
@@ -336,13 +344,21 @@ impl Config {
         }
         // Fall back to main role's model/provider/api_url
         let main = self.agents.iter().find(|a| a.role == "main");
+        let provider_ref = main.and_then(|m| m.provider.as_ref());
         AgentDef {
             role: role.to_string(),
+            // Resolution: agent model → main's model → provider's default_model → empty
+            // (empty triggers runtime query at call time)
             model: main.map(|m| m.model.clone())
-                .unwrap_or_else(|| "local-model".to_string()),
+                .unwrap_or_else(|| {
+                    provider_ref
+                        .and_then(|name| self.providers.get(name))
+                        .and_then(|p| p.default_model.clone())
+                        .unwrap_or_default()
+                }),
             api_url: main.and_then(|m| m.api_url.clone())
                 .or(Some("http://localhost:1234/v1".to_string())),
-            provider: main.and_then(|m| m.provider.clone()),
+            provider: provider_ref.cloned(),
         }
     }
 
@@ -412,37 +428,37 @@ deploying = 1
 
 [[agents]]
 role = "main"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 [[agents]]
 role = "prioritizer"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 [[agents]]
 role = "designer"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 [[agents]]
 role = "coder"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 [[agents]]
 role = "reviewer"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 [[agents]]
 role = "auditor"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 [[agents]]
 role = "infrarian"
-model = "local-model"
+model = ""
 provider = "lmstudio"
 
 
@@ -454,6 +470,9 @@ provider = "lmstudio"
 
 [providers.lmstudio]
 api_url = "http://localhost:1234/v1"
+# LM Studio's OpenAI-compatible API ignores the model field when using the GUI.
+# For the daemon (lms daemon), this model is loaded and routed to by name.
+default_model = ""
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -545,9 +564,9 @@ mod tests {
                         "model mismatch for role '{}'", role_name
                     );
                 } else {
-                    // Falls back to "local-model" (main fallback default)
+                    // Falls back to empty (resolved at runtime via /v1/models query)
                     prop_assert_eq!(
-                        &resolved.model, "local-model",
+                        &resolved.model, "",
                         "model should be main-fallback default for role '{}'",
                         role_name
                     );
