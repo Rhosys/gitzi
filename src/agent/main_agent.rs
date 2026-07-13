@@ -5,6 +5,7 @@ use serde_json::json;
 use crate::config::AgentDef;
 use crate::error::{GitziError, Result};
 use crate::state::chat::{ChatMessage, Role};
+use super::main_chat::MainChatBackend;
 
 pub struct MainAgent {
     client: Client,
@@ -442,8 +443,19 @@ impl MainAgent {
         full_messages.extend_from_slice(messages);
 
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+
+        // Resolve model: use configured value, or query the server for whatever's loaded
+        let model = if self.model.is_empty() {
+            crate::bootstrap::query_loaded_model(&self.base_url)
+                .ok_or_else(|| GitziError::AgentFailed(
+                    format!("no model configured and none loaded at {}", self.base_url)
+                ))?
+        } else {
+            self.model.clone()
+        };
+
         let body = ChatRequest {
-            model: self.model.clone(),
+            model,
             messages: full_messages,
             tools: tools.to_vec(),
             temperature: None,
@@ -509,7 +521,25 @@ impl MainAgent {
     }
 }
 
-fn default_system_prompt() -> String {
+impl MainChatBackend for MainAgent {
+    fn turn<'a>(
+        &'a self,
+        messages: &'a [OaiMessage],
+        tools: &'a [OaiTool],
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(OaiMessage, ChatTurn)>> + Send + 'a>> {
+        Box::pin(self.turn(messages, tools))
+    }
+
+    fn model(&self) -> String {
+        self.model.clone()
+    }
+
+    fn base_url(&self) -> Option<String> {
+        Some(self.base_url.clone())
+    }
+}
+
+pub fn default_system_prompt() -> String {
     "\
 You are the main coordination agent for gitzi. You help the user manage their software \
 project through conversation.\n\n\

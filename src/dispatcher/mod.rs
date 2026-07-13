@@ -12,7 +12,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{info, warn};
 
-use crate::agent::{build_main_agent, ChatTurn, MainAgent, OaiMessage};
+use crate::agent::{build_main_agent, ChatTurn, MainAgent, MainChatBackend, OaiMessage};
 use crate::config::Config;
 use crate::mcp::auth::TokenStore;
 use crate::state::chat::{self as chat_store, ChatMessage, Role};
@@ -284,12 +284,12 @@ pub struct Dispatcher {
     /// Persistent chat history (in-memory mirror of chat.jsonl).
     pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
     /// The main coordination agent that drives the chat interface.
-    pub main_agent: MainAgent,
+    pub main_agent: Box<dyn MainChatBackend>,
     /// The distinguished fallback "control-plane" brain (ADR-002). Built only
     /// when a fallback provider is configured *and* distinct from main's own
     /// provider, so it can run the recovery conversation when main is down.
     /// `None` when main already is the fallback (recovery couldn't help).
-    pub fallback_agent: Option<MainAgent>,
+    pub fallback_agent: Option<Box<dyn MainChatBackend>>,
     /// Token store for MCP sub-agent authorization.
     pub token_store: Arc<TokenStore>,
     /// Persistence layer for tasks, epics, and review items.
@@ -1244,7 +1244,7 @@ impl Dispatcher {
         // 6. Tool-calling loop. If main's provider is down, fall back *once* to
         // the control-plane brain to run a recovery conversation (ADR-002) —
         // never a silent swap for the user's real request.
-        let mut active_agent = &self.main_agent;
+        let mut active_agent: &dyn MainChatBackend = &*self.main_agent;
         let mut recovered = false;
         let final_response = loop {
             let (raw_assistant, turn) = match active_agent.turn(&messages, &tools).await {
@@ -1255,7 +1255,7 @@ impl Dispatcher {
                     {
                         warn!(error = %e, "main provider failed — handing off to the fallback brain for recovery");
                         recovered = true;
-                        active_agent = fallback;
+                        active_agent = &**fallback;
                         messages.push(OaiMessage {
                             role: "system".to_string(),
                             content: Some(format!(
@@ -1738,10 +1738,10 @@ impl Dispatcher {
 /// when main's own provider is down. Returns `None` unless the fallback is set,
 /// enabled, OpenAI-compatible, and *distinct* from main's provider — if main
 /// already is the fallback, falling back couldn't help.
-fn build_fallback_agent(config: &Config) -> Option<MainAgent> {
+fn build_fallback_agent(config: &Config) -> Option<Box<dyn MainChatBackend>> {
     let fallback = config.fallback_provider.as_ref()?;
     let provider = config.providers.get(fallback)?;
-    if !provider.enabled || provider.kind != crate::config::ProviderKind::OpenaiCompatible {
+    if !provider.enabled {
         return None;
     }
     let main_def = config.resolve_agent("main");
@@ -1898,7 +1898,7 @@ mod tests {
             ..Config::default()
         };
         let fallback = build_fallback_agent(&config).expect("distinct fallback should build");
-        assert_eq!(fallback.base_url(), "http://localhost:11434/v1");
+        assert_eq!(fallback.base_url(), Some("http://localhost:11434/v1".to_string()));
     }
 
     #[test]

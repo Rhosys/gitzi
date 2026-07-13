@@ -34,6 +34,7 @@ aws-credential-types = "1"
 aws-sdk-bedrockruntime = "1"
 aws-sdk-sso = "1"
 aws-sdk-ssooidc = "1"
+aws-smithy-types = "1"
 webbrowser = "1"
 
 axum = { version = "0.8", features = ["macros"] }

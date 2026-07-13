@@ -1693,6 +1693,7 @@ dependencies = [
  "aws-sdk-bedrockruntime",
  "aws-sdk-sso",
  "aws-sdk-ssooidc",
+ "aws-smithy-types",
  "axum",
  "base64",
  "chrono",
