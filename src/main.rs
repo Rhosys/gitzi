@@ -323,6 +323,12 @@ async fn cmd_generate_config() -> Result<()> {
     println!("  providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));
     println!("  repo_paths: {}", config.repo_paths.len());
     println!("  agents: {}", config.agents.len());
+
+    // Restart daemon so it re-evaluates the gate with fresh config
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "gitzi.service"])
+        .status();
+
     Ok(())
 }
 

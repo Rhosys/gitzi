@@ -103,6 +103,39 @@ fn build_config_from_discovery(providers: &[DiscoveredProvider], repo_paths: Vec
     config
 }
 
+/// Bedrock-supported regions for Anthropic Claude models (as of 2025).
+const BEDROCK_REGIONS: &[&str] = &[
+    "us-east-1",
+    "us-west-2",
+    "eu-west-1",
+    "eu-west-3",
+    "eu-central-1",
+    "ap-southeast-1",
+    "ap-southeast-2",
+    "ap-northeast-1",
+    "ca-central-1",
+    "sa-east-1",
+];
+
+/// Resolve the optimal Bedrock region from the user's SSO/preference region.
+/// If the given region supports Bedrock, use it directly. Otherwise, pick the
+/// nearest supported region by geographic prefix.
+pub fn resolve_bedrock_region(preferred: &str) -> String {
+    // If the preferred region has Bedrock, use it directly
+    if BEDROCK_REGIONS.contains(&preferred) {
+        return preferred.to_string();
+    }
+    // Geographic proximity fallback by prefix
+    let prefix = preferred.split('-').next().unwrap_or("us");
+    match prefix {
+        "eu" => "eu-west-1".to_string(),
+        "ap" => "ap-southeast-1".to_string(),
+        "sa" => "sa-east-1".to_string(),
+        "ca" => "ca-central-1".to_string(),
+        _ => "us-east-1".to_string(),
+    }
+}
+
 /// Quickly scan this machine for LLM providers and AWS Bedrock access.
 /// Every check here is fast (short timeouts, no process spawning that
 /// blocks longer than a couple seconds) — this never starts a server, loads
@@ -164,7 +197,7 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
                 name: "bedrock".to_string(),
                 kind: ProviderKind::Bedrock,
                 api_url: String::new(),
-                region: None,
+                region: Some("us-east-1".to_string()),
                 sso_start_url: None,
                 running: false,
                 model_loaded: false,
@@ -178,7 +211,12 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
                 name: format!("bedrock-{session_name}"),
                 kind: ProviderKind::Bedrock,
                 api_url: String::new(),
-                region: if region.is_empty() { None } else { Some(region) },
+                region: Some(if region.is_empty() {
+                    // No region in SSO config — default to us-east-1
+                    "us-east-1".to_string()
+                } else {
+                    resolve_bedrock_region(&region)
+                }),
                 sso_start_url: Some(start_url),
                 running: false,
                 model_loaded: false,

@@ -217,6 +217,11 @@ pub struct Config {
     /// Per-repository configuration overrides.
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
+
+    /// Whether first-run onboarding has completed. Setting this to `false`
+    /// forces the daemon to re-enter setup mode on next restart.
+    #[serde(default)]
+    pub onboarding_complete: bool,
 }
 
 impl Default for Config {
@@ -229,6 +234,7 @@ impl Default for Config {
             integrations: HashMap::new(),
             repo_paths: Vec::new(),
             repos: Vec::new(),
+            onboarding_complete: false,
         }
     }
 }
