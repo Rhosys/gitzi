@@ -507,7 +507,7 @@ fn check_port_open(port: u16) -> bool {
 }
 
 /// Write config to disk with section headers and discovered values.
-fn write_config_with_comments(
+pub fn write_config_with_comments(
     path: &std::path::Path,
     config: &Config,
 ) -> crate::error::Result<()> {

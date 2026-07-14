@@ -176,7 +176,7 @@ impl Default for AgentDef {
     }
 }
 
-fn default_model() -> String { "claude-sonnet-4-6".to_string() }
+fn default_model() -> String { String::new() }
 
 fn default_providers() -> HashMap<String, ProviderDef> {
     HashMap::from([
@@ -317,8 +317,7 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = toml::to_string_pretty(self)?;
-        atomic_write(&path, &text)
+        crate::bootstrap::write_config_with_comments(&path, self)
     }
 
 
