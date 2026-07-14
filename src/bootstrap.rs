@@ -448,7 +448,7 @@ fn discover_ollama_model() -> Option<String> {
     None
 }
 
-/// Scan common locations for git repositories.
+/// Scan common locations for git repositories up to 3 levels deep.
 /// Returns glob patterns that cover the discovered repos.
 pub fn discover_repo_paths() -> Vec<String> {
     let home = match dirs::home_dir() {
@@ -472,15 +472,8 @@ pub fn discover_repo_paths() -> Vec<String> {
         if !candidate.is_dir() {
             continue;
         }
-        // Check if this directory contains any git repos (1 level deep)
-        if let Ok(entries) = std::fs::read_dir(candidate) {
-            let has_repos = entries
-                .flatten()
-                .any(|e| e.path().join(".git").is_dir());
-            if has_repos {
-                found_parents.push(candidate.clone());
-            }
-        }
+        // Scan up to 3 levels deep for .git directories
+        scan_for_repos(candidate, 3, &mut found_parents);
     }
 
     // Also check if cwd contains a .git
@@ -492,11 +485,51 @@ pub fn discover_repo_paths() -> Vec<String> {
         found_parents.push(parent.to_path_buf());
     }
 
-    // Convert to glob patterns
-    found_parents
+    // Deduplicate: collect unique parent directories that contain repos,
+    // then emit one glob per parent
+    let mut parents: Vec<PathBuf> = Vec::new();
+    for repo_parent in &found_parents {
+        if !parents.iter().any(|p| p == repo_parent) {
+            parents.push(repo_parent.clone());
+        }
+    }
+
+    parents
         .iter()
         .map(|p| format!("{}/*", p.display()))
         .collect()
+}
+
+/// Recursively scan `dir` up to `depth` levels for directories containing `.git`.
+/// For each repo found, adds its parent directory to `parents`.
+fn scan_for_repos(dir: &std::path::Path, depth: u32, parents: &mut Vec<PathBuf>) {
+    if depth == 0 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(false) {
+            continue;
+        }
+        if path.join(".git").is_dir() {
+            // This is a repo — record its parent as a discovery root
+            if let Some(parent) = path.parent()
+                && !parents.iter().any(|p| p == parent)
+            {
+                parents.push(parent.to_path_buf());
+            }
+        } else {
+            // Not a repo — recurse deeper
+            scan_for_repos(&path, depth - 1, parents);
+        }
+    }
 }
 
 fn which(binary: &str) -> bool {
