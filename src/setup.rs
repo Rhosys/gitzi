@@ -94,7 +94,7 @@ fn fallback_enabled(config: &Config) -> bool {
 /// provider is enabled. This is re-evaluated on every load — file existence is
 /// never the signal (ADR-002).
 pub fn gate_ready(config: &Config) -> bool {
-    config.onboarding_complete && (main_provider_enabled(config) || fallback_enabled(config))
+    main_provider_enabled(config) || fallback_enabled(config)
 }
 
 /// Run the (blocking) environment scan, merging anything new into `config` as
@@ -330,7 +330,6 @@ mod tests {
                 ..AgentDef::default()
             }],
             fallback_provider: None,
-            onboarding_complete: true,
             ..Config::default()
         };
         assert!(gate_ready(&config));
@@ -342,7 +341,6 @@ mod tests {
             providers: HashMap::from([("lmstudio".to_string(), provider(true))]),
             agents: Vec::new(),
             fallback_provider: Some("lmstudio".to_string()),
-            onboarding_complete: true,
             ..Config::default()
         };
         assert!(gate_ready(&config));
