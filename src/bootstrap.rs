@@ -55,6 +55,16 @@ pub fn run() -> crate::error::Result<Config> {
 
     let config = build_config_from_discovery(&providers, repo_paths);
 
+    // Auto-enable the best ready provider (running + model loaded) so
+    // generate-config produces a usable config, not a blank slate.
+    let mut config = config;
+    if let Some(best) = providers.iter().find(|p| p.model_loaded) {
+        if let Some(provider) = config.providers.get_mut(&best.name) {
+            provider.enabled = true;
+        }
+        crate::setup::wire_main_agent(&mut config, &best.name);
+    }
+
     let path = home::global_config_file();
     home::ensure_dirs()?;
     write_config_with_comments(&path, &config)?;
@@ -657,6 +667,10 @@ pub fn write_config_with_comments(
     writeln!(out, "# General").unwrap();
     writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         .unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "# Set to false to re-trigger the onboarding flow on next daemon restart.").unwrap();
+    writeln!(out, "onboarding_complete = {}", config.onboarding_complete).unwrap();
+    writeln!(out).unwrap();
 
     atomic_write(path, &out)
 }
