@@ -446,7 +446,7 @@ impl MainAgent {
 
         // Resolve model: use configured value, or query the server for whatever's loaded
         let model = if self.model.is_empty() {
-            crate::bootstrap::query_loaded_model(&self.base_url)
+            query_loaded_model_async(&self.client, &self.base_url).await
                 .ok_or_else(|| GitziError::AgentFailed(
                     format!("no model configured and none loaded at {}", self.base_url)
                 ))?
@@ -537,6 +537,29 @@ impl MainChatBackend for MainAgent {
     fn base_url(&self) -> Option<String> {
         Some(self.base_url.clone())
     }
+}
+
+/// Async version of model query — queries GET /v1/models and returns the first
+/// loaded model ID. Safe to call from inside tokio (unlike the blocking version
+/// in bootstrap.rs which panics in async context).
+async fn query_loaded_model_async(client: &Client, base_url: &str) -> Option<String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let resp = client
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    body.get("data")
+        .and_then(|d| d.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|m| m.get("id"))
+        .and_then(|id| id.as_str())
+        .map(str::to_string)
 }
 
 pub fn default_system_prompt() -> String {
