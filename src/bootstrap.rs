@@ -537,6 +537,25 @@ fn scan_for_repos(dir: &std::path::Path, depth: u32, parents: &mut Vec<PathBuf>)
     }
 }
 
+/// Discover a couple of real repo paths from the configured globs to use as
+/// commented examples in the config file.
+fn discover_example_repos(repo_paths: &[String]) -> Vec<PathBuf> {
+    let mut repos = Vec::new();
+    for pattern in repo_paths {
+        if let Ok(entries) = glob::glob(pattern) {
+            for entry in entries.flatten() {
+                if entry.join(".git").is_dir() {
+                    repos.push(entry);
+                    if repos.len() >= 2 {
+                        return repos;
+                    }
+                }
+            }
+        }
+    }
+    repos
+}
+
 fn which(binary: &str) -> bool {
     std::process::Command::new("which")
         .arg(binary)
@@ -684,7 +703,16 @@ pub fn write_config_with_comments(
     }
     writeln!(out).unwrap();
 
-    // merge strategy docs
+    // Default merge settings
+    let strategy_str = toml::to_string(&config.default_merge_strategy)
+        .unwrap_or_else(|_| "\"ff-only\"".to_string());
+    writeln!(out, "# Default merge strategy and main branch for all repos.").unwrap();
+    writeln!(out, "# Individual repos can override below in [[repos]].").unwrap();
+    writeln!(out, "default_merge_strategy = {strategy_str}").unwrap();
+    writeln!(out, "default_main_branch = \"{}\"", config.default_main_branch).unwrap();
+    writeln!(out).unwrap();
+
+    // merge strategy docs + commented repo examples
     writeln!(out, "# merge_strategy options:").unwrap();
     writeln!(out, "#   ff-only        — fast-forward merge into main.").unwrap();
     writeln!(out, "#   gitzi-branch   — merge into a local \"gitzi\" branch.").unwrap();
@@ -692,11 +720,43 @@ pub fn write_config_with_comments(
     writeln!(out, "#   pull-request   — push + create PR via gh/glab CLI.").unwrap();
     writeln!(out, "#   push-to-remote — push branch, no merge or PR.").unwrap();
     writeln!(out, "#").unwrap();
-    writeln!(out, "# [[repos]]").unwrap();
-    writeln!(out, "# path = \"/home/user/projects/myapp\"").unwrap();
-    writeln!(out, "# merge_strategy = \"ff-only\"").unwrap();
-    writeln!(out, "# main_branch = \"main\"").unwrap();
+    writeln!(out, "# Uncomment and edit to control per-repo overrides:").unwrap();
+
+    // Write discovered repos as commented examples
+    let example_repos = discover_example_repos(&config.repo_paths);
+    if example_repos.is_empty() {
+        writeln!(out, "# [[repos]]").unwrap();
+        writeln!(out, "# path = \"/home/user/projects/myapp\"").unwrap();
+        writeln!(out, "# merge_strategy = \"ff-only\"").unwrap();
+        writeln!(out, "# main_branch = \"main\"").unwrap();
+        writeln!(out, "#").unwrap();
+        writeln!(out, "# [[repos]]").unwrap();
+        writeln!(out, "# path = \"/home/user/projects/api\"").unwrap();
+        writeln!(out, "# merge_strategy = \"pull-request\"").unwrap();
+        writeln!(out, "# main_branch = \"main\"").unwrap();
+    } else {
+        for (i, repo) in example_repos.iter().take(2).enumerate() {
+            if i > 0 { writeln!(out, "#").unwrap(); }
+            writeln!(out, "# [[repos]]").unwrap();
+            writeln!(out, "# path = \"{}\"", repo.display()).unwrap();
+            writeln!(out, "# merge_strategy = \"ff-only\"").unwrap();
+            writeln!(out, "# main_branch = \"main\"").unwrap();
+        }
+    }
     writeln!(out).unwrap();
+
+    // Write actual [[repos]] entries if any are configured
+    for repo in &config.repos {
+        writeln!(out, "[[repos]]").unwrap();
+        writeln!(out, "path = \"{}\"", repo.path).unwrap();
+        let rs = toml::to_string(&repo.merge_strategy)
+            .unwrap_or_else(|_| "\"ff-only\"".to_string());
+        writeln!(out, "merge_strategy = {rs}").unwrap();
+        if let Some(ref branch) = repo.main_branch {
+            writeln!(out, "main_branch = \"{branch}\"").unwrap();
+        }
+        writeln!(out).unwrap();
+    }
     writeln!(out).unwrap();
 
     // General
