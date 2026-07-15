@@ -296,7 +296,18 @@ async fn cmd_daemon() -> Result<()> {
         }
 
         // Now check if a model is loaded; if not, load the default
-        if gitzi::bootstrap::query_loaded_model(&provider.api_url).is_none()
+        let model_loaded = {
+            let url = format!("{}/models", provider.api_url.trim_end_matches('/'));
+            reqwest::Client::new()
+                .get(&url)
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await
+                .ok()
+                .and_then(|r| if r.status().is_success() { Some(r) } else { None })
+                .is_some()
+        };
+        if !model_loaded
             && let Some(ref model) = provider.default_model
             && lms.exists()
         {
