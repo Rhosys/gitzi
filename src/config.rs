@@ -178,6 +178,8 @@ impl Default for AgentDef {
 
 fn default_model() -> String { String::new() }
 
+fn default_main_branch() -> String { "main".to_string() }
+
 fn default_providers() -> HashMap<String, ProviderDef> {
     HashMap::from([
         ("lmstudio".to_string(), ProviderDef {
@@ -218,6 +220,14 @@ pub struct Config {
     #[serde(default)]
     pub repos: Vec<RepoConfig>,
 
+    /// Default merge strategy for repos that don't specify their own.
+    #[serde(default)]
+    pub default_merge_strategy: MergeStrategy,
+
+    /// Default main branch for repos that don't specify their own.
+    #[serde(default = "default_main_branch")]
+    pub default_main_branch: String,
+
     /// Whether first-run onboarding has completed. Setting this to `false`
     /// forces the daemon to re-enter setup mode on next restart.
     #[serde(default)]
@@ -234,6 +244,8 @@ impl Default for Config {
             integrations: HashMap::new(),
             repo_paths: Vec::new(),
             repos: Vec::new(),
+            default_merge_strategy: MergeStrategy::default(),
+            default_main_branch: default_main_branch(),
             onboarding_complete: false,
         }
     }
@@ -387,10 +399,12 @@ impl Config {
     pub fn repo_config(&self, repo_path: &str) -> ResolvedRepoConfig {
         let repo = self.repos.iter().find(|r| r.path == repo_path);
         ResolvedRepoConfig {
-            merge_strategy: repo.map(|r| r.merge_strategy.clone()).unwrap_or_default(),
+            merge_strategy: repo
+                .map(|r| r.merge_strategy.clone())
+                .unwrap_or_else(|| self.default_merge_strategy.clone()),
             main_branch: repo
                 .and_then(|r| r.main_branch.clone())
-                .unwrap_or_else(|| "main".to_string()),
+                .unwrap_or_else(|| self.default_main_branch.clone()),
         }
     }
 }
