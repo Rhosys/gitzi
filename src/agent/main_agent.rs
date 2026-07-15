@@ -503,7 +503,7 @@ impl MainAgent {
                 .message
                 .content
                 .unwrap_or_default();
-            ChatTurn::Text(text)
+            ChatTurn::Text(strip_special_tokens(&text))
         };
 
         Ok((raw_assistant, turn))
@@ -537,6 +537,36 @@ impl MainChatBackend for MainAgent {
     fn base_url(&self) -> Option<String> {
         Some(self.base_url.clone())
     }
+}
+
+/// Strip model-specific special tokens that local LLMs sometimes leak into
+/// their output text (BOS/EOS markers, thinking blocks).
+fn strip_special_tokens(text: &str) -> String {
+    let mut result = text.to_string();
+    // BOS/EOS tokens from various model families
+    for token in &[
+        "<|begin_of_sentence|>",
+        "<|end_of_sentence|>",
+        "<|begin▁of▁sentence|>",
+        "<|end▁of▁sentence|>",
+        "<s>",
+        "</s>",
+        "<|im_start|>assistant",
+        "<|im_end|>",
+    ] {
+        result = result.replace(token, "");
+    }
+    // Strip <think>...</think> blocks (Qwen3 reasoning traces)
+    while let Some(start) = result.find("<think>") {
+        if let Some(end) = result.find("</think>") {
+            result = format!("{}{}", &result[..start], &result[end + 8..]);
+        } else {
+            // Unclosed think tag — strip from <think> to end
+            result = result[..start].to_string();
+            break;
+        }
+    }
+    result.trim().to_string()
 }
 
 /// Async version of model query — queries GET /v1/models and returns the first
