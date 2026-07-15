@@ -1,7 +1,11 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "gitzi", about = "Kanban agent harness for software development pipelines")]
+#[command(
+    name = "gitzi",
+    about = "Kanban agent harness for software development pipelines",
+    after_help = "Run without arguments to launch the TUI."
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

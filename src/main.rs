@@ -29,7 +29,21 @@ async fn main() -> Result<()> {
         .with(gitzi::error_relay::ErrorRelayLayer)
         .init();
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            // On any parse error (invalid command, missing args), print full help
+            // instead of a terse "use --help" message
+            use clap::CommandFactory;
+            let mut cmd = Cli::command();
+            cmd.print_help().ok();
+            println!();
+            if !e.to_string().contains("--help") {
+                eprintln!("\n{e}");
+            }
+            std::process::exit(2);
+        }
+    };
 
     if cli.uninstall {
         info!("Unregistering gitzi daemon service...");
