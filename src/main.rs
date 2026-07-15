@@ -258,6 +258,59 @@ async fn cmd_daemon() -> Result<()> {
         info!("discovered {} repos", repos.len());
     }
 
+    // Ensure the configured model is loaded for OpenAI-compatible providers
+    // (e.g. LM Studio daemon needs `lms load` before it can serve requests)
+    if let Some(provider_name) = config.resolve_agent("main").provider
+        && let Some(provider) = config.providers.get(&provider_name)
+        && provider.kind == gitzi::config::ProviderKind::OpenaiCompatible
+        && provider.enabled
+        && !provider.api_url.is_empty()
+    {
+        let lms = dirs::home_dir()
+            .unwrap_or_default()
+            .join(".lmstudio/bin/lms");
+
+        // Start the LM Studio server if the port isn't open
+        let port_open = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 1234)),
+            std::time::Duration::from_millis(200),
+        ).is_ok();
+
+        if !port_open && lms.exists() {
+            info!("LM Studio server not running — starting via lms server start");
+            let _ = std::process::Command::new(&lms)
+                .args(["server", "start"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            // Wait for the server to become available
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                if std::net::TcpStream::connect_timeout(
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], 1234)),
+                    std::time::Duration::from_millis(200),
+                ).is_ok() {
+                    break;
+                }
+            }
+        }
+
+        // Now check if a model is loaded; if not, load the default
+        if gitzi::bootstrap::query_loaded_model(&provider.api_url).is_none()
+            && let Some(ref model) = provider.default_model
+            && lms.exists()
+        {
+            info!("no model loaded at {} — loading {}", provider.api_url, model);
+            let _ = std::process::Command::new(&lms)
+                .args(["load", model, "-y"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            // Give it time to load into memory
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+
     let dispatcher = Arc::new(
         gitzi::dispatcher::Dispatcher::start(config)
             .await
