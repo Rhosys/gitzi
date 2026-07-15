@@ -59,9 +59,6 @@ pub fn run() -> crate::error::Result<Config> {
     // generate-config produces a usable config, not a blank slate.
     let mut config = config;
     if let Some(best) = providers.iter().find(|p| p.model_loaded) {
-        if let Some(provider) = config.providers.get_mut(&best.name) {
-            provider.enabled = true;
-        }
         crate::setup::wire_main_agent(&mut config, &best.name);
     }
 
@@ -96,7 +93,6 @@ fn build_config_from_discovery(
     for provider in providers {
         let mut def = ProviderDef {
             kind: provider.kind,
-            enabled: false,
             ..ProviderDef::default()
         };
         match provider.kind {
@@ -724,7 +720,6 @@ pub fn write_config_with_comments(
         if !provider.api_key.is_empty() {
             writeln!(out, "api_key = \"{}\"", provider.api_key).unwrap();
         }
-        writeln!(out, "enabled = {}", provider.enabled).unwrap();
         writeln!(out).unwrap();
     }
     writeln!(out).unwrap();
@@ -896,7 +891,6 @@ mod tests {
 
         assert!(config.agents.is_empty());
         assert_eq!(config.providers.len(), 2);
-        assert!(config.providers.values().all(|p| !p.enabled));
         assert_eq!(
             config.providers["bedrock-mycompany"].region.as_deref(),
             Some("us-east-1")

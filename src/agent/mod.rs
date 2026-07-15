@@ -66,16 +66,14 @@ impl AgentBackend for PipelineAgent {
 /// Build a runnable pipeline agent from its definition. If `def.provider` names
 /// an enabled entry in `config.providers`, the agent talks to that endpoint
 /// directly via `rig` (OpenAI-compatible) or `rig-bedrock` (AWS Bedrock);
-/// otherwise it falls back to the local `claude` CLI subprocess. A provider
-/// that exists but isn't `enabled` (discovered but not yet activated) is
-/// treated the same as no provider at all.
+/// otherwise it falls back to the local `claude` CLI subprocess.
 pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
     match def
         .provider
         .as_ref()
         .and_then(|name| config.providers.get(name))
     {
-        Some(provider) if provider.enabled => {
+        Some(provider) => {
             // System prompt comes from the hardcoded role default, not config.
             let role_prompt = AgentRole::all()
                 .iter()
@@ -110,9 +108,7 @@ pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
 /// `MainChatBackend` that drives the chat tool loop identically regardless
 /// of whether the underlying model is OpenAI-compatible or Bedrock.
 pub fn build_main_agent(config: &Config, def: &AgentDef) -> Box<dyn MainChatBackend> {
-    if let Some(provider) = def.provider.as_ref().and_then(|n| config.providers.get(n))
-        && provider.enabled
-    {
+    if let Some(provider) = def.provider.as_ref().and_then(|n| config.providers.get(n)) {
         match provider.kind {
             ProviderKind::Bedrock => {
                 return Box::new(BedrockMainAgent::new(
@@ -194,20 +190,13 @@ mod tests {
     }
 
     #[test]
-    fn build_agent_with_disabled_provider_falls_back_to_coding_loop() {
+    fn build_agent_with_missing_provider_falls_back_to_coding_loop() {
         let config = Config {
-            providers: HashMap::from([(
-                "lmstudio".to_string(),
-                ProviderDef {
-                    api_url: "http://localhost:1234/v1".to_string(),
-                    enabled: false,
-                    ..ProviderDef::default()
-                },
-            )]),
+            providers: HashMap::new(), // provider not in map
             ..Config::default()
         };
         let def = AgentDef {
-            provider: Some("lmstudio".to_string()),
+            provider: Some("nonexistent".to_string()),
             ..AgentDef::default()
         };
 
