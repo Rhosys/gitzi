@@ -102,6 +102,25 @@
       ratatui (current), cursive, web-based dashboard (axum + htmx), Ink (if Node
       acceptable). Write ADR with decision.
 
+### Daemon startup reliability
+
+- [ ] Fix false "Failed to start" — the daemon IS running but the socket isn't bound
+      yet when `ensure_running` checks. Increase the retry/poll interval, or wait for
+      the socket file to appear on disk instead of a fixed 2s sleep.
+- [ ] Improve error reporting: when the daemon truly fails, show the REASON (not just
+      journal tail). Parse the journal for panics, error lines, or exit codes and
+      present a one-line diagnosis.
+- [ ] Tasks without a `repo` field should skip worktree setup entirely — they're
+      planning/design tasks, not coding tasks. The fallback to `$HOME` is wrong.
+
+### Repo path resolution
+
+- [ ] `repo_paths` glob expansion must recurse into subdirectories regardless of whether
+      the user wrote `*` or `**`. Treat both as "find all .git repos under this root."
+      The glob is a starting hint, not a literal depth constraint.
+- [ ] `discover_example_repos` must always return 2 repos (recurse if needed). If only
+      1 is found at depth 1, go deeper. Never write just 1 commented example.
+
 ---
 
 ## Context threading
