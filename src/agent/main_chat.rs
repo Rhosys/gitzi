@@ -11,8 +11,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use super::main_agent::{ChatTurn, OaiMessage, OaiTool};
 use crate::error::Result;
-use super::main_agent::{OaiMessage, OaiTool, ChatTurn};
 
 /// Boxed future returned by [`MainChatBackend::turn`].
 pub type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<(OaiMessage, ChatTurn)>> + Send + 'a>>;
@@ -26,11 +26,18 @@ pub type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<(OaiMessage, ChatTu
 pub trait MainChatBackend: Send + Sync {
     /// Execute one model turn: send the conversation history + tool definitions
     /// and return either a text response or a list of tool-call requests.
-    fn turn<'a>(
+    fn turn<'a>(&'a self, messages: &'a [OaiMessage], tools: &'a [OaiTool]) -> TurnFuture<'a>;
+
+    /// Streaming variant of `turn`. Emits progress events on the bus as tokens
+    /// arrive. Default implementation falls back to non-streaming `turn`.
+    fn turn_streaming<'a>(
         &'a self,
         messages: &'a [OaiMessage],
         tools: &'a [OaiTool],
-    ) -> TurnFuture<'a>;
+        _event_bus: &'a crate::dispatcher::event_bus::EventBus,
+    ) -> TurnFuture<'a> {
+        self.turn(messages, tools)
+    }
 
     /// The model identifier (for diagnostics / logging).
     fn model(&self) -> String;

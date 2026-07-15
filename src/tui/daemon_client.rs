@@ -1,13 +1,13 @@
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::sync::mpsc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 use tracing::warn;
 
+use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, EditorTarget};
 use crate::daemon::socket_path;
 use crate::setup::SetupState;
 use crate::state::chat::{ChatMessage as StoredMessage, Role};
-use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, EditorTarget};
 
 /// Spawn the background task that manages the daemon socket connection.
 /// Returns an UnboundedReceiver for incoming messages.
@@ -194,7 +194,8 @@ async fn run_board_phase(
 
     // Read board snapshot response
     if let Ok(Some(line)) = lines.next_line().await
-        && let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line) {
+        && let Ok(columns) = serde_json::from_str::<Vec<BoardColumn>>(&line)
+    {
         let _ = msg_tx.send(DaemonMessage::BoardSnapshot(columns));
     }
 
@@ -203,14 +204,18 @@ async fn run_board_phase(
         Ok(s) => s,
         Err(e) => {
             warn!("subscribe connect failed: {e}");
-            let _ = msg_tx.send(DaemonMessage::Disconnected(format!("subscribe failed: {e}")));
+            let _ = msg_tx.send(DaemonMessage::Disconnected(format!(
+                "subscribe failed: {e}"
+            )));
             return;
         }
     };
 
     let (sub_reader, mut sub_writer) = sub_stream.into_split();
     if sub_writer.write_all(b"subscribe\n").await.is_err() {
-        let _ = msg_tx.send(DaemonMessage::Disconnected("subscribe write failed".to_string()));
+        let _ = msg_tx.send(DaemonMessage::Disconnected(
+            "subscribe write failed".to_string(),
+        ));
         return;
     }
     let mut sub_lines = BufReader::new(sub_reader).lines();
@@ -231,7 +236,8 @@ async fn run_board_phase(
         return;
     }
     if let Ok(Some(line)) = lines.next_line().await
-        && let Ok(epics) = serde_json::from_str::<Vec<crate::model::Epic>>(&line) {
+        && let Ok(epics) = serde_json::from_str::<Vec<crate::model::Epic>>(&line)
+    {
         let _ = msg_tx.send(DaemonMessage::Epics(epics));
     }
 
@@ -241,7 +247,8 @@ async fn run_board_phase(
         return;
     }
     if let Ok(Some(line)) = lines.next_line().await
-        && let Ok(count) = line.trim().parse::<usize>() {
+        && let Ok(count) = line.trim().parse::<usize>()
+    {
         let _ = msg_tx.send(DaemonMessage::QueueLen(count));
     }
 
@@ -312,6 +319,38 @@ async fn run_board_phase(
                             let _ = msg_tx.send(DaemonMessage::Event(
                                 format!("[{level}] {message}")
                             ));
+                            continue;
+                        }
+                        // Check for streaming_tokens events
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str())
+                                == Some("streaming_tokens")
+                            && let Some(count) = val.get("count")
+                                .and_then(|v| v.as_u64())
+                        {
+                            let _ = msg_tx.send(
+                                DaemonMessage::StreamingTokens(count as usize)
+                            );
+                            continue;
+                        }
+                        // Check for streaming_tool_call events
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str())
+                                == Some("streaming_tool_call")
+                            && let Some(name) = val.get("name")
+                                .and_then(|v| v.as_str())
+                        {
+                            let _ = msg_tx.send(
+                                DaemonMessage::StreamingToolCall(name.to_string())
+                            );
+                            continue;
+                        }
+                        // Check for streaming_done events
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line)
+                            && val.get("type").and_then(|t| t.as_str())
+                                == Some("streaming_done")
+                        {
+                            let _ = msg_tx.send(DaemonMessage::StreamingDone);
                             continue;
                         }
                         let _ = msg_tx.send(DaemonMessage::Event(line));
@@ -419,8 +458,14 @@ fn stored_to_entries(stored: Vec<StoredMessage>) -> Vec<ChatEntry> {
     stored
         .into_iter()
         .filter_map(|m| match m.role {
-            Role::User => Some(ChatEntry { is_user: true, content: m.content }),
-            Role::Agent => Some(ChatEntry { is_user: false, content: m.content }),
+            Role::User => Some(ChatEntry {
+                is_user: true,
+                content: m.content,
+            }),
+            Role::Agent => Some(ChatEntry {
+                is_user: false,
+                content: m.content,
+            }),
             Role::System => None,
         })
         .collect()

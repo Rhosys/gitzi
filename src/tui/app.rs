@@ -177,10 +177,10 @@ pub struct App {
     pub llm_available: bool,
 
     /// Discovered providers (for first-time status display)
-    pub discovered_providers: Vec<(String, bool)>,  // (name, is_running)
+    pub discovered_providers: Vec<(String, bool)>, // (name, is_running)
 
     /// Discovered repo summaries (for first-time status display)
-    pub discovered_repos: Vec<(String, String)>,  // (path, summary)
+    pub discovered_repos: Vec<(String, String)>, // (path, summary)
 
     /// Whether the editor is focused (Tab was pressed)
     pub editor_focused: bool,
@@ -201,20 +201,36 @@ pub struct App {
     pub setup_selected: usize,
     /// Last activation message/error to surface beneath the picker.
     pub setup_message: Option<String>,
+
+    // ── Streaming progress ─────────────────────────────────────────────────
+    /// Tokens received so far in the current streaming response.
+    pub stream_tokens: usize,
+    /// Tool names called during the current streaming response.
+    pub stream_tools: Vec<String>,
 }
 
 /// Commands sent from the TUI event loop to the daemon client task.
 #[derive(Debug)]
 pub enum DaemonCommand {
-    Chat { message: String, view_context: ViewContext },
+    Chat {
+        message: String,
+        view_context: ViewContext,
+    },
     CloseFork,
     RefreshBoard,
     RefreshReview,
     RefreshEpics,
     RefreshQueueLen,
-    UpdateEntity { id: String, target: EditorTarget, title: String, description: Option<String> },
+    UpdateEntity {
+        id: String,
+        target: EditorTarget,
+        title: String,
+        description: Option<String>,
+    },
     /// Activate the named provider during bootstrap setup (ADR-002).
-    SetupSelect { name: String },
+    SetupSelect {
+        name: String,
+    },
     /// Re-run the environment scan during bootstrap setup.
     SetupRescan,
 }
@@ -245,9 +261,14 @@ pub enum DaemonMessage {
     QueueLen(usize),
     ChatHistory(Vec<ChatEntry>),
     ChatResponse(String),
-    ForkCreated { id: String, name: String },
-    ForkClosed { id: String },
-    Event(String),  // raw JSON line from subscribe stream
+    ForkCreated {
+        id: String,
+        name: String,
+    },
+    ForkClosed {
+        id: String,
+    },
+    Event(String), // raw JSON line from subscribe stream
     SwitchPanel(String),
     Connected,
     Disconnected(String),
@@ -255,6 +276,12 @@ pub enum DaemonMessage {
     SetupState(crate::setup::SetupState),
     /// Result of a setup_select / activation attempt (message to surface).
     SetupMessage(String),
+    /// Streaming: tokens received.
+    StreamingTokens(usize),
+    /// Streaming: a tool call was made.
+    StreamingToolCall(String),
+    /// Streaming: response complete.
+    StreamingDone,
 }
 
 impl App {
@@ -289,6 +316,8 @@ impl App {
             setup_state: Some(crate::setup::SetupState::Loading),
             setup_selected: 0,
             setup_message: None,
+            stream_tokens: 0,
+            stream_tools: Vec::new(),
         }
     }
 
@@ -297,7 +326,10 @@ impl App {
     /// True while the bootstrap gate is unsatisfied — the setup screen owns the
     /// whole UI and normal board/chat input is suppressed.
     pub fn in_setup(&self) -> bool {
-        !matches!(self.setup_state, None | Some(crate::setup::SetupState::Ready))
+        !matches!(
+            self.setup_state,
+            None | Some(crate::setup::SetupState::Ready)
+        )
     }
 
     /// Apply a fresh setup state from the daemon, clamping the picker selection.
@@ -394,13 +426,25 @@ impl App {
             .filter(|e| !e.tasks.is_empty())
             .max_by_key(|e| {
                 let total = e.tasks.len();
-                let done = e.tasks.iter().filter(|id| done_ids.contains(id.as_str())).count();
+                let done = e
+                    .tasks
+                    .iter()
+                    .filter(|id| done_ids.contains(id.as_str()))
+                    .count();
                 (total - done, total)
             })
             .map(|e| {
                 let total = e.tasks.len();
-                let done = e.tasks.iter().filter(|id| done_ids.contains(id.as_str())).count();
-                EpicStatus { title: e.title.clone(), done, total }
+                let done = e
+                    .tasks
+                    .iter()
+                    .filter(|id| done_ids.contains(id.as_str()))
+                    .count();
+                EpicStatus {
+                    title: e.title.clone(),
+                    done,
+                    total,
+                }
             })
     }
 
@@ -490,7 +534,23 @@ impl App {
         result
     }
 
-
+    /// Compute streaming progress (0.0..1.0).
+    /// 0-80% is linear based on tokens (assume ~100 tokens for a full response).
+    /// 80%+ uses exponential decay by 0.5 per additional 100 tokens.
+    pub fn stream_progress(&self) -> f64 {
+        if self.stream_tokens == 0 {
+            return 0.0;
+        }
+        let linear_target = 100usize; // tokens for 80%
+        if self.stream_tokens <= linear_target {
+            0.8 * (self.stream_tokens as f64 / linear_target as f64)
+        } else {
+            // Exponential decay from 80% toward 100%
+            let extra = (self.stream_tokens - linear_target) as f64 / linear_target as f64;
+            let remaining = 0.2 * 0.5_f64.powf(extra);
+            1.0 - remaining
+        }
+    }
 
     // ── Chat ──────────────────────────────────────────────────────────────────
 
@@ -500,28 +560,44 @@ impl App {
         if message.is_empty() {
             return;
         }
-        self.chat_history.push(ChatEntry { is_user: true, content: message.clone() });
+        self.chat_history.push(ChatEntry {
+            is_user: true,
+            content: message.clone(),
+        });
 
         let selected_task = self.selected_board_task();
         let view_context = ViewContext {
             panel: self.panel.label().to_string(),
             selected_task_id: selected_task.map(|t| t.id.clone()),
             selected_task_title: selected_task.map(|t| t.title.clone()),
-            selected_column: column_order()
-                .get(self.board_col)
-                .map(|c| c.to_string()),
+            selected_column: column_order().get(self.board_col).map(|c| c.to_string()),
             pending_questions: self.question_count,
         };
 
-        let _ = self.cmd_tx.send(DaemonCommand::Chat { message, view_context });
+        let _ = self.cmd_tx.send(DaemonCommand::Chat {
+            message,
+            view_context,
+        });
         self.chat_pending = true;
         self.status = "thinking…".to_string();
     }
 
     /// Apply a chat response from the daemon.
     pub fn apply_chat_response(&mut self, response: String) {
-        self.chat_history.push(ChatEntry { is_user: false, content: response });
+        // If tools were used during streaming, prepend them to the message
+        let content = if self.stream_tools.is_empty() {
+            response
+        } else {
+            let tools_line = format!("Tools: [{}]\n", self.stream_tools.join(", "));
+            format!("{tools_line}{response}")
+        };
+        self.chat_history.push(ChatEntry {
+            is_user: false,
+            content,
+        });
         self.chat_pending = false;
+        self.stream_tokens = 0;
+        self.stream_tools.clear();
         self.status = String::new();
     }
 
@@ -583,7 +659,10 @@ impl App {
 
     /// Cycle to the previous panel (Ctrl+Up).
     pub fn prev_panel(&mut self) {
-        let idx = Panel::ALL.iter().position(|p| *p == self.panel).unwrap_or(0);
+        let idx = Panel::ALL
+            .iter()
+            .position(|p| *p == self.panel)
+            .unwrap_or(0);
         self.panel = if idx == 0 {
             Panel::ALL[Panel::ALL.len() - 1]
         } else {
@@ -593,7 +672,10 @@ impl App {
 
     /// Cycle to the next panel (Ctrl+Down).
     pub fn next_panel(&mut self) {
-        let idx = Panel::ALL.iter().position(|p| *p == self.panel).unwrap_or(0);
+        let idx = Panel::ALL
+            .iter()
+            .position(|p| *p == self.panel)
+            .unwrap_or(0);
         self.panel = if idx >= Panel::ALL.len() - 1 {
             Panel::ALL[0]
         } else {
@@ -617,7 +699,10 @@ impl App {
 
     /// Number of visible (non-buffer, non-Done) columns.
     fn visible_column_count(&self) -> usize {
-        column_order().iter().filter(|c| !c.is_buffer() && **c != Column::Done).count()
+        column_order()
+            .iter()
+            .filter(|c| !c.is_buffer() && **c != Column::Done)
+            .count()
     }
 
     /// Convert a visible-column index to an all-columns index.
@@ -638,14 +723,11 @@ impl App {
         match self.panel {
             Panel::Epic => {
                 if let Some(epic_status) = self.current_epic_status()
-                    && let Some(epic) =
-                        self.epics.iter().find(|e| e.title == epic_status.title)
+                    && let Some(epic) = self.epics.iter().find(|e| e.title == epic_status.title)
                 {
                     let desc = epic.description.as_deref().unwrap_or("");
-                    self.editor_buffer = format!(
-                        "# Title\n{}\n\n# Description\n{}",
-                        epic.title, desc
-                    );
+                    self.editor_buffer =
+                        format!("# Title\n{}\n\n# Description\n{}", epic.title, desc);
                     self.editor_target_id = Some(epic.id.clone());
                     self.editor_target_type = Some(EditorTarget::Epic);
                     self.editor_focused = true;
@@ -657,8 +739,7 @@ impl App {
                 if let Some(task) = self.selected_board_task() {
                     let task_title = task.title.clone();
                     let task_id = task.id.clone();
-                    self.editor_buffer =
-                        format!("# Title\n{}\n\n# Description\n", task_title);
+                    self.editor_buffer = format!("# Title\n{}\n\n# Description\n", task_title);
                     self.editor_target_id = Some(task_id);
                     self.editor_target_type = Some(EditorTarget::Task);
                     self.editor_focused = true;
@@ -672,9 +753,7 @@ impl App {
 
     /// Save the editor buffer to disk via daemon command.
     pub fn save_editor(&mut self) {
-        if let (Some(id), Some(target)) =
-            (&self.editor_target_id, self.editor_target_type)
-        {
+        if let (Some(id), Some(target)) = (&self.editor_target_id, self.editor_target_type) {
             let (title, description) = parse_editor_buffer(&self.editor_buffer);
             let _ = self.cmd_tx.send(DaemonCommand::UpdateEntity {
                 id: id.clone(),
@@ -698,8 +777,7 @@ impl App {
             self.editor_esc_warned = false;
         } else {
             self.editor_esc_warned = true;
-            self.status =
-                "unsaved changes \u{2014} Ctrl+S to save, Esc to discard".to_string();
+            self.status = "unsaved changes \u{2014} Ctrl+S to save, Esc to discard".to_string();
         }
     }
 }

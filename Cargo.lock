@@ -1699,6 +1699,7 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
+ "futures-util",
  "git2",
  "glob",
  "jsonwebtoken",

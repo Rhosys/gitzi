@@ -1,3 +1,5 @@
+use super::app::{App, Panel, column_abbrev, column_order};
+use crate::dispatcher::Column;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -5,8 +7,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
 };
-use crate::dispatcher::Column;
-use super::app::{App, Panel, column_order, column_abbrev};
 
 pub fn draw(frame: &mut Frame, app: &App) {
     // Bootstrap setup (ADR-002) owns the whole screen until the gate clears.
@@ -20,7 +20,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
-    ]).areas(area);
+    ])
+    .areas(area);
 
     draw_header(frame, app, header_area);
     draw_body(frame, app, body_area);
@@ -47,12 +48,15 @@ fn draw_setup(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Fill(1),
         Constraint::Length(2),
         Constraint::Length(1),
-    ]).areas(inner);
+    ])
+    .areas(inner);
 
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
             "Set up a language model to get started",
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ))),
         title_area,
     );
@@ -69,10 +73,13 @@ fn draw_setup(frame: &mut Frame, app: &App, area: Rect) {
             "Ctrl+Q quit",
         ),
         Some(SetupState::NeedsProvider { candidates }) => {
-            let mut lines = vec![Line::from(Span::styled(
-                "  Choose a provider to activate:",
-                Style::default().fg(Color::Gray),
-            )), Line::from("")];
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "  Choose a provider to activate:",
+                    Style::default().fg(Color::Gray),
+                )),
+                Line::from(""),
+            ];
             for (i, c) in candidates.iter().enumerate() {
                 let selected = i == app.setup_selected;
                 let marker = if selected { "▶ " } else { "  " };
@@ -87,13 +94,24 @@ fn draw_setup(frame: &mut Frame, app: &App, area: Rect) {
                     style,
                 )));
             }
-            (lines, "↑/↓ select   Enter activate   r rescan   Ctrl+Q quit")
+            (
+                lines,
+                "↑/↓ select   Enter activate   r rescan   Ctrl+Q quit",
+            )
         }
-        Some(SetupState::Error { messages, can_rescan }) => {
-            let mut lines = vec![Line::from(Span::styled(
-                "  Setup can't continue yet:",
-                Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
-            )), Line::from("")];
+        Some(SetupState::Error {
+            messages,
+            can_rescan,
+        }) => {
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "  Setup can't continue yet:",
+                    Style::default()
+                        .fg(Color::LightRed)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+            ];
             for m in messages {
                 lines.push(Line::from(Span::styled(
                     format!("  {m}"),
@@ -137,10 +155,8 @@ fn draw_setup(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
     if !app.llm_available {
         // No LLM — full width right panel (no chat, no fork strip)
-        let [right_area, sidebar_area] = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(3),
-        ]).areas(area);
+        let [right_area, sidebar_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Length(3)]).areas(area);
         draw_right_panel(frame, app, right_area);
         draw_sidebar(frame, app, sidebar_area);
         return;
@@ -150,17 +166,19 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Ratio(35, 100),
             Constraint::Fill(1),
             Constraint::Length(3),
-        ]).areas(area);
+        ])
+        .areas(area);
         draw_chat_pane(frame, app, chat_area);
         draw_right_panel(frame, app, right_area);
         draw_sidebar(frame, app, sidebar_area);
     } else {
         let [fork_strip, chat_area, right_area, sidebar_area] = Layout::horizontal([
-            Constraint::Length(3),
+            Constraint::Length(20),
             Constraint::Ratio(33, 100),
             Constraint::Fill(1),
             Constraint::Length(3),
-        ]).areas(area);
+        ])
+        .areas(area);
         draw_fork_strip(frame, app, fork_strip);
         draw_chat_pane(frame, app, chat_area);
         draw_right_panel(frame, app, right_area);
@@ -171,43 +189,58 @@ fn draw_body(frame: &mut Frame, app: &App, area: Rect) {
 // -- Fork strip (3-char wide, left edge when forks active) -------------------
 
 fn draw_fork_strip(frame: &mut Frame, app: &App, area: Rect) {
-    let total = app.fork_stack.len();
-    let mut constraints: Vec<Constraint> = Vec::new();
-    constraints.push(Constraint::Fill(1)); // top padding
-    for _ in 0..total {
-        constraints.push(Constraint::Length(1));
-    }
-    constraints.push(Constraint::Fill(1)); // bottom padding
-    let rows = Layout::vertical(constraints).split(area);
+    let block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    for (i, _fork) in app.fork_stack.iter().enumerate() {
-        let active = i == total - 1;
+    // Build the stack path: "main > fork1 > fork2"
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        "main",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    for (i, fork) in app.fork_stack.iter().enumerate() {
+        let active = i == app.fork_stack.len() - 1;
         let style = if active {
             Style::default()
-                .bg(Color::Magenta)
-                .fg(Color::Black)
+                .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let label = format!(" {} ", i + 1);
-        frame.render_widget(
-            Paragraph::new(Span::styled(label, style)),
-            rows[i + 1],
-        );
+        // Truncate name to fit the strip width
+        let max_w = inner.width as usize;
+        let display = if fork.name.len() > max_w {
+            format!("{}..", &fork.name[..max_w.saturating_sub(2)])
+        } else {
+            fork.name.clone()
+        };
+        lines.push(Line::from(Span::styled(format!(" > {display}"), style)));
     }
+
+    // Render from top
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 // -- Header -----------------------------------------------------------------
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let connected_indicator = if app.connected { "●" } else { "○" };
-    let conn_color = if app.connected { Color::Green } else { Color::Red };
+    let conn_color = if app.connected {
+        Color::Green
+    } else {
+        Color::Red
+    };
 
     let mut spans = vec![
         Span::styled(
             " gitzi",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled("  ", Style::default()),
         Span::styled(connected_indicator, Style::default().fg(conn_color)),
@@ -222,33 +255,29 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         ));
     }
 
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 // -- Chat pane (left, 35%) --------------------------------------------------
 
 fn draw_chat_pane(frame: &mut Frame, app: &App, area: Rect) {
-    let title = if app.chat_pending {
-        " Chat  thinking... "
-    } else {
-        " Chat * "
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(" Chat ")
         .border_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split inner: history fills top, input sits at bottom (3 lines)
-    let [history_area, input_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(3),
-    ]).areas(inner);
+    // Split inner: history fills top, input height expands with wrapped text
+    let input_width = inner.width.saturating_sub(4) as usize; // inner of input box
+    let input_lines = (app.chat_input.len() + 1)
+        .checked_div(input_width)
+        .map(|q| (q + 1).min(6) as u16)
+        .unwrap_or(1);
+    let input_height = input_lines + 2; // +2 for border
+
+    let [history_area, input_area] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(input_height)]).areas(inner);
 
     draw_chat_history(frame, app, history_area);
     draw_chat_input(frame, app, input_area);
@@ -262,12 +291,16 @@ fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
         if entry.is_user {
             lines.push(Line::from(Span::styled(
                 "You",
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             )));
         } else {
             lines.push(Line::from(Span::styled(
                 "gitzi",
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
             )));
         }
 
@@ -280,6 +313,47 @@ fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(Span::styled(wrapped_line, style)));
         }
         lines.push(Line::from(""));
+    }
+
+    // Show spinner + progress bar while waiting for LLM response
+    if app.chat_pending {
+        // Tool list
+        if !app.stream_tools.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("Tools: [{}]", app.stream_tools.join(", ")),
+                Style::default().fg(Color::Magenta),
+            )));
+        }
+
+        // Progress bar
+        if app.stream_tokens > 0 {
+            let progress = app.stream_progress();
+            let bar_width = width.min(30);
+            let filled = (progress * bar_width as f64) as usize;
+            let empty = bar_width.saturating_sub(filled);
+            let bar = format!(
+                "[{}{}] {:>3}%",
+                "█".repeat(filled),
+                "░".repeat(empty),
+                (progress * 100.0) as u8,
+            );
+            lines.push(Line::from(Span::styled(
+                bar,
+                Style::default().fg(Color::Cyan),
+            )));
+        } else {
+            let spinner_frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+            let tick = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                / 100) as usize;
+            let frame_char = spinner_frames[tick % spinner_frames.len()];
+            lines.push(Line::from(Span::styled(
+                format!("{frame_char} thinking..."),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
     }
 
     // Scroll to show the bottom of history
@@ -299,18 +373,16 @@ fn draw_chat_input(frame: &mut Frame, app: &App, area: Rect) {
     let input_inner = input_block.inner(area);
     frame.render_widget(input_block, area);
 
-    let cursor = if app.chat_pending {
-        format!("{}...", app.chat_input)
-    } else if app.chat_input.is_empty() {
-        "|".to_string()
-    } else {
-        format!("{}|", app.chat_input)
-    };
+    // Word-wrap the input text across multiple lines within available width
+    let width = input_inner.width as usize;
+    let display = format!("{}|", app.chat_input);
+    let wrapped = wrap_text_char(&display, width);
+    let lines: Vec<Line> = wrapped
+        .into_iter()
+        .map(|l| Line::from(Span::styled(l, Style::default().fg(Color::White))))
+        .collect();
 
-    frame.render_widget(
-        Paragraph::new(Span::styled(cursor, Style::default().fg(Color::White))),
-        input_inner,
-    );
+    frame.render_widget(Paragraph::new(lines), input_inner);
 }
 
 // -- Sidebar (3-char wide, far right) ---------------------------------------
@@ -342,11 +414,9 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
-        ]).areas(cell);
-        frame.render_widget(
-            Paragraph::new(Span::styled(label, style)),
-            mid,
-        );
+        ])
+        .areas(cell);
+        frame.render_widget(Paragraph::new(Span::styled(label, style)), mid);
     }
 }
 
@@ -402,13 +472,18 @@ fn draw_epic(frame: &mut Frame, app: &App, area: Rect) {
 
             lines.push(Line::from(Span::styled(
                 epic_status.title.clone(),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
 
             // Progress
             lines.push(Line::from(Span::styled(
-                format!("Progress: {} / {} tasks done", epic_status.done, epic_status.total),
+                format!(
+                    "Progress: {} / {} tasks done",
+                    epic_status.done, epic_status.total
+                ),
                 Style::default().fg(Color::Cyan),
             )));
             lines.push(Line::from(""));
@@ -435,7 +510,9 @@ fn draw_epic(frame: &mut Frame, app: &App, area: Rect) {
                         .iter()
                         .find_map(|col| {
                             app.board.get(&col.to_string()).and_then(|tasks| {
-                                tasks.iter().find(|t| t.id == *task_id)
+                                tasks
+                                    .iter()
+                                    .find(|t| t.id == *task_id)
                                     .map(|_| column_abbrev(col))
                             })
                         })
@@ -445,7 +522,9 @@ fn draw_epic(frame: &mut Frame, app: &App, area: Rect) {
                         .iter()
                         .find_map(|col| {
                             app.board.get(&col.to_string()).and_then(|tasks| {
-                                tasks.iter().find(|t| t.id == *task_id)
+                                tasks
+                                    .iter()
+                                    .find(|t| t.id == *task_id)
                                     .map(|t| t.title.as_str())
                             })
                         })
@@ -456,10 +535,7 @@ fn draw_epic(frame: &mut Frame, app: &App, area: Rect) {
                             format!("  [{col_label}] "),
                             Style::default().fg(Color::DarkGray),
                         ),
-                        Span::styled(
-                            task_title.to_string(),
-                            Style::default().fg(Color::White),
-                        ),
+                        Span::styled(task_title.to_string(), Style::default().fg(Color::White)),
                     ]));
                 }
             }
@@ -472,10 +548,7 @@ fn draw_epic(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
@@ -493,7 +566,9 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
             // Title
             lines.push(Line::from(Span::styled(
                 task.title.clone(),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
 
@@ -504,10 +579,7 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
             ]));
             lines.push(Line::from(vec![
                 Span::styled("Priority: ", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    task.priority.to_string(),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(task.priority.to_string(), Style::default().fg(Color::White)),
             ]));
 
             // Column
@@ -515,7 +587,9 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
                 .iter()
                 .find_map(|col| {
                     app.board.get(&col.to_string()).and_then(|tasks| {
-                        tasks.iter().find(|t| t.id == task.id)
+                        tasks
+                            .iter()
+                            .find(|t| t.id == task.id)
                             .map(|_| col.to_string())
                     })
                 })
@@ -551,10 +625,7 @@ fn draw_task(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
@@ -568,12 +639,17 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
     let visible_height = inner.height as usize;
     let skip = app.logs.len().saturating_sub(visible_height);
 
-    let lines: Vec<Line> = app.logs.iter().skip(skip).map(|entry| {
-        Line::from(Span::styled(
-            truncate(entry, inner.width as usize),
-            Style::default().fg(Color::Gray),
-        ))
-    }).collect();
+    let lines: Vec<Line> = app
+        .logs
+        .iter()
+        .skip(skip)
+        .map(|entry| {
+            Line::from(Span::styled(
+                truncate(entry, inner.width as usize),
+                Style::default().fg(Color::Gray),
+            ))
+        })
+        .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -602,7 +678,9 @@ fn draw_status_no_llm(frame: &mut Frame, _app: &App, area: Rect) {
         Line::from(""),
         Line::from(Span::styled(
             "  No LLM provider configured",
-            Style::default().fg(Color::LightRed).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -638,16 +716,14 @@ fn draw_status_first_time(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         for (name, running) in &app.discovered_providers {
             let status = if *running { "running" } else { "installed" };
-            let color = if *running { Color::Green } else { Color::Yellow };
+            let color = if *running {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {name}"),
-                    Style::default().fg(Color::White),
-                ),
-                Span::styled(
-                    format!("  ({status})"),
-                    Style::default().fg(color),
-                ),
+                Span::styled(format!("  {name}"), Style::default().fg(Color::White)),
+                Span::styled(format!("  ({status})"), Style::default().fg(color)),
             ]));
         }
     }
@@ -683,10 +759,7 @@ fn draw_status_first_time(frame: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn draw_status_normal(frame: &mut Frame, app: &App, area: Rect) {
@@ -705,7 +778,9 @@ fn draw_status_normal(frame: &mut Frame, app: &App, area: Rect) {
         Some(epic) => {
             lines.push(Line::from(Span::styled(
                 epic.title,
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(Span::styled(
                 format!("{} / {} tasks done", epic.done, epic.total),
@@ -721,7 +796,10 @@ fn draw_status_normal(frame: &mut Frame, app: &App, area: Rect) {
 
     // In progress
     let in_progress = app.tasks_in_progress();
-    lines.push(section_header(&format!("In progress ({})", in_progress.len())));
+    lines.push(section_header(&format!(
+        "In progress ({})",
+        in_progress.len()
+    )));
     if in_progress.is_empty() {
         lines.push(Line::from(Span::styled(
             "Nothing in flight",
@@ -736,7 +814,10 @@ fn draw_status_normal(frame: &mut Frame, app: &App, area: Rect) {
 
     // Waiting for you
     let waiting = app.tasks_waiting_for_you();
-    lines.push(section_header(&format!("Waiting for you ({})", waiting.len())));
+    lines.push(section_header(&format!(
+        "Waiting for you ({})",
+        waiting.len()
+    )));
     if waiting.is_empty() {
         lines.push(Line::from(Span::styled(
             "Nothing pending",
@@ -760,16 +841,15 @@ fn draw_status_normal(frame: &mut Frame, app: &App, area: Rect) {
         },
     )));
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        inner,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 fn section_header(text: &str) -> Line<'static> {
     Line::from(Span::styled(
         text.to_string(),
-        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
     ))
 }
 
@@ -813,21 +893,28 @@ fn draw_board(frame: &mut Frame, app: &App, area: Rect) {
         let task_str = if tasks.is_empty() {
             String::new()
         } else {
-            let parts: Vec<String> = tasks.iter().enumerate().map(|(ti, t)| {
-                let selected = active && ti == app.board_task;
-                if selected {
-                    format!(">{}", t.title)
-                } else {
-                    t.title.clone()
-                }
-            }).collect();
+            let parts: Vec<String> = tasks
+                .iter()
+                .enumerate()
+                .map(|(ti, t)| {
+                    let selected = active && ti == app.board_task;
+                    if selected {
+                        format!(">{}", t.title)
+                    } else {
+                        t.title.clone()
+                    }
+                })
+                .collect();
             let joined = parts.join(", ");
             truncate(&joined, available_width)
         };
 
         // Label style
         let label_style = if active {
-            Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(column_title_color(col))
         };
@@ -932,4 +1019,20 @@ fn truncate(s: &str, max_chars: usize) -> String {
         let t: String = chars[..max_chars - 1].iter().collect();
         format!("{t}..")
     }
+}
+
+/// Character-level wrapping for the input field — breaks at column width
+/// without caring about word boundaries.
+fn wrap_text_char(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    chars
+        .chunks(width)
+        .map(|chunk| chunk.iter().collect())
+        .collect()
 }
