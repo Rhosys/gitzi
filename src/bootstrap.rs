@@ -485,16 +485,21 @@ pub fn discover_repo_paths() -> Vec<String> {
         found_parents.push(parent.to_path_buf());
     }
 
-    // Deduplicate: collect unique parent directories that contain repos,
-    // then emit one glob per parent
-    let mut parents: Vec<PathBuf> = Vec::new();
-    for repo_parent in &found_parents {
-        if !parents.iter().any(|p| p == repo_parent) {
-            parents.push(repo_parent.clone());
+    // Deduplicate: remove any parent that is a subdirectory of another.
+    // The highest ancestor covers all repos beneath it — no redundant globs.
+    found_parents.sort();
+    found_parents.dedup();
+    let mut minimal: Vec<PathBuf> = Vec::new();
+    for candidate in &found_parents {
+        let already_covered = minimal.iter().any(|existing| candidate.starts_with(existing));
+        if !already_covered {
+            // Remove any previously-added entries that this candidate covers
+            minimal.retain(|existing| !existing.starts_with(candidate));
+            minimal.push(candidate.clone());
         }
     }
 
-    parents
+    minimal
         .iter()
         .map(|p| format!("{}/*", p.display()))
         .collect()
