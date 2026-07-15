@@ -73,6 +73,18 @@
 - [ ] As a developer, the fork stack indicator shows depth and topic names
       (e.g. "main > provider-setup > model-choice")
 
+### TUI — Streaming progress bar + tool display
+
+- [ ] As a developer, while the LLM is generating a response, I see a progress bar that
+      fills based on streamed token count (assume ~100 tokens for a full response)
+- [ ] As a developer, the progress bar is linear from 0-80%, then exponential decay
+      by 0.5 (80 → 90 → 95 → 97.5...) for the remaining range
+- [ ] As a developer, when the model calls tools during the response, I see
+      `Tools: [tool_name_1, tool_name_2]` at the top of the assistant message
+- [ ] As a developer, the tool list persists in the rendered message after completion
+- [ ] As a developer, switch MainAgent to `stream: true` and consume SSE token events
+      for progress tracking (not for word-by-word display)
+
 ---
 
 ## Context threading
