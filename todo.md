@@ -63,6 +63,16 @@
 - [ ] As a developer, I can navigate to a task detail page showing its diff and history
 - [ ] As a developer, I can approve or reject directly from the task detail page
 
+### TUI — Fork stack display
+
+- [ ] As a developer, when a new fork is pushed onto the conversation stack, the TUI
+      switches to a separate chat panel for that fork's messages
+- [ ] As a developer, the left side of the TUI shows the stack of active forks (names)
+      so I always know where I am in the conversation hierarchy
+- [ ] As a developer, closing a fork pops the panel back to the parent conversation
+- [ ] As a developer, the fork stack indicator shows depth and topic names
+      (e.g. "main > provider-setup > model-choice")
+
 ---
 
 ## Context threading
