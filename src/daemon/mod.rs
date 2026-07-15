@@ -908,7 +908,14 @@ pub async fn ensure_running() -> Result<()> {
     if is_running().await {
         Ok(())
     } else {
-        anyhow::bail!("Failed to start gitzi daemon — check `systemctl --user status gitzi`")
+        // Grab the journal logs so the user sees the actual failure reason
+        let logs = std::process::Command::new("journalctl")
+            .args(["--user", "-u", "gitzi.service", "--no-pager", "-n", "20", "-o", "short"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default();
+        anyhow::bail!("Failed to start gitzi daemon.\n\n{logs}")
     }
 }
 
