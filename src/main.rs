@@ -297,6 +297,14 @@ async fn cmd_daemon() -> Result<()> {
             error!("Config watcher exited: {:?}", result);
             result
         }
+        _ = watch_binary_for_restart() => {
+            info!("Binary changed on disk — exec'ing new version");
+            let _ = std::fs::remove_file(daemon::socket_path());
+            let _ = std::fs::remove_file(home::mcp_socket_path());
+            exec_self();
+            // exec_self only returns on failure
+            Ok(())
+        }
         _ = shutdown_signal() => {
             info!("Shutdown signal received — exiting");
             let _ = std::fs::remove_file(daemon::socket_path());
@@ -392,6 +400,88 @@ fn parse_stage(s: &str) -> Result<Stage> {
         "deploying" => Ok(Stage::Deploying),
         other => anyhow::bail!("Unknown stage: {other}"),
     }
+}
+
+/// Watch the running binary for changes on disk. Returns when the file is
+/// modified (e.g. after `cargo build`). Debounces for 2 seconds to let the
+/// linker finish writing before triggering exec.
+async fn watch_binary_for_restart() {
+    use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event, EventKind};
+    use tokio::sync::mpsc;
+
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("cannot resolve own binary path for hot-reload: {e}");
+            // Park forever — this select branch never fires
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+
+    let (tx, mut rx) = mpsc::channel::<()>(1);
+
+    let mut watcher = match RecommendedWatcher::new(
+        move |res: std::result::Result<Event, notify::Error>| {
+            if let Ok(event) = res
+                && matches!(
+                    event.kind,
+                    EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+                )
+            {
+                let _ = tx.try_send(());
+            }
+        },
+        notify::Config::default(),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            error!("failed to create binary watcher: {e}");
+            std::future::pending::<()>().await;
+            return;
+        }
+    };
+
+    // Watch the parent directory (some linkers atomically rename, which the
+    // file-level watch misses)
+    let watch_dir = exe_path.parent().unwrap_or(&exe_path);
+    if let Err(e) = watcher.watch(watch_dir, RecursiveMode::NonRecursive) {
+        error!("failed to watch binary directory: {e}");
+        std::future::pending::<()>().await;
+        return;
+    }
+
+    info!("watching binary for changes: {}", exe_path.display());
+
+    // Wait for first modification event
+    rx.recv().await;
+
+    // Debounce: wait for writes to settle (linker may still be writing)
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    info!("binary modification detected — preparing to restart");
+}
+
+/// Replace the current process with a fresh exec of the same binary.
+/// This preserves the PID (systemd doesn't notice) and picks up the new code.
+/// Only returns if exec fails.
+fn exec_self() {
+    use std::os::unix::process::CommandExt;
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            error!("cannot resolve own binary for exec: {e}");
+            return;
+        }
+    };
+
+    let args: Vec<String> = std::env::args().collect();
+    let err = std::process::Command::new(&exe)
+        .args(&args[1..])
+        .exec();
+    // exec() only returns on failure
+    error!("exec failed: {err}");
 }
 
 async fn shutdown_signal() {
