@@ -65,14 +65,11 @@ Nothing else. No preamble, no markdown, no extra commentary."#;
 /// - `task` — the full task struct (contract)
 /// - `agent_summary` — the subagent's output/summary of what it did
 /// - `diff` — the full git diff (patch text)
-pub async fn verify(
-    config: &Config,
-    task: &Task,
-    agent_summary: &str,
-    diff: &str,
-) -> VerifyResult {
+pub async fn verify(config: &Config, task: &Task, agent_summary: &str, diff: &str) -> VerifyResult {
     let agent_def = config.resolve_agent("verifier");
-    let base_url = agent_def.api_url.as_deref()
+    let base_url = agent_def
+        .api_url
+        .as_deref()
         .unwrap_or("http://localhost:1234/v1");
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let model = &agent_def.model;
@@ -90,7 +87,11 @@ pub async fn verify(
 
     // Truncate diff if excessively large (verifier doesn't need 100k lines)
     let diff_truncated = if diff.len() > 50_000 {
-        format!("{}\n\n[... truncated at 50KB, {} total bytes ...]", &diff[..50_000], diff.len())
+        format!(
+            "{}\n\n[... truncated at 50KB, {} total bytes ...]",
+            &diff[..50_000],
+            diff.len()
+        )
     } else {
         diff.to_string()
     };
@@ -127,7 +128,9 @@ pub async fn verify(
 
 /// Parse the LLM's verdict from its response text.
 fn parse_verdict(resp: &VerifierResponse, task_id: &str) -> VerifyResult {
-    let text = resp.choices.first()
+    let text = resp
+        .choices
+        .first()
         .and_then(|c| c.message.content.as_deref())
         .unwrap_or("")
         .trim();
@@ -136,7 +139,9 @@ fn parse_verdict(resp: &VerifierResponse, task_id: &str) -> VerifyResult {
         info!(%task_id, "verifier: PASS");
         VerifyResult::Pass
     } else if text.starts_with("FAIL") {
-        let reason = text.strip_prefix("FAIL:").or_else(|| text.strip_prefix("FAIL"))
+        let reason = text
+            .strip_prefix("FAIL:")
+            .or_else(|| text.strip_prefix("FAIL"))
             .unwrap_or(text)
             .trim()
             .to_string();

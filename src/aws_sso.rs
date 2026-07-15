@@ -24,8 +24,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, UNIX_EPOCH};
 
-use aws_credential_types::provider::{error::CredentialsError, future, ProvideCredentials};
 use aws_credential_types::Credentials as AwsCredentials;
+use aws_credential_types::provider::{ProvideCredentials, error::CredentialsError, future};
 
 use crate::error::{GitziError, Result};
 use crate::secrets;
@@ -142,11 +142,15 @@ pub async fn start_device_login(region: &str, start_url: &str) -> Result<Pending
 
             let client_id = registered
                 .client_id()
-                .ok_or_else(|| GitziError::Config("AWS SSO register_client returned no client_id".into()))?
+                .ok_or_else(|| {
+                    GitziError::Config("AWS SSO register_client returned no client_id".into())
+                })?
                 .to_string();
             let client_secret = registered
                 .client_secret()
-                .ok_or_else(|| GitziError::Config("AWS SSO register_client returned no client_secret".into()))?
+                .ok_or_else(|| {
+                    GitziError::Config("AWS SSO register_client returned no client_secret".into())
+                })?
                 .to_string();
             let expires_at = DateTime::from_timestamp(registered.client_secret_expires_at(), 0)
                 .ok_or_else(|| {
@@ -173,7 +177,9 @@ pub async fn start_device_login(region: &str, start_url: &str) -> Result<Pending
         .start_url(start_url)
         .send()
         .await
-        .map_err(|e| GitziError::Config(format!("AWS SSO start_device_authorization failed: {e}")))?;
+        .map_err(|e| {
+            GitziError::Config(format!("AWS SSO start_device_authorization failed: {e}"))
+        })?;
 
     let device_code = device_auth
         .device_code()
@@ -239,7 +245,10 @@ pub async fn poll_for_token(pending: &PendingLogin, start_url: &str) -> Result<S
                     })?
                     .to_string();
                 let expires_at = Utc::now() + chrono::Duration::seconds(output.expires_in() as i64);
-                let token = SsoToken { access_token, expires_at };
+                let token = SsoToken {
+                    access_token,
+                    expires_at,
+                };
                 store_token(start_url, &token)?;
                 return Ok(token);
             }
@@ -256,7 +265,11 @@ pub async fn poll_for_token(pending: &PendingLogin, start_url: &str) -> Result<S
                         "AWS SSO device code expired before login was approved".into(),
                     ));
                 }
-                other => return Err(GitziError::Config(format!("AWS SSO create_token failed: {other}"))),
+                other => {
+                    return Err(GitziError::Config(format!(
+                        "AWS SSO create_token failed: {other}"
+                    )));
+                }
             },
         }
     }
@@ -276,13 +289,18 @@ pub fn load_token(start_url: &str) -> Option<SsoToken> {
     let pointer = format!("keyring:{SSO_TOKEN_SERVICE}/{start_url}");
     let raw = secrets::resolve_secret(&pointer).ok()?;
     let token: SsoToken = serde_json::from_str(&raw).ok()?;
-    if token.is_expired() { None } else { Some(token) }
+    if token.is_expired() {
+        None
+    } else {
+        Some(token)
+    }
 }
 
 /// Cache an OIDC client registration in the OS keyring, keyed by SSO start URL.
 fn store_client_registration(start_url: &str, reg: &ClientRegistration) -> Result<()> {
-    let serialized = serde_json::to_string(reg)
-        .map_err(|e| GitziError::Config(format!("failed to serialize SSO client registration: {e}")))?;
+    let serialized = serde_json::to_string(reg).map_err(|e| {
+        GitziError::Config(format!("failed to serialize SSO client registration: {e}"))
+    })?;
     secrets::store_secret(SSO_CLIENT_SERVICE, start_url, &serialized)?;
     Ok(())
 }
@@ -388,9 +406,9 @@ pub async fn get_role_credentials(
         .await
         .map_err(|e| GitziError::Config(format!("AWS SSO get_role_credentials failed: {e}")))?;
 
-    let creds = output
-        .role_credentials()
-        .ok_or_else(|| GitziError::Config("AWS SSO get_role_credentials returned no credentials".into()))?;
+    let creds = output.role_credentials().ok_or_else(|| {
+        GitziError::Config("AWS SSO get_role_credentials returned no credentials".into())
+    })?;
 
     Ok(RoleCredentials {
         access_key_id: creds.access_key_id().unwrap_or_default().to_string(),
@@ -496,5 +514,4 @@ mod tests {
         };
         assert!(!token.is_expired());
     }
-
 }

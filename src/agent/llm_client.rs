@@ -38,9 +38,11 @@ pub async fn post_with_retry<T: DeserializeOwned>(
             warn!("LLM connection failed: {e} — attempting auto-start");
         }
         Ok(Err(e)) => return Err(e),
-        Err(_) => return Err(LlmError::ConnectionFailed(
-            "total timeout exceeded waiting for LLM".to_string(),
-        )),
+        Err(_) => {
+            return Err(LlmError::ConnectionFailed(
+                "total timeout exceeded waiting for LLM".to_string(),
+            ));
+        }
     }
 
     // Try starting LM Studio (production only — cfg(test) returns above)

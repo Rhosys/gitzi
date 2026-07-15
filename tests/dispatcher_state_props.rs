@@ -9,12 +9,12 @@
 
 use std::sync::Arc;
 
+use gitzi::config::Config;
 use gitzi::dispatcher::agent_pool::AgentPool;
 use gitzi::dispatcher::board::{KanbanBoard, WipLimits};
 use gitzi::dispatcher::event_bus::{DispatchEvent, EventBus};
 use gitzi::dispatcher::review_queue::{HumanReviewQueue, ReviewItemKind};
 use gitzi::dispatcher::{Column, Dispatcher};
-use gitzi::config::Config;
 use gitzi::model::task::{HistoryEntry, Stage, Task};
 use proptest::prelude::*;
 use tokio::sync::{Mutex, RwLock};
@@ -197,7 +197,10 @@ async fn state_mutation_emits_corresponding_event_approve() {
         // Should receive HumanApprovalReceived
         let event = rx.try_recv().unwrap();
         match event {
-            DispatchEvent::HumanApprovalReceived { task_id, target_column } => {
+            DispatchEvent::HumanApprovalReceived {
+                task_id,
+                target_column,
+            } => {
                 assert_eq!(task_id, "emit-task");
                 assert_eq!(target_column, buf_col.next().unwrap());
             }
@@ -259,7 +262,13 @@ async fn wip_release_emits_event_on_approval() {
     {
         let board = dispatcher.board.read().await;
         assert_eq!(board.count(Column::CodingBuffer), 1);
-        assert!(!dispatcher.wip_limits.read().await.allows(Column::CodingBuffer, 1));
+        assert!(
+            !dispatcher
+                .wip_limits
+                .read()
+                .await
+                .allows(Column::CodingBuffer, 1)
+        );
     }
 
     let mut rx = dispatcher.event_bus.subscribe();
@@ -299,7 +308,9 @@ async fn buffer_entry_creates_review_item() {
         // Simulate the TaskStageChanged handler creating the review item
         let priority = {
             let b = dispatcher.board.read().await;
-            b.task("review-task").map(|t| t.priority).unwrap_or(u32::MAX)
+            b.task("review-task")
+                .map(|t| t.priority)
+                .unwrap_or(u32::MAX)
         };
         let item = gitzi::dispatcher::review_queue::HumanReviewItem::new(
             "review-task",
@@ -315,11 +326,18 @@ async fn buffer_entry_creates_review_item() {
 
         // Verify review queue has the item
         let q = dispatcher.review_queue.lock().await;
-        assert!(!q.is_empty(), "Queue should have a review item for buffer {:?}", buf_col);
+        assert!(
+            !q.is_empty(),
+            "Queue should have a review item for buffer {:?}",
+            buf_col
+        );
         let peeked = q.peek().unwrap();
         assert_eq!(peeked.task_id, "review-task");
         match &peeked.kind {
-            ReviewItemKind::BufferApproval { buffer_column, task_priority } => {
+            ReviewItemKind::BufferApproval {
+                buffer_column,
+                task_priority,
+            } => {
                 assert_eq!(*buffer_column, buf_col);
                 assert_eq!(*task_priority, 50);
             }
@@ -355,11 +373,13 @@ async fn approval_advances_and_records_history() {
 
         // History should contain an Approval entry
         let task = board.task("approve-hist").unwrap();
-        let has_approval = task.history.iter().any(|h| matches!(
-            h,
-            HistoryEntry::Approval { target_stage, .. }
-                if *target_stage == Stage::from(next_col)
-        ));
+        let has_approval = task.history.iter().any(|h| {
+            matches!(
+                h,
+                HistoryEntry::Approval { target_stage, .. }
+                    if *target_stage == Stage::from(next_col)
+            )
+        });
         assert!(
             has_approval,
             "Task should have Approval history entry with target_stage {:?}",
@@ -415,11 +435,13 @@ async fn rejection_semantics() {
         );
 
         // History should contain a Rejection entry
-        let has_rejection = task.history.iter().any(|h| matches!(
-            h,
-            HistoryEntry::Rejection { feedback: f, returned_to, .. }
-                if f == &feedback && *returned_to == Stage::from(prev_col)
-        ));
+        let has_rejection = task.history.iter().any(|h| {
+            matches!(
+                h,
+                HistoryEntry::Rejection { feedback: f, returned_to, .. }
+                    if f == &feedback && *returned_to == Stage::from(prev_col)
+            )
+        });
         assert!(
             has_rejection,
             "Task should have Rejection history entry with feedback and returned_to {:?}",

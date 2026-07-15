@@ -28,7 +28,10 @@ async fn validate_preserves_task_id() {
 async fn revoke_prevents_validate() {
     let store = TokenStore::new();
     let token = store.issue("task-to-revoke").await;
-    assert!(store.validate(&token).await.is_some(), "token should be valid before revoke");
+    assert!(
+        store.validate(&token).await.is_some(),
+        "token should be valid before revoke"
+    );
     store.revoke(&token).await;
     assert!(
         store.validate(&token).await.is_none(),
@@ -42,8 +45,14 @@ async fn revoke_does_not_affect_other_tokens() {
     let token_a = store.issue("task-a").await;
     let token_b = store.issue("task-b").await;
     store.revoke(&token_a).await;
-    assert!(store.validate(&token_b).await.is_some(), "token_b should still be valid");
-    assert!(store.validate(&token_a).await.is_none(), "token_a should be revoked");
+    assert!(
+        store.validate(&token_b).await.is_some(),
+        "token_b should still be valid"
+    );
+    assert!(
+        store.validate(&token_a).await.is_none(),
+        "token_a should be revoked"
+    );
 }
 
 #[tokio::test]
@@ -51,7 +60,12 @@ async fn malformed_token_is_rejected() {
     let store = TokenStore::new();
     assert!(store.validate("not.a.valid.jwt").await.is_none());
     assert!(store.validate("").await.is_none());
-    assert!(store.validate("eyJhbGciOiJIUzI1NiJ9.garbage.sig").await.is_none());
+    assert!(
+        store
+            .validate("eyJhbGciOiJIUzI1NiJ9.garbage.sig")
+            .await
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -68,10 +82,8 @@ async fn different_store_rejects_foreign_token() {
 #[tokio::test]
 async fn multiple_tokens_independently_revocable() {
     let store = TokenStore::new();
-    let tokens: Vec<String> = futures_or_sequential(
-        (0..5).map(|i| store.issue(format!("task-{i}"))).collect(),
-    )
-    .await;
+    let tokens: Vec<String> =
+        futures_or_sequential((0..5).map(|i| store.issue(format!("task-{i}"))).collect()).await;
 
     // Revoke only odd-indexed tokens
     for (i, token) in tokens.iter().enumerate() {

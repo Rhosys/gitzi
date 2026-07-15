@@ -22,5 +22,8 @@ pub fn search(query: &str) -> Vec<(&'static str, &'static str)> {
 
 /// Get a specific KB article by name.
 pub fn get(name: &str) -> Option<&'static str> {
-    KB_ARTICLES.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
+    KB_ARTICLES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, c)| *c)
 }

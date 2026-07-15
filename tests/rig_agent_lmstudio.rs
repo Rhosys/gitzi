@@ -3,10 +3,10 @@
 //! Responses API (`/v1/responses`) that most local model servers don't implement.
 
 use axum::{Json, Router, routing::post};
-use gitzi::agent::backend::{AgentBackend, AgentResult, RunContext};
 use gitzi::agent::RigAgent;
+use gitzi::agent::backend::{AgentBackend, AgentResult, RunContext};
 use gitzi::model::Task;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 
@@ -45,7 +45,10 @@ async fn rig_agent_calls_chat_completions_on_lmstudio_compatible_server() {
     let task = Task::new("task-1", "epic-1", "Do the thing");
     let ctx = RunContext::default();
 
-    let result = agent.run(&task, &ctx).await.expect("RigAgent should reach the mock server");
+    let result = agent
+        .run(&task, &ctx)
+        .await
+        .expect("RigAgent should reach the mock server");
 
     match result {
         AgentResult::Success { output } => {

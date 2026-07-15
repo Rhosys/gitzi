@@ -93,7 +93,6 @@ struct ClassifierMessage {
     content: Option<String>,
 }
 
-
 /// Generate a short 2-4 word topic name for a fork from the user's message.
 /// Falls back to the first few words of the message on failure.
 pub async fn name_fork(base_url: &str, model: &str, message: &str) -> String {

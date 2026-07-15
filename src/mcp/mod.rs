@@ -10,12 +10,12 @@ use axum::{
     http::{HeaderMap, StatusCode},
     routing::post,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::info;
 
+use crate::dispatcher::Dispatcher;
 use auth::TokenStore;
 use protocol::{JsonRpcRequest, JsonRpcResponse, sub_agent_tools};
-use crate::dispatcher::Dispatcher;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -32,7 +32,10 @@ struct McpState {
 /// Exposed for integration testing so tests can call `router.oneshot(...)` without
 /// binding a real Unix socket.
 pub fn build_router(dispatcher: Arc<Dispatcher>, token_store: Arc<TokenStore>) -> Router {
-    let state = McpState { dispatcher, token_store };
+    let state = McpState {
+        dispatcher,
+        token_store,
+    };
     Router::new()
         .route("/mcp", post(handle_mcp))
         .with_state(state)
@@ -77,19 +80,17 @@ async fn handle_mcp(
 
     let response = match req.method.as_str() {
         // ── MCP lifecycle ─────────────────────────────────────────────────────
-        "initialize" => {
-            JsonRpcResponse::ok(
-                id,
-                json!({
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": {
-                        "name": "gitzi",
-                        "version": env!("CARGO_PKG_VERSION")
-                    }
-                }),
-            )
-        }
+        "initialize" => JsonRpcResponse::ok(
+            id,
+            json!({
+                "protocolVersion": "2025-03-26",
+                "capabilities": { "tools": {} },
+                "serverInfo": {
+                    "name": "gitzi",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+        ),
 
         "notifications/initialized" => {
             // Fire-and-forget notification — no meaningful response body.
@@ -97,9 +98,7 @@ async fn handle_mcp(
         }
 
         // ── Tool discovery ────────────────────────────────────────────────────
-        "tools/list" => {
-            JsonRpcResponse::ok(id, json!({ "tools": sub_agent_tools() }))
-        }
+        "tools/list" => JsonRpcResponse::ok(id, json!({ "tools": sub_agent_tools() })),
 
         // ── Tool invocation ───────────────────────────────────────────────────
         "tools/call" => {
@@ -142,31 +141,23 @@ async fn handle_mcp(
                 }
             };
 
-            let arguments = req
-                .params
-                .get("arguments")
-                .cloned()
-                .unwrap_or(json!({}));
+            let arguments = req.params.get("arguments").cloned().unwrap_or(json!({}));
 
             match tools::dispatch(&tool_name, &arguments, &entry, &state.dispatcher).await {
-                Ok(result) => {
-                    JsonRpcResponse::ok(
-                        id,
-                        json!({
-                            "content": [
-                                { "type": "text", "text": result.to_string() }
-                            ]
-                        }),
-                    )
-                }
+                Ok(result) => JsonRpcResponse::ok(
+                    id,
+                    json!({
+                        "content": [
+                            { "type": "text", "text": result.to_string() }
+                        ]
+                    }),
+                ),
                 Err(msg) => JsonRpcResponse::err(id, -32603, msg),
             }
         }
 
         // ── Unknown method ────────────────────────────────────────────────────
-        other => {
-            JsonRpcResponse::err(id, -32601, format!("method not found: {other}"))
-        }
+        other => JsonRpcResponse::err(id, -32601, format!("method not found: {other}")),
     };
 
     (StatusCode::OK, Json(response))
@@ -177,7 +168,10 @@ async fn handle_mcp(
 /// Extract the token from an `Authorization: Bearer <token>` header.
 /// Returns `None` if the header is absent or not in the expected format.
 fn extract_bearer(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(axum::http::header::AUTHORIZATION)?.to_str().ok()?;
+    let value = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
     let token = value.strip_prefix("Bearer ")?;
     if token.is_empty() {
         None

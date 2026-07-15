@@ -32,7 +32,8 @@ pub fn build_task_content(
     // Inject answers from the human review queue. These are decisions already
     // made — implement them directly, do not raise the same question again.
     if !answered_questions.is_empty() {
-        prompt.push_str("\nDecisions already made for this task (implement these, do not re-ask):\n");
+        prompt
+            .push_str("\nDecisions already made for this task (implement these, do not re-ask):\n");
         for (question, answer) in answered_questions {
             prompt.push_str(&format!("Q: {question}\nA: {answer}\n\n"));
         }

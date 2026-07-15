@@ -47,9 +47,9 @@ pub fn service_name(domain: &str, kind: &str) -> String {
 pub fn store_secret(service: &str, account: &str, value: &str) -> Result<String> {
     let entry = keyring::Entry::new(service, account)
         .map_err(|e| GitziError::Config(format!("keyring error for {service}/{account}: {e}")))?;
-    entry
-        .set_password(value)
-        .map_err(|e| GitziError::Config(format!("failed to store secret {service}/{account}: {e}")))?;
+    entry.set_password(value).map_err(|e| {
+        GitziError::Config(format!("failed to store secret {service}/{account}: {e}"))
+    })?;
     Ok(format!("{POINTER_PREFIX}{service}/{account}"))
 }
 
@@ -59,15 +59,15 @@ pub fn store_secret(service: &str, account: &str, value: &str) -> Result<String>
 pub fn resolve_secret(value: &str) -> Result<String> {
     match value.strip_prefix(POINTER_PREFIX) {
         Some(rest) => {
-            let (service, account) = rest.split_once('/').ok_or_else(|| {
-                GitziError::Config(format!("malformed keyring pointer: {value}"))
-            })?;
+            let (service, account) = rest
+                .split_once('/')
+                .ok_or_else(|| GitziError::Config(format!("malformed keyring pointer: {value}")))?;
             let entry = keyring::Entry::new(service, account).map_err(|e| {
                 GitziError::Config(format!("keyring error for {service}/{account}: {e}"))
             })?;
-            entry.get_password().map_err(|e| {
-                GitziError::Config(format!("keyring lookup failed for {value}: {e}"))
-            })
+            entry
+                .get_password()
+                .map_err(|e| GitziError::Config(format!("keyring lookup failed for {value}: {e}")))
         }
         None => Ok(value.to_string()),
     }

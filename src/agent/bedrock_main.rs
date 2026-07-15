@@ -7,18 +7,19 @@
 
 use aws_config::BehaviorVersion;
 use aws_sdk_bedrockruntime::types::{
-    ContentBlock, ConverseOutput, ConversationRole, Message as BedrockMessage,
-    StopReason, SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema,
-    ToolResultBlock, ToolResultContentBlock, ToolResultStatus, ToolSpecification,
-    ToolUseBlock,
+    ContentBlock, ConversationRole, ConverseOutput, Message as BedrockMessage, StopReason,
+    SystemContentBlock, Tool, ToolConfiguration, ToolInputSchema, ToolResultBlock,
+    ToolResultContentBlock, ToolResultStatus, ToolSpecification, ToolUseBlock,
 };
 use aws_smithy_types::Document;
 use tracing::debug;
 
+use super::main_agent::{
+    ChatTurn, OaiFunctionBody, OaiMessage, OaiTool, OaiToolCall, ToolCallRequest,
+};
+use super::main_chat::MainChatBackend;
 use crate::aws_sso::SsoCredentialsProvider;
 use crate::error::{GitziError, Result};
-use super::main_agent::{ChatTurn, OaiFunctionBody, OaiMessage, OaiTool, OaiToolCall, ToolCallRequest};
-use super::main_chat::MainChatBackend;
 
 /// Main chat agent backed by AWS Bedrock Converse API. Authenticates via
 /// [`SsoCredentialsProvider`] and translates between the dispatcher's
@@ -152,8 +153,7 @@ impl BedrockMainAgent {
             })
             .collect();
 
-        let has_tool_calls = !tool_use_blocks.is_empty()
-            || *stop_reason == StopReason::ToolUse;
+        let has_tool_calls = !tool_use_blocks.is_empty() || *stop_reason == StopReason::ToolUse;
 
         if has_tool_calls {
             let oai_tool_calls: Vec<OaiToolCall> = tool_use_blocks
@@ -278,10 +278,9 @@ fn convert_messages(messages: &[OaiMessage]) -> Vec<BedrockMessage> {
                     blocks.push(ContentBlock::Text(text.clone()));
                 }
                 for tc in &msg.tool_calls {
-                    let input_doc = serde_json::from_str::<serde_json::Value>(
-                        &tc.function.arguments,
-                    )
-                    .unwrap_or(serde_json::json!({}));
+                    let input_doc =
+                        serde_json::from_str::<serde_json::Value>(&tc.function.arguments)
+                            .unwrap_or(serde_json::json!({}));
                     let doc = json_to_document(&input_doc);
                     blocks.push(ContentBlock::ToolUse(
                         ToolUseBlock::builder()
@@ -325,9 +324,7 @@ fn convert_messages(messages: &[OaiMessage]) -> Vec<BedrockMessage> {
 }
 
 /// Convert a Bedrock Document object map to serde_json::Value.
-fn doc_to_value(
-    doc: &std::collections::HashMap<String, Document>,
-) -> serde_json::Value {
+fn doc_to_value(doc: &std::collections::HashMap<String, Document>) -> serde_json::Value {
     serde_json::Value::Object(
         doc.iter()
             .map(|(k, v)| (k.clone(), bedrock_doc_to_json(v)))
@@ -339,24 +336,19 @@ fn doc_to_value(
 fn bedrock_doc_to_json(doc: &Document) -> serde_json::Value {
     match doc {
         Document::String(s) => serde_json::Value::String(s.clone()),
-        Document::Number(n) => {
-            serde_json::Value::Number(
-                serde_json::Number::from_f64(n.to_f64_lossy())
-                    .unwrap_or(serde_json::Number::from(0)),
-            )
-        }
+        Document::Number(n) => serde_json::Value::Number(
+            serde_json::Number::from_f64(n.to_f64_lossy()).unwrap_or(serde_json::Number::from(0)),
+        ),
         Document::Bool(b) => serde_json::Value::Bool(*b),
         Document::Null => serde_json::Value::Null,
         Document::Array(arr) => {
             serde_json::Value::Array(arr.iter().map(bedrock_doc_to_json).collect())
         }
-        Document::Object(map) => {
-            serde_json::Value::Object(
-                map.iter()
-                    .map(|(k, v)| (k.clone(), bedrock_doc_to_json(v)))
-                    .collect(),
-            )
-        }
+        Document::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), bedrock_doc_to_json(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -372,12 +364,10 @@ fn json_to_document(val: &serde_json::Value) -> Document {
         serde_json::Value::Array(arr) => {
             Document::Array(arr.iter().map(json_to_document).collect())
         }
-        serde_json::Value::Object(map) => {
-            Document::Object(
-                map.iter()
-                    .map(|(k, v)| (k.clone(), json_to_document(v)))
-                    .collect(),
-            )
-        }
+        serde_json::Value::Object(map) => Document::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), json_to_document(v)))
+                .collect(),
+        ),
     }
 }

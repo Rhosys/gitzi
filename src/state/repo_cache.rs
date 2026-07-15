@@ -2,9 +2,9 @@
 //! Discovers repos from config.toml `repo_paths` globs, generates heuristic
 //! summaries, and caches them at `~/.gitzi/tmp/cache/repos/<slug>.toml`.
 
-use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tracing::info;
 
 use crate::config::atomic_write;
@@ -112,11 +112,21 @@ fn generate_summary(repo_path: &Path) -> (String, Vec<String>) {
         }
 
         if let Some(deps) = pkg.get("dependencies").and_then(|v| v.as_object()) {
-            if deps.contains_key("hono") { labels.push("hono".to_string()); }
-            if deps.contains_key("react") { labels.push("react".to_string()); }
-            if deps.contains_key("vue") { labels.push("vue".to_string()); }
-            if deps.contains_key("express") { labels.push("express".to_string()); }
-            if deps.contains_key("next") { labels.push("next".to_string()); }
+            if deps.contains_key("hono") {
+                labels.push("hono".to_string());
+            }
+            if deps.contains_key("react") {
+                labels.push("react".to_string());
+            }
+            if deps.contains_key("vue") {
+                labels.push("vue".to_string());
+            }
+            if deps.contains_key("express") {
+                labels.push("express".to_string());
+            }
+            if deps.contains_key("next") {
+                labels.push("next".to_string());
+            }
             if deps.contains_key("@aws-sdk/client-s3")
                 || deps.contains_key("@aws-sdk/client-dynamodb")
             {
@@ -124,9 +134,7 @@ fn generate_summary(repo_path: &Path) -> (String, Vec<String>) {
             }
         }
 
-        if let Some(dev_deps) =
-            pkg.get("devDependencies").and_then(|v| v.as_object())
-        {
+        if let Some(dev_deps) = pkg.get("devDependencies").and_then(|v| v.as_object()) {
             if dev_deps.contains_key("typescript") {
                 labels.push("typescript".to_string());
             }
@@ -153,19 +161,27 @@ fn generate_summary(repo_path: &Path) -> (String, Vec<String>) {
         }
 
         if let Some(deps) = cargo.get("dependencies").and_then(|v| v.as_table()) {
-            if deps.contains_key("tokio") { labels.push("tokio".to_string()); }
-            if deps.contains_key("axum") { labels.push("axum".to_string()); }
-            if deps.contains_key("ratatui") { labels.push("tui".to_string()); }
-            if deps.contains_key("reqwest") { labels.push("http".to_string()); }
+            if deps.contains_key("tokio") {
+                labels.push("tokio".to_string());
+            }
+            if deps.contains_key("axum") {
+                labels.push("axum".to_string());
+            }
+            if deps.contains_key("ratatui") {
+                labels.push("tui".to_string());
+            }
+            if deps.contains_key("reqwest") {
+                labels.push("http".to_string());
+            }
         }
     }
 
     // Check for Terraform files
     let has_tf = std::fs::read_dir(repo_path)
         .map(|entries| {
-            entries.flatten().any(|e| {
-                e.path().extension().and_then(|ext| ext.to_str()) == Some("tf")
-            })
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("tf"))
         })
         .unwrap_or(false);
     if has_tf {
@@ -179,9 +195,7 @@ fn generate_summary(repo_path: &Path) -> (String, Vec<String>) {
         if readme.exists()
             && let Ok(text) = std::fs::read_to_string(&readme)
         {
-            if let Some(first_line) =
-                text.lines().find(|l| !l.is_empty() && !l.starts_with('#'))
-            {
+            if let Some(first_line) = text.lines().find(|l| !l.is_empty() && !l.starts_with('#')) {
                 summary_parts.push(first_line.trim().to_string());
             } else if let Some(heading) = text.lines().find(|l| l.starts_with("# ")) {
                 summary_parts.push(heading.trim_start_matches("# ").to_string());

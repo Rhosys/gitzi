@@ -1,8 +1,8 @@
 // Property: repo_path() returns the current working directory (no session indirection).
 // The old session-based repo_path is gone — repos are discovered via config.toml globs.
 
-use std::path::PathBuf;
 use proptest::prelude::*;
+use std::path::PathBuf;
 
 proptest! {
     #![proptest_config(ProptestConfig { cases: 10, ..Default::default() })]

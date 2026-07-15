@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::{Mutex, Notify, RwLock};
 use tracing::{debug, info, warn};
@@ -13,10 +13,10 @@ use chrono::Utc;
 
 use crate::agent::{self, AgentBackend, AgentResult, RunContext};
 use crate::config::Config;
-use crate::mcp::auth::TokenStore;
 use crate::dispatcher::event_bus::DispatchEvent;
 use crate::git::ops;
 use crate::id;
+use crate::mcp::auth::TokenStore;
 use crate::model::task::Task;
 use crate::state::review::{PersistedReviewItem, PersistedReviewKind};
 use crate::state::store::StateStore;
@@ -251,7 +251,13 @@ async fn agent_loop(
         let mcp_token = token_store.issue(&task.id).await;
 
         // Build prompt context — include agent_feedback if present
-        let ctx = build_run_context(&task, worktree_root, branch.clone(), Some(mcp_token.clone()), &store);
+        let ctx = build_run_context(
+            &task,
+            worktree_root,
+            branch.clone(),
+            Some(mcp_token.clone()),
+            &store,
+        );
 
         // Resolve agent backend for this role
         let agent_def = config.resolve_agent(&role.to_string());
@@ -335,10 +341,8 @@ async fn handle_agent_result(
             handle.set_blocked(true);
 
             // Enqueue in-memory review item
-            let queue_item = HumanReviewItem::new(
-                &task.id,
-                ReviewItemKind::AgentQuestion { question },
-            );
+            let queue_item =
+                HumanReviewItem::new(&task.id, ReviewItemKind::AgentQuestion { question });
             let mut q = review_queue.lock().await;
             q.enqueue(queue_item);
 
@@ -407,7 +411,9 @@ async fn handle_agent_result(
             let retry_result = backend.run(task, &retry_ctx).await;
 
             let retry_passed = match retry_result {
-                Ok(AgentResult::Success { output: ref retry_output }) => {
+                Ok(AgentResult::Success {
+                    output: ref retry_output,
+                }) => {
                     let retry_diff = {
                         let repo_root = crate::state::home::repo_path();
                         match ops::open_repo(&repo_root) {
@@ -429,8 +435,14 @@ async fn handle_agent_result(
             } else {
                 warn!(%role, task_id = %task.id, "retry also failed verification — escalating");
                 escalate_verification_failure(
-                    handle, event_bus, task, review_queue, &reason, store,
-                ).await;
+                    handle,
+                    event_bus,
+                    task,
+                    review_queue,
+                    &reason,
+                    store,
+                )
+                .await;
             }
         }
     }
@@ -505,9 +517,7 @@ async fn escalate_verification_failure(
     store: &Arc<dyn StateStore>,
 ) {
     let role = handle.role;
-    let question = format!(
-        "Agent failed verification after retry. Verifier reason: {reason}"
-    );
+    let question = format!("Agent failed verification after retry. Verifier reason: {reason}");
     let review_id = id::new_id("review-verify-fail");
     let item = PersistedReviewItem {
         id: review_id,
@@ -532,17 +542,26 @@ async fn escalate_verification_failure(
     handle.set_blocked(true);
 
     // Enqueue in-memory review item
-    let queue_item = HumanReviewItem::new(
-        &task.id,
-        ReviewItemKind::AgentQuestion { question },
-    );
+    let queue_item = HumanReviewItem::new(&task.id, ReviewItemKind::AgentQuestion { question });
     review_queue.lock().await.enqueue(queue_item);
 }
 
-fn build_run_context(task: &Task, worktree_root: std::path::PathBuf, branch: String, mcp_token: Option<String>, store: &Arc<dyn StateStore>) -> RunContext {
+fn build_run_context(
+    task: &Task,
+    worktree_root: std::path::PathBuf,
+    branch: String,
+    mcp_token: Option<String>,
+    store: &Arc<dyn StateStore>,
+) -> RunContext {
     let resume_summary = resume_context(task);
     let answered_questions = store.load_answered_for_task(&task.id);
-    RunContext { repo_root: worktree_root, branch, resume_summary, mcp_token, answered_questions }
+    RunContext {
+        repo_root: worktree_root,
+        branch,
+        resume_summary,
+        mcp_token,
+        answered_questions,
+    }
 }
 
 /// Create or reuse the worktree for a task, returning its path.
@@ -571,7 +590,11 @@ fn setup_task_worktree(task_id: &str, branch_name: &str) -> std::path::PathBuf {
             wt.path
         }
         Err(e) => {
-            warn!(task_id, branch = branch_name, "worktree setup failed, falling back to main repo: {e}");
+            warn!(
+                task_id,
+                branch = branch_name,
+                "worktree setup failed, falling back to main repo: {e}"
+            );
             main_repo_root
         }
     }
@@ -658,7 +681,11 @@ fn resume_context(task: &Task) -> Option<String> {
 /// the merge-base and the branch tip.
 fn get_diff_stats(repo: &git2::Repository, branch_name: &str) -> Option<String> {
     let branch_ref = format!("refs/heads/{branch_name}");
-    let branch_commit = repo.find_reference(&branch_ref).ok()?.peel_to_commit().ok()?;
+    let branch_commit = repo
+        .find_reference(&branch_ref)
+        .ok()?
+        .peel_to_commit()
+        .ok()?;
 
     // Find merge base with HEAD (main branch)
     let head_oid = repo.head().ok()?.target()?;
@@ -721,7 +748,14 @@ mod tests {
         let token_store = Arc::new(TokenStore::new());
         let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
+            event_bus,
+            board,
+            config,
+            wip_limits,
+            wip_waiting,
+            review_queue,
+            token_store,
+            store,
         );
 
         for role in AgentRole::all() {
@@ -741,7 +775,14 @@ mod tests {
         let token_store = Arc::new(TokenStore::new());
         let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
+            event_bus,
+            board,
+            config,
+            wip_limits,
+            wip_waiting,
+            review_queue,
+            token_store,
+            store,
         );
 
         for role in AgentRole::all() {
@@ -761,7 +802,14 @@ mod tests {
         let token_store = Arc::new(TokenStore::new());
         let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
+            event_bus,
+            board,
+            config,
+            wip_limits,
+            wip_waiting,
+            review_queue,
+            token_store,
+            store,
         );
 
         // Simulate blocked state
@@ -792,7 +840,14 @@ mod tests {
         let token_store = Arc::new(TokenStore::new());
         let store: Arc<dyn StateStore> = Arc::new(InMemoryStore::new());
         let pool = AgentPool::spawn(
-            event_bus, board, config, wip_limits, wip_waiting, review_queue, token_store, store,
+            event_bus,
+            board,
+            config,
+            wip_limits,
+            wip_waiting,
+            review_queue,
+            token_store,
+            store,
         );
         // All roles exist, so this just tests the method doesn't panic
         pool.signal(AgentRole::Infrarian);

@@ -31,7 +31,6 @@ pub async fn dispatch(
 ) -> Result<Value, String> {
     match name {
         // ── Read operations (no ownership check needed) ───────────────────────
-
         "gitzi_list_epics" => {
             let epics = dispatcher
                 .gitzi_list_epics()
@@ -62,7 +61,6 @@ pub async fn dispatch(
         }
 
         // ── Create task (no ownership check — creates a *new* task) ──────────
-
         "gitzi_create_task" => {
             let epic_id = args
                 .get("epic_id")
@@ -82,10 +80,7 @@ pub async fn dispatch(
                 .get("priority")
                 .and_then(Value::as_u64)
                 .map(|v| v as u32);
-            let repo = args
-                .get("repo")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let repo = args.get("repo").and_then(Value::as_str).map(str::to_string);
             let task = dispatcher
                 .gitzi_create_task(epic_id, title, description, priority, repo)
                 .await
@@ -94,7 +89,6 @@ pub async fn dispatch(
         }
 
         // ── Write operations scoped to the agent's assigned task ─────────────
-
         "gitzi_create_review_item" => {
             let task_id = args
                 .get("task_id")

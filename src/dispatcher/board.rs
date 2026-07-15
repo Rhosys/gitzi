@@ -84,21 +84,25 @@ impl KanbanBoard {
     /// Updates the task's stage to match the target column.
     pub fn advance(&mut self, task_id: &str, to: Column) -> anyhow::Result<()> {
         // Find and remove from current column
-        let current_col = self.find_column(task_id).ok_or_else(|| {
-            anyhow::anyhow!("task '{task_id}' not found on board")
-        })?;
+        let current_col = self
+            .find_column(task_id)
+            .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
 
         let ids = self.columns.get_mut(&current_col).unwrap();
         ids.retain(|id| id != task_id);
 
         // Update task's stage
-        let task = self.tasks.get_mut(task_id).ok_or_else(|| {
-            anyhow::anyhow!("task '{task_id}' not in task map")
-        })?;
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not in task map"))?;
         task.stage = to.into();
 
         // Insert into destination column
-        self.columns.entry(to).or_default().push(task_id.to_string());
+        self.columns
+            .entry(to)
+            .or_default()
+            .push(task_id.to_string());
         self.sort_column(to);
 
         Ok(())
@@ -107,7 +111,10 @@ impl KanbanBoard {
     /// Add a new task to the board, placing it in the column matching its stage.
     pub fn add_task(&mut self, task: Task) {
         let column = task.stage.to_column();
-        self.columns.entry(column).or_default().push(task.id.clone());
+        self.columns
+            .entry(column)
+            .or_default()
+            .push(task.id.clone());
         self.tasks.insert(task.id.clone(), task);
         self.sort_column(column);
     }
@@ -118,10 +125,11 @@ impl KanbanBoard {
     pub fn next_unblocked(&self, column: Column) -> Option<&Task> {
         self.tasks_in(column).iter().find_map(|id| {
             let task = self.tasks.get(id)?;
-            let ready = task
-                .blocked_by
-                .iter()
-                .all(|b| self.tasks.get(b).is_some_and(|bt| bt.stage == crate::model::Stage::Done));
+            let ready = task.blocked_by.iter().all(|b| {
+                self.tasks
+                    .get(b)
+                    .is_some_and(|bt| bt.stage == crate::model::Stage::Done)
+            });
             ready.then_some(task)
         })
     }
@@ -143,9 +151,7 @@ impl KanbanBoard {
     fn sort_column(&mut self, column: Column) {
         if let Some(ids) = self.columns.get_mut(&column) {
             let tasks = &self.tasks;
-            ids.sort_by_key(|id| {
-                tasks.get(id).map(|t| t.priority).unwrap_or(u32::MAX)
-            });
+            ids.sort_by_key(|id| tasks.get(id).map(|t| t.priority).unwrap_or(u32::MAX));
         }
     }
 
@@ -206,7 +212,9 @@ impl WipLimits {
         let mut limits = Self::default().limits;
         for (name, &value) in overrides {
             match parse_column_name(name) {
-                Some(column) => { limits.insert(column, value); }
+                Some(column) => {
+                    limits.insert(column, value);
+                }
                 None => {
                     tracing::warn!("ignoring unknown WIP column '{name}' in config");
                 }

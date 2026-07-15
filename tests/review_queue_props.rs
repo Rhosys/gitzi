@@ -3,8 +3,8 @@
 // **Validates: Requirements 7.2, 7.3, 7.4, 6.5**
 
 use chrono::{DateTime, TimeZone, Utc};
-use gitzi::dispatcher::review_queue::{HumanReviewItem, HumanReviewQueue, ReviewItemKind};
 use gitzi::dispatcher::Column;
+use gitzi::dispatcher::review_queue::{HumanReviewItem, HumanReviewQueue, ReviewItemKind};
 use proptest::prelude::*;
 
 /// The 4 buffer columns in pipeline order (left to right on the board).
@@ -30,7 +30,9 @@ fn arb_question() -> impl Strategy<Value = HumanReviewItem> {
     (0usize..1000, arb_timestamp()).prop_map(|(id, ts)| {
         HumanReviewItem::with_timestamp(
             format!("task-q-{id}"),
-            ReviewItemKind::AgentQuestion { question: format!("Question {id}?") },
+            ReviewItemKind::AgentQuestion {
+                question: format!("Question {id}?"),
+            },
             ts,
         )
     })
@@ -38,15 +40,22 @@ fn arb_question() -> impl Strategy<Value = HumanReviewItem> {
 
 /// Strategy for a BufferApproval review item.
 fn arb_approval() -> impl Strategy<Value = HumanReviewItem> {
-    (0usize..1000, arb_buffer_column(), 0u32..100, arb_timestamp()).prop_map(
-        |(id, col, prio, ts)| {
+    (
+        0usize..1000,
+        arb_buffer_column(),
+        0u32..100,
+        arb_timestamp(),
+    )
+        .prop_map(|(id, col, prio, ts)| {
             HumanReviewItem::with_timestamp(
                 format!("task-a-{id}"),
-                ReviewItemKind::BufferApproval { buffer_column: col, task_priority: prio },
+                ReviewItemKind::BufferApproval {
+                    buffer_column: col,
+                    task_priority: prio,
+                },
                 ts,
             )
-        },
-    )
+        })
 }
 
 /// Strategy for a mixed review item (question or approval).

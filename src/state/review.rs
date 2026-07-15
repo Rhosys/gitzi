@@ -15,20 +15,37 @@ use crate::state::home;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ReviewAction {
-    Approval { at: DateTime<Utc> },
-    Rejection { at: DateTime<Utc>, feedback: String },
-    Answer { at: DateTime<Utc>, content: String },
+    Approval {
+        at: DateTime<Utc>,
+    },
+    Rejection {
+        at: DateTime<Utc>,
+        feedback: String,
+    },
+    Answer {
+        at: DateTime<Utc>,
+        content: String,
+    },
     /// A single turn in the rework/explain conversation about this item.
     /// Does not resolve the item — `is_unresolved` ignores these.
-    Comment { at: DateTime<Utc>, role: Role, content: String },
+    Comment {
+        at: DateTime<Utc>,
+        role: Role,
+        content: String,
+    },
 }
 
 /// The kind of review item — either an agent question or a buffer approval gate.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PersistedReviewKind {
-    AgentQuestion { question: String },
-    BufferApproval { buffer_column: Column, task_priority: u32 },
+    AgentQuestion {
+        question: String,
+    },
+    BufferApproval {
+        buffer_column: Column,
+        task_priority: u32,
+    },
 }
 
 /// A persisted review item stored as TOML in `~/.gitzi/plan/reviews/{id}.toml`.
@@ -48,7 +65,12 @@ impl PersistedReviewItem {
     /// without resolving the item.
     pub fn is_unresolved(&self) -> bool {
         !self.actions.iter().any(|a| {
-            matches!(a, ReviewAction::Approval { .. } | ReviewAction::Rejection { .. } | ReviewAction::Answer { .. })
+            matches!(
+                a,
+                ReviewAction::Approval { .. }
+                    | ReviewAction::Rejection { .. }
+                    | ReviewAction::Answer { .. }
+            )
         })
     }
 }
@@ -131,7 +153,11 @@ pub fn load_answered_for_task(task_id: &str) -> Vec<(String, String)> {
         };
         // Use the most recent Answer action if multiple exist.
         if let Some(answer) = item.actions.iter().rev().find_map(|a| {
-            if let ReviewAction::Answer { content, .. } = a { Some(content.clone()) } else { None }
+            if let ReviewAction::Answer { content, .. } = a {
+                Some(content.clone())
+            } else {
+                None
+            }
         }) {
             pairs.push((question, answer));
         }
@@ -183,9 +209,7 @@ mod tests {
 
     fn arb_review_kind() -> impl Strategy<Value = PersistedReviewKind> {
         prop_oneof![
-            "[a-z]{1,20}".prop_map(|q| PersistedReviewKind::AgentQuestion {
-                question: q,
-            }),
+            "[a-z]{1,20}".prop_map(|q| PersistedReviewKind::AgentQuestion { question: q }),
             (arb_column(), 0u32..1000).prop_map(|(col, pri)| {
                 PersistedReviewKind::BufferApproval {
                     buffer_column: col,
@@ -196,9 +220,8 @@ mod tests {
     }
 
     fn arb_datetime() -> impl Strategy<Value = DateTime<Utc>> {
-        (0i64..2_000_000_000).prop_map(|secs| {
-            DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now)
-        })
+        (0i64..2_000_000_000)
+            .prop_map(|secs| DateTime::from_timestamp(secs, 0).unwrap_or_else(Utc::now))
     }
 
     fn arb_role() -> impl Strategy<Value = Role> {
@@ -207,13 +230,9 @@ mod tests {
 
     fn arb_review_action() -> impl Strategy<Value = ReviewAction> {
         prop_oneof![
-            arb_datetime()
-                .prop_map(|at| ReviewAction::Approval { at }),
+            arb_datetime().prop_map(|at| ReviewAction::Approval { at }),
             (arb_datetime(), "[a-z ]{1,40}")
-                .prop_map(|(at, feedback)| ReviewAction::Rejection {
-                    at,
-                    feedback,
-                }),
+                .prop_map(|(at, feedback)| ReviewAction::Rejection { at, feedback }),
             (arb_datetime(), "[a-z ]{1,40}")
                 .prop_map(|(at, content)| ReviewAction::Answer { at, content }),
             (arb_datetime(), arb_role(), "[a-z ]{1,40}")
@@ -245,13 +264,15 @@ mod tests {
             arb_datetime(),
             prop::collection::vec(arb_review_action(), 0..5),
         )
-            .prop_map(|(id, task_id, kind, created_at, actions)| PersistedReviewItem {
-                id,
-                task_id,
-                kind,
-                created_at,
-                actions,
-            })
+            .prop_map(
+                |(id, task_id, kind, created_at, actions)| PersistedReviewItem {
+                    id,
+                    task_id,
+                    kind,
+                    created_at,
+                    actions,
+                },
+            )
     }
 
     fn write_item_to(dir: &Path, item: &PersistedReviewItem) {

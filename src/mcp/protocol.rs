@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// A JSON-RPC 2.0 request.
 #[derive(Debug, Deserialize)]
@@ -44,7 +44,10 @@ impl JsonRpcResponse {
             jsonrpc: "2.0",
             id,
             result: None,
-            error: Some(JsonRpcError { code, message: message.into() }),
+            error: Some(JsonRpcError {
+                code,
+                message: message.into(),
+            }),
         }
     }
 }

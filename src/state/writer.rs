@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use crate::config::atomic_write;
 use crate::error::Result;
 use crate::model::{Epic, Task, WipSnapshot};
 use crate::state::reader::{epic_file, plan_dir, task_file, task_log_path, task_wip_dir, wip_file};
+use std::collections::HashMap;
 
 pub fn write_task(task: &Task) -> Result<()> {
     std::fs::create_dir_all(plan_dir().join("tasks"))?;
@@ -39,7 +39,10 @@ pub fn append_agent_log(task_id: &str, output: &str) -> Result<()> {
 fn wip_snapshot(tasks: &[Task]) -> WipSnapshot {
     let mut stages: HashMap<String, Vec<String>> = HashMap::new();
     for task in tasks {
-        stages.entry(task.stage.to_string()).or_default().push(task.id.clone());
+        stages
+            .entry(task.stage.to_string())
+            .or_default()
+            .push(task.id.clone());
     }
     WipSnapshot { stages }
 }

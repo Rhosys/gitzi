@@ -1,6 +1,6 @@
+use crate::error::Result;
 use std::path::Path;
 use tokio::process::Command;
-use crate::error::Result;
 
 #[derive(Debug)]
 pub struct TestResult {

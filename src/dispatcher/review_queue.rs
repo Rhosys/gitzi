@@ -13,7 +13,10 @@ pub enum ReviewItemKind {
     /// An agent is blocked and needs a human answer to continue.
     AgentQuestion { question: String },
     /// A task has entered a buffer column and needs approval to advance.
-    BufferApproval { buffer_column: Column, task_priority: u32 },
+    BufferApproval {
+        buffer_column: Column,
+        task_priority: u32,
+    },
 }
 
 // ─── HumanReviewItem ──────────────────────────────────────────────────────────
@@ -77,7 +80,10 @@ fn sort_key(item: &HumanReviewItem) -> (u8, usize, u32, DateTime<Utc>) {
             // Questions: sorted by arrival time only. Use 0 for column/priority placeholders.
             (0, 0, 0, item.created_at)
         }
-        ReviewItemKind::BufferApproval { buffer_column, task_priority } => {
+        ReviewItemKind::BufferApproval {
+            buffer_column,
+            task_priority,
+        } => {
             // Approvals: rightmost column first (invert index), then priority ascending.
             let max_idx = Column::all().len();
             let col_idx = column_index(*buffer_column);
@@ -187,7 +193,9 @@ mod tests {
     fn question(task_id: &str, q: &str, time: DateTime<Utc>) -> HumanReviewItem {
         HumanReviewItem::with_timestamp(
             task_id,
-            ReviewItemKind::AgentQuestion { question: q.to_string() },
+            ReviewItemKind::AgentQuestion {
+                question: q.to_string(),
+            },
             time,
         )
     }
@@ -195,7 +203,10 @@ mod tests {
     fn approval(task_id: &str, col: Column, priority: u32, time: DateTime<Utc>) -> HumanReviewItem {
         HumanReviewItem::with_timestamp(
             task_id,
-            ReviewItemKind::BufferApproval { buffer_column: col, task_priority: priority },
+            ReviewItemKind::BufferApproval {
+                buffer_column: col,
+                task_priority: priority,
+            },
             time,
         )
     }
@@ -334,8 +345,20 @@ mod tests {
         assert!(q.has_agent_questions());
 
         // Remove both questions
-        let q2_id = q.items.iter().find(|i| i.task_id == "q2").unwrap().id.clone();
-        let q1_id = q.items.iter().find(|i| i.task_id == "q1").unwrap().id.clone();
+        let q2_id = q
+            .items
+            .iter()
+            .find(|i| i.task_id == "q2")
+            .unwrap()
+            .id
+            .clone();
+        let q1_id = q
+            .items
+            .iter()
+            .find(|i| i.task_id == "q1")
+            .unwrap()
+            .id
+            .clone();
         q.dequeue(&q2_id);
         q.dequeue(&q1_id);
 
@@ -346,12 +369,24 @@ mod tests {
         assert_eq!(peeked.task_id, "a2");
 
         // Remove a2, next should be a3 (same column, higher prio number)
-        let a2_id = q.items.iter().find(|i| i.task_id == "a2").unwrap().id.clone();
+        let a2_id = q
+            .items
+            .iter()
+            .find(|i| i.task_id == "a2")
+            .unwrap()
+            .id
+            .clone();
         q.dequeue(&a2_id);
         assert_eq!(q.peek().unwrap().task_id, "a3");
 
         // Remove a3, next should be a1 (CodingBuffer, less rightmost)
-        let a3_id = q.items.iter().find(|i| i.task_id == "a3").unwrap().id.clone();
+        let a3_id = q
+            .items
+            .iter()
+            .find(|i| i.task_id == "a3")
+            .unwrap()
+            .id
+            .clone();
         q.dequeue(&a3_id);
         assert_eq!(q.peek().unwrap().task_id, "a1");
     }

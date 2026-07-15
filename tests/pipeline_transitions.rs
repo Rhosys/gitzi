@@ -1,5 +1,5 @@
-use gitzi::pipeline::transitions::{next_stage, validate_transition};
 use gitzi::model::Stage;
+use gitzi::pipeline::transitions::{next_stage, validate_transition};
 
 #[test]
 fn valid_happy_path() {
