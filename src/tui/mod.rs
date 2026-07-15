@@ -122,9 +122,9 @@ async fn run_event_loop(
             continue;
         }
 
-        // Ctrl+Q always quits
+        // Ctrl+Q or Ctrl+C always quits
         if key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('q')
+            && (key.code == KeyCode::Char('q') || key.code == KeyCode::Char('c'))
         {
             break;
         }
