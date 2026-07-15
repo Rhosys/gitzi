@@ -79,11 +79,7 @@ pub enum SetupState {
 fn main_provider_enabled(config: &Config) -> bool {
     let def = config.resolve_agent("main");
     match def.provider {
-        Some(name) => config
-            .providers
-            .get(&name)
-            .map(|d| d.enabled)
-            .unwrap_or(false),
+        Some(name) => config.providers.contains_key(&name),
         None => false,
     }
 }
@@ -91,11 +87,7 @@ fn main_provider_enabled(config: &Config) -> bool {
 /// Is the distinguished fallback provider set and enabled?
 fn fallback_enabled(config: &Config) -> bool {
     match &config.fallback_provider {
-        Some(name) => config
-            .providers
-            .get(name)
-            .map(|d| d.enabled)
-            .unwrap_or(false),
+        Some(name) => config.providers.contains_key(name),
         None => false,
     }
 }
@@ -150,7 +142,6 @@ pub fn merge_discovered(config: &mut Config, discovered: &[DiscoveredProvider]) 
         }
         let mut def = ProviderDef {
             kind: provider.kind,
-            enabled: false,
             ..ProviderDef::default()
         };
         match provider.kind {
@@ -217,7 +208,6 @@ pub async fn activate(
         .ok_or_else(|| anyhow::anyhow!("no provider named '{name}' — run a rescan first"))?;
 
     if provider.kind == ProviderKind::OpenaiCompatible {
-        provider.enabled = true;
         config.providers.insert(name.to_string(), provider);
         wire_main_agent(config, name);
         // Auto-discover repos if none configured yet
@@ -292,7 +282,6 @@ pub async fn activate(
     crate::aws_sso::get_role_credentials(&region, &token.access_token, &account_id, &role_name)
         .await?;
 
-    provider.enabled = true;
     provider.sso_account_id = Some(account_id.clone());
     provider.sso_role_name = Some(role_name.clone());
     if provider.model_id.is_none() {
@@ -319,10 +308,9 @@ mod tests {
     use crate::config::{AgentDef, ProviderDef};
     use std::collections::HashMap;
 
-    fn provider(enabled: bool) -> ProviderDef {
+    fn provider() -> ProviderDef {
         ProviderDef {
             api_url: "http://localhost:1234/v1".to_string(),
-            enabled,
             ..ProviderDef::default()
         }
     }
@@ -332,7 +320,7 @@ mod tests {
         // Default config has a disabled-by-discovery model but no activated
         // fallback and no main binding — must require setup.
         let config = Config {
-            providers: HashMap::from([("lmstudio".to_string(), provider(false))]),
+            providers: HashMap::from([("lmstudio".to_string(), provider())]),
             agents: Vec::new(),
             fallback_provider: None,
             ..Config::default()
@@ -343,7 +331,7 @@ mod tests {
     #[test]
     fn gate_ready_when_main_bound_to_enabled_provider() {
         let config = Config {
-            providers: HashMap::from([("lmstudio".to_string(), provider(true))]),
+            providers: HashMap::from([("lmstudio".to_string(), provider())]),
             agents: vec![AgentDef {
                 role: "main".to_string(),
                 provider: Some("lmstudio".to_string()),
@@ -358,7 +346,7 @@ mod tests {
     #[test]
     fn gate_ready_when_fallback_enabled_even_without_main_binding() {
         let config = Config {
-            providers: HashMap::from([("lmstudio".to_string(), provider(true))]),
+            providers: HashMap::from([("lmstudio".to_string(), provider())]),
             agents: Vec::new(),
             fallback_provider: Some("lmstudio".to_string()),
             ..Config::default()
@@ -367,9 +355,9 @@ mod tests {
     }
 
     #[test]
-    fn gate_not_ready_when_provider_bound_but_disabled() {
+    fn gate_not_ready_when_provider_missing_from_map() {
         let config = Config {
-            providers: HashMap::from([("lmstudio".to_string(), provider(false))]),
+            providers: HashMap::new(), // provider referenced but not defined
             agents: vec![AgentDef {
                 role: "main".to_string(),
                 provider: Some("lmstudio".to_string()),
@@ -384,7 +372,7 @@ mod tests {
     #[tokio::test]
     async fn activate_openai_provider_enables_wires_and_sets_fallback() {
         let mut config = Config {
-            providers: HashMap::from([("lmstudio".to_string(), provider(false))]),
+            providers: HashMap::from([("lmstudio".to_string(), provider())]),
             agents: Vec::new(),
             fallback_provider: None,
             ..Config::default()
@@ -392,7 +380,6 @@ mod tests {
 
         let outcome = activate(&mut config, "lmstudio", None, None).await.unwrap();
         assert!(matches!(outcome, ActivationOutcome::Activated { .. }));
-        assert!(config.providers["lmstudio"].enabled);
         assert_eq!(config.fallback_provider.as_deref(), Some("lmstudio"));
         assert_eq!(
             config.resolve_agent("main").provider.as_deref(),
@@ -415,7 +402,7 @@ mod tests {
     #[test]
     fn merge_discovered_adds_only_new_as_disabled() {
         let mut config = Config {
-            providers: HashMap::from([("lmstudio".to_string(), provider(true))]),
+            providers: HashMap::from([("lmstudio".to_string(), provider())]),
             ..Config::default()
         };
         let discovered = vec![
@@ -444,8 +431,8 @@ mod tests {
         ];
         let added = merge_discovered(&mut config, &discovered);
         assert_eq!(added, vec!["ollama".to_string()]);
-        // Existing enabled provider untouched; new one disabled.
-        assert!(config.providers["lmstudio"].enabled);
-        assert!(!config.providers["ollama"].enabled);
+        // Existing provider untouched; new one added.
+        assert!(config.providers.contains_key("lmstudio"));
+        assert!(config.providers.contains_key("ollama"));
     }
 }

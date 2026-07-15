@@ -52,7 +52,7 @@ pub enum ProviderKind {
 }
 
 /// An LLM provider definition (e.g. LM Studio, Ollama, AWS Bedrock).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProviderDef {
     #[serde(default)]
     pub kind: ProviderKind,
@@ -89,35 +89,6 @@ pub struct ProviderDef {
     /// this value (routes to whatever is loaded).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
-
-    /// Whether this provider is actually wired up for use. Providers found
-    /// during discovery are recorded here so they show up for the user to
-    /// choose from, but stay `enabled = false` (and unreferenced by any
-    /// agent) until explicitly activated — see `gitzi_rediscover_providers`
-    /// and `gitzi_activate_provider`.
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
-impl Default for ProviderDef {
-    fn default() -> Self {
-        Self {
-            kind: ProviderKind::default(),
-            api_url: String::new(),
-            api_key: String::new(),
-            region: None,
-            sso_start_url: None,
-            sso_account_id: None,
-            sso_role_name: None,
-            model_id: None,
-            default_model: None,
-            enabled: true,
-        }
-    }
 }
 
 /// Per-column WIP limit overrides, as configured in `config.toml`:
@@ -674,7 +645,6 @@ mod tests {
                     region: Some("us-east-1".to_string()),
                     sso_start_url: Some("https://example.awsapps.com/start".to_string()),
                     model_id: Some("anthropic.claude-sonnet-4-6-v1:0".to_string()),
-                    enabled: false,
                     ..ProviderDef::default()
                 },
             )]),
@@ -690,7 +660,6 @@ mod tests {
             provider.sso_start_url.as_deref(),
             Some("https://example.awsapps.com/start")
         );
-        assert!(!provider.enabled);
     }
 
     #[test]
@@ -703,6 +672,5 @@ mod tests {
         let config: Config = toml::from_str(text).unwrap();
         let provider = config.providers.get("lmstudio").unwrap();
         assert_eq!(provider.kind, ProviderKind::OpenaiCompatible);
-        assert!(provider.enabled);
     }
 }

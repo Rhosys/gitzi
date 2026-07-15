@@ -290,7 +290,6 @@ async fn cmd_daemon() -> Result<()> {
     if let Some(provider_name) = config.resolve_agent("main").provider
         && let Some(provider) = config.providers.get(&provider_name)
         && provider.kind == gitzi::config::ProviderKind::OpenaiCompatible
-        && provider.enabled
         && !provider.api_url.is_empty()
     {
         let lms = dirs::home_dir()

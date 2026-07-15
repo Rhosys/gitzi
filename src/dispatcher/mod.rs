@@ -903,11 +903,6 @@ impl Dispatcher {
         let lines: Vec<String> = discovered
             .iter()
             .map(|p| {
-                let enabled = config
-                    .providers
-                    .get(&p.name)
-                    .map(|d| d.enabled)
-                    .unwrap_or(false);
                 let status = if p.model_loaded {
                     "running, model loaded"
                 } else if p.running {
@@ -921,7 +916,7 @@ impl Dispatcher {
                     crate::config::ProviderKind::OpenaiCompatible => "openai-compatible",
                     crate::config::ProviderKind::Bedrock => "bedrock",
                 };
-                format!("- {} [{kind}] {status}, enabled={enabled}", p.name)
+                format!("- {} [{kind}] {status}", p.name)
             })
             .collect();
 
@@ -1876,14 +1871,11 @@ impl Dispatcher {
 /// Build the fallback control-plane brain (ADR-002): a chat agent bound to the
 /// distinguished `fallback_provider`, used to run the recovery conversation
 /// when main's own provider is down. Returns `None` unless the fallback is set,
-/// enabled, OpenAI-compatible, and *distinct* from main's provider — if main
+/// OpenAI-compatible, and *distinct* from main's provider — if main
 /// already is the fallback, falling back couldn't help.
 fn build_fallback_agent(config: &Config) -> Option<Box<dyn MainChatBackend>> {
     let fallback = config.fallback_provider.as_ref()?;
     let provider = config.providers.get(fallback)?;
-    if !provider.enabled {
-        return None;
-    }
     let main_def = config.resolve_agent("main");
     if main_def.provider.as_deref() == Some(fallback.as_str()) {
         return None;
@@ -1998,7 +1990,6 @@ mod tests {
     fn openai_provider(url: &str) -> crate::config::ProviderDef {
         crate::config::ProviderDef {
             api_url: url.to_string(),
-            enabled: true,
             ..crate::config::ProviderDef::default()
         }
     }
@@ -2054,13 +2045,12 @@ mod tests {
     }
 
     #[test]
-    fn fallback_agent_none_when_provider_disabled() {
-        let mut provider = openai_provider("http://localhost:11434/v1");
-        provider.enabled = false;
+    fn fallback_agent_none_when_provider_missing() {
+        // Fallback references a provider not in config → None.
         let config = Config {
-            providers: std::collections::HashMap::from([("local".to_string(), provider)]),
+            providers: std::collections::HashMap::new(),
             agents: Vec::new(),
-            fallback_provider: Some("local".to_string()),
+            fallback_provider: Some("nonexistent".to_string()),
             ..Config::default()
         };
         assert!(build_fallback_agent(&config).is_none());
