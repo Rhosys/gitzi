@@ -105,7 +105,11 @@ async fn chat_with_mock_agent_returns_response() {
     let response = dispatcher
         .chat("Hello, what should we work on?", None)
         .await;
-    assert!(response.is_ok(), "chat should succeed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "chat should succeed: {:?}",
+        response.err()
+    );
     let text = response.unwrap();
     assert!(!text.is_empty(), "response should not be empty");
 }
@@ -120,7 +124,10 @@ async fn create_epic_and_task_via_dispatcher() {
 
     // Create epic
     let epic = dispatcher
-        .gitzi_create_epic("Test Epic".to_string(), Some("A test epic for e2e".to_string()))
+        .gitzi_create_epic(
+            "Test Epic".to_string(),
+            Some("A test epic for e2e".to_string()),
+        )
         .await
         .unwrap();
 

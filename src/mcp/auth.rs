@@ -85,7 +85,9 @@ impl TokenStore {
             return None;
         }
 
-        Some(TokenEntry { task_id: claims.sub })
+        Some(TokenEntry {
+            task_id: claims.sub,
+        })
     }
 
     /// Revoke a token so it cannot be used again, even before its expiry.

@@ -1,7 +1,7 @@
 //! Coding agent — runs in a worktree, calls LLM in a tool loop until done.
 
-use std::path::Path;
 use reqwest::Client;
+use std::path::Path;
 use tracing::{info, warn};
 
 use crate::agent::coding_tools::{self, ToolResult, coding_agent_tools};
@@ -15,13 +15,11 @@ const MAX_ROUNDS: usize = 50;
 
 /// Run the coding agent loop for a task.
 /// Returns the final text response from the agent (or an error).
-pub async fn run(
-    agent_def: &AgentDef,
-    task_prompt: &str,
-    worktree_root: &Path,
-) -> Result<String> {
+pub async fn run(agent_def: &AgentDef, task_prompt: &str, worktree_root: &Path) -> Result<String> {
     let client = Client::new();
-    let base_url = agent_def.api_url.as_deref()
+    let base_url = agent_def
+        .api_url
+        .as_deref()
         .unwrap_or("http://localhost:1234/v1");
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let model = &agent_def.model;
@@ -67,9 +65,10 @@ RULES:\n\
                 GitziError::AgentFailed(format!("LLM call failed (round {round}): {e}"))
             })?;
 
-        let choice = parsed.choices.first().ok_or_else(|| {
-            GitziError::AgentFailed("no choices in response".to_string())
-        })?;
+        let choice = parsed
+            .choices
+            .first()
+            .ok_or_else(|| GitziError::AgentFailed("no choices in response".to_string()))?;
 
         // If the model returned text (no tool calls), we're done
         if choice.message.tool_calls.is_empty() {
@@ -91,8 +90,7 @@ RULES:\n\
             let args: serde_json::Value =
                 serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
-            let result =
-                coding_tools::execute_tool(&call.function.name, &args, worktree_root);
+            let result = coding_tools::execute_tool(&call.function.name, &args, worktree_root);
 
             let output = match result {
                 ToolResult::Output(s) => s,

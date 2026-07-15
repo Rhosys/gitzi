@@ -1,31 +1,27 @@
-use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
-use tokio::sync::broadcast;
-use tracing::{error, info};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::Layer as _;
 use gitzi::cli::{Cli, Commands, EpicCommands, TaskCommands};
 use gitzi::config::Config;
 use gitzi::daemon;
 use gitzi::id::new_id;
 use gitzi::model::{Epic, Stage, Task};
 use gitzi::pipeline::Orchestrator;
-use gitzi::state::{reader, writer, home};
+use gitzi::state::{home, reader, writer};
+use std::sync::Arc;
+use tokio::sync::broadcast;
+use tracing::{error, info};
+use tracing_subscriber::Layer as _;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let _error_rx = gitzi::error_relay::init();
 
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_filter(
-                    tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive("gitzi=info".parse()?),
-                )
-        )
+        .with(tracing_subscriber::fmt::layer().with_filter(
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("gitzi=info".parse()?),
+        ))
         .with(gitzi::error_relay::ErrorRelayLayer)
         .init();
 
@@ -66,13 +62,27 @@ async fn main() -> Result<()> {
             #[cfg(not(feature = "tui"))]
             anyhow::bail!("log viewer not available — build with --features tui");
         }
-        Some(Commands::Advance { task_id, stage, note }) => {
+        Some(Commands::Advance {
+            task_id,
+            stage,
+            note,
+        }) => {
             cmd_advance(&task_id, &stage, note)?;
         }
-        Some(Commands::Task { command: TaskCommands::Create { epic, title, priority, description } }) => {
+        Some(Commands::Task {
+            command:
+                TaskCommands::Create {
+                    epic,
+                    title,
+                    priority,
+                    description,
+                },
+        }) => {
             cmd_task_create(&epic, &title, priority, description)?;
         }
-        Some(Commands::Epic { command: EpicCommands::Create { title, description } }) => {
+        Some(Commands::Epic {
+            command: EpicCommands::Create { title, description },
+        }) => {
             cmd_epic_create(&title, description)?;
         }
     }
@@ -105,26 +115,36 @@ async fn cmd_default() -> Result<()> {
 /// Fullscreen scrollable journal viewer with live follow.
 #[cfg(feature = "tui")]
 async fn cmd_log() -> Result<()> {
-    use std::process::Stdio;
     use ratatui::crossterm::{
+        cursor::Show,
         event::{self as ct_event, Event, KeyCode, KeyEventKind},
         execute,
-        terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-        cursor::Show,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     };
     use ratatui::{
+        Terminal,
         backend::CrosstermBackend,
         layout::{Constraint, Layout},
         style::{Color, Style},
         text::{Line, Span},
         widgets::{Block, Borders, Paragraph},
-        Terminal,
     };
+    use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command as TokioCommand;
 
     let mut child = TokioCommand::new("journalctl")
-        .args(["--user", "-u", "gitzi.service", "--no-pager", "-n", "200", "-f", "-o", "short"])
+        .args([
+            "--user",
+            "-u",
+            "gitzi.service",
+            "--no-pager",
+            "-n",
+            "200",
+            "-f",
+            "-o",
+            "short",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -168,17 +188,13 @@ async fn cmd_log() -> Result<()> {
 
         terminal.draw(|frame| {
             let area = frame.area();
-            let [header, body] = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Fill(1),
-            ]).areas(area);
+            let [header, body] =
+                Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
 
             let follow_indicator = if auto_follow { " [following]" } else { "" };
             frame.render_widget(
                 Paragraph::new(Span::styled(
-                    format!(
-                        " gitzi log{follow_indicator}  [q] quit  [up/dn] scroll  [f] follow"
-                    ),
+                    format!(" gitzi log{follow_indicator}  [q] quit  [up/dn] scroll  [f] follow"),
                     Style::default().fg(Color::DarkGray),
                 )),
                 header,
@@ -190,9 +206,7 @@ async fn cmd_log() -> Result<()> {
                 .iter()
                 .skip(start)
                 .take(height)
-                .map(|l| {
-                    Line::from(Span::styled(l.as_str(), Style::default().fg(Color::Gray)))
-                })
+                .map(|l| Line::from(Span::styled(l.as_str(), Style::default().fg(Color::Gray))))
                 .collect();
 
             let block = Block::default()
@@ -232,8 +246,7 @@ async fn cmd_log() -> Result<()> {
                     if scroll_offset + 20 >= log_lines.len() {
                         auto_follow = true;
                     }
-                    scroll_offset =
-                        (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
+                    scroll_offset = (scroll_offset + 20).min(log_lines.len().saturating_sub(1));
                 }
                 _ => {}
             }
@@ -288,7 +301,8 @@ async fn cmd_daemon() -> Result<()> {
         let port_open = std::net::TcpStream::connect_timeout(
             &std::net::SocketAddr::from(([127, 0, 0, 1], 1234)),
             std::time::Duration::from_millis(200),
-        ).is_ok();
+        )
+        .is_ok();
 
         if !port_open && lms.exists() {
             info!("LM Studio server not running — starting via lms server start");
@@ -303,7 +317,9 @@ async fn cmd_daemon() -> Result<()> {
                 if std::net::TcpStream::connect_timeout(
                     &std::net::SocketAddr::from(([127, 0, 0, 1], 1234)),
                     std::time::Duration::from_millis(200),
-                ).is_ok() {
+                )
+                .is_ok()
+                {
                     break;
                 }
             }
@@ -318,14 +334,23 @@ async fn cmd_daemon() -> Result<()> {
                 .send()
                 .await
                 .ok()
-                .and_then(|r| if r.status().is_success() { Some(r) } else { None })
+                .and_then(|r| {
+                    if r.status().is_success() {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
                 .is_some()
         };
         if !model_loaded
             && let Some(ref model) = provider.default_model
             && lms.exists()
         {
-            info!("no model loaded at {} — loading {}", provider.api_url, model);
+            info!(
+                "no model loaded at {} — loading {}",
+                provider.api_url, model
+            );
             let _ = std::process::Command::new(&lms)
                 .args(["load", model, "-y"])
                 .stdout(std::process::Stdio::null())
@@ -339,7 +364,7 @@ async fn cmd_daemon() -> Result<()> {
     let dispatcher = Arc::new(
         gitzi::dispatcher::Dispatcher::start(config)
             .await
-            .context("Failed to start dispatcher")?
+            .context("Failed to start dispatcher")?,
     );
 
     // Relay errors to the event bus for TUI
@@ -406,7 +431,15 @@ async fn cmd_generate_config() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("bootstrap task panicked: {e}"))??;
     let path = home::global_config_file();
     println!("Generated config at {}", path.display());
-    println!("  providers: {}", config.providers.keys().cloned().collect::<Vec<_>>().join(", "));
+    println!(
+        "  providers: {}",
+        config
+            .providers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("  repo_paths: {}", config.repo_paths.len());
     println!("  agents: {}", config.agents.len());
 
@@ -484,7 +517,7 @@ fn parse_stage(s: &str) -> Result<Stage> {
 /// modified (e.g. after `cargo build`). Debounces for 2 seconds to let the
 /// linker finish writing before triggering exec.
 async fn watch_binary_for_restart() {
-    use notify::{RecommendedWatcher, RecursiveMode, Watcher, Event, EventKind};
+    use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
     use tokio::sync::mpsc;
 
     let exe_path = match std::env::current_exe() {
@@ -555,9 +588,7 @@ fn exec_self() {
     };
 
     let args: Vec<String> = std::env::args().collect();
-    let err = std::process::Command::new(&exe)
-        .args(&args[1..])
-        .exec();
+    let err = std::process::Command::new(&exe).args(&args[1..]).exec();
     // exec() only returns on failure
     error!("exec failed: {err}");
 }
@@ -565,7 +596,7 @@ fn exec_self() {
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigint = signal(SignalKind::interrupt()).expect("failed to bind SIGINT");
         let mut sigterm = signal(SignalKind::terminate()).expect("failed to bind SIGTERM");
         tokio::select! {
@@ -575,6 +606,8 @@ async fn shutdown_signal() {
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await.expect("failed to bind Ctrl-C");
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to bind Ctrl-C");
     }
 }

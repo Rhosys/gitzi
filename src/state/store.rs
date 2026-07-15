@@ -100,7 +100,10 @@ impl InMemoryStore {
 
 impl StateStore for InMemoryStore {
     fn write_task(&self, task: &Task) -> Result<()> {
-        self.tasks.lock().unwrap().insert(task.id.clone(), task.clone());
+        self.tasks
+            .lock()
+            .unwrap()
+            .insert(task.id.clone(), task.clone());
         Ok(())
     }
 
@@ -118,7 +121,10 @@ impl StateStore for InMemoryStore {
     }
 
     fn write_epic(&self, epic: &Epic) -> Result<()> {
-        self.epics.lock().unwrap().insert(epic.id.clone(), epic.clone());
+        self.epics
+            .lock()
+            .unwrap()
+            .insert(epic.id.clone(), epic.clone());
         Ok(())
     }
 
@@ -136,7 +142,10 @@ impl StateStore for InMemoryStore {
     }
 
     fn write_review_item(&self, item: &PersistedReviewItem) -> Result<()> {
-        self.reviews.lock().unwrap().insert(item.id.clone(), item.clone());
+        self.reviews
+            .lock()
+            .unwrap()
+            .insert(item.id.clone(), item.clone());
         Ok(())
     }
 
@@ -164,7 +173,11 @@ impl StateStore for InMemoryStore {
 
     fn load_all_unresolved(&self) -> Result<Vec<PersistedReviewItem>> {
         let reviews = self.reviews.lock().unwrap();
-        Ok(reviews.values().filter(|item| item.is_unresolved()).cloned().collect())
+        Ok(reviews
+            .values()
+            .filter(|item| item.is_unresolved())
+            .cloned()
+            .collect())
     }
 
     fn load_answered_for_task(&self, task_id: &str) -> Vec<(String, String)> {

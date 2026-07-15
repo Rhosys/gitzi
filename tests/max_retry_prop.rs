@@ -5,8 +5,8 @@
 // backend at most once. It does NOT call the real verifier (which requires an LLM)
 // — instead it simulates the exact control flow from handle_agent_result.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gitzi::agent::{AgentBackend, AgentResult, RunContext};
 use gitzi::error::Result;
@@ -42,7 +42,9 @@ fn arb_agent_output() -> impl Strategy<Value = String> {
 fn arb_rejection_reason() -> impl Strategy<Value = String> {
     prop_oneof![
         Just("Task requires adding a /health endpoint but the diff is empty.".to_string()),
-        Just("Agent claims to have stopped due to context limits — task is incomplete.".to_string()),
+        Just(
+            "Agent claims to have stopped due to context limits — task is incomplete.".to_string()
+        ),
         Just("Summary describes intent but no actual implementation was done.".to_string()),
         "[a-zA-Z ]{20,100}".prop_map(|s| format!("Verifier: {s}")),
     ]
@@ -59,10 +61,7 @@ fn arb_rejection_reason() -> impl Strategy<Value = String> {
 ///   4. (In production: verify again. Here we just count invocations.)
 ///
 /// Returns the number of backend invocations during the retry path.
-async fn simulate_retry_after_rejection(
-    reason: &str,
-    backend: &CountingBackend,
-) -> usize {
+async fn simulate_retry_after_rejection(reason: &str, backend: &CountingBackend) -> usize {
     let task = Task::new("test-task", "epic-1", "Implement feature X");
 
     // This mirrors handle_agent_result after VerifyResult::Fail:

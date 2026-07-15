@@ -1,10 +1,10 @@
+use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, Mutex as TokioMutex, Notify};
+use tokio::sync::{Mutex as TokioMutex, Notify, broadcast};
 use tracing::{error, info, warn};
 
 use crate::config::Config;
@@ -187,8 +187,8 @@ fn spawn_scan(session: Arc<SetupSession>) {
                 // Auto-activate if only Bedrock providers are available — don't
                 // make the user manually select what's obvious.
                 if let SetupState::NeedsProvider { ref candidates } = state {
-                    let all_bedrock = !candidates.is_empty()
-                        && candidates.iter().all(|c| c.kind == "bedrock");
+                    let all_bedrock =
+                        !candidates.is_empty() && candidates.iter().all(|c| c.kind == "bedrock");
                     let single_candidate = candidates.len() == 1;
 
                     if all_bedrock || single_candidate {
@@ -210,9 +210,11 @@ fn spawn_scan(session: Arc<SetupSession>) {
                                     session.set_state(SetupState::Ready).await;
                                     session.ready.notify_one();
                                 } else {
-                                    session.set_state(SetupState::NeedsProvider {
-                                        candidates: candidates.clone(),
-                                    }).await;
+                                    session
+                                        .set_state(SetupState::NeedsProvider {
+                                            candidates: candidates.clone(),
+                                        })
+                                        .await;
                                 }
                                 info!("{message}");
                             }
@@ -220,16 +222,22 @@ fn spawn_scan(session: Arc<SetupSession>) {
                                 // SSO flow needs account/role selection — fall through
                                 // to the picker so the user can choose.
                                 info!("{message}");
-                                session.set_state(SetupState::NeedsProvider {
-                                    candidates: candidates.clone(),
-                                }).await;
+                                session
+                                    .set_state(SetupState::NeedsProvider {
+                                        candidates: candidates.clone(),
+                                    })
+                                    .await;
                             }
                             Err(e) => {
                                 warn!("auto-activation failed: {e}");
-                                session.set_state(SetupState::Error {
-                                    messages: vec![format!("Auto-activation of '{name}' failed: {e}")],
-                                    can_rescan: true,
-                                }).await;
+                                session
+                                    .set_state(SetupState::Error {
+                                        messages: vec![format!(
+                                            "Auto-activation of '{name}' failed: {e}"
+                                        )],
+                                        can_rescan: true,
+                                    })
+                                    .await;
                             }
                         }
                         return;
@@ -292,7 +300,11 @@ async fn handle_setup_client(stream: UnixStream, session: Arc<SetupSession>) {
             _ => "{\"setup\":true}".to_string(),
         };
 
-        if writer.write_all(format!("{response}\n").as_bytes()).await.is_err() {
+        if writer
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .is_err()
+        {
             break;
         }
     }
@@ -304,7 +316,11 @@ async fn handle_setup_client(stream: UnixStream, session: Arc<SetupSession>) {
 async fn handle_setup_select(session: &Arc<SetupSession>, payload: &str) -> String {
     let sel: SetupSelect = match serde_json::from_str(payload) {
         Ok(s) => s,
-        Err(e) => return format!("{{\"ok\":false,\"message\":\"invalid selection: {e}\",\"done\":false}}"),
+        Err(e) => {
+            return format!(
+                "{{\"ok\":false,\"message\":\"invalid selection: {e}\",\"done\":false}}"
+            );
+        }
     };
 
     let result = {
@@ -366,7 +382,10 @@ async fn stream_setup_state(
     {
         let state = session.state.lock().await.clone();
         if let Ok(json) = serde_json::to_string(&state)
-            && writer.write_all(format!("{json}\n").as_bytes()).await.is_err()
+            && writer
+                .write_all(format!("{json}\n").as_bytes())
+                .await
+                .is_err()
         {
             return;
         }
@@ -374,8 +393,14 @@ async fn stream_setup_state(
     loop {
         match rx.recv().await {
             Ok(state) => {
-                let Ok(json) = serde_json::to_string(&state) else { continue };
-                if writer.write_all(format!("{json}\n").as_bytes()).await.is_err() {
+                let Ok(json) = serde_json::to_string(&state) else {
+                    continue;
+                };
+                if writer
+                    .write_all(format!("{json}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -433,8 +458,8 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             }
             cmd if cmd.starts_with("chat ") => {
                 let encoded = cmd.strip_prefix("chat ").unwrap().trim();
-                let message: String = serde_json::from_str(encoded)
-                    .unwrap_or_else(|_| encoded.to_string());
+                let message: String =
+                    serde_json::from_str(encoded).unwrap_or_else(|_| encoded.to_string());
                 // Spawn chat processing with interrupt classification support.
                 let d = Arc::clone(&dispatcher);
                 tokio::spawn(async move {
@@ -452,17 +477,18 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             }
             other => format!("error: unknown command '{other}'"),
         };
-        if writer.write_all(format!("{response}\n").as_bytes()).await.is_err() {
+        if writer
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .is_err()
+        {
             break;
         }
     }
 }
 
 /// Stream JSON-encoded DispatchEvent lines until the connection closes.
-async fn handle_subscribe(
-    dispatcher: &Dispatcher,
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
-) {
+async fn handle_subscribe(dispatcher: &Dispatcher, writer: &mut tokio::net::unix::OwnedWriteHalf) {
     use tokio::sync::broadcast::error::RecvError;
 
     let mut rx = dispatcher.event_bus.subscribe();
@@ -476,7 +502,11 @@ async fn handle_subscribe(
                         continue;
                     }
                 };
-                if writer.write_all(format!("{json}\n").as_bytes()).await.is_err() {
+                if writer
+                    .write_all(format!("{json}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
                     break; // client disconnected
                 }
             }
@@ -521,7 +551,7 @@ async fn handle_peek_review(dispatcher: &Dispatcher) -> String {
 
 async fn handle_board(dispatcher: &Dispatcher) -> String {
     use crate::dispatcher::Column;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     let board = dispatcher.board.read().await;
     let columns: Vec<Value> = Column::all()
@@ -603,18 +633,26 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
             hist.iter()
                 .rev()
                 .take(5)
-                .map(|m| format!("{}: {}", match m.role {
-                    crate::state::chat::Role::User => "user",
-                    crate::state::chat::Role::Agent => "agent",
-                    crate::state::chat::Role::System => "system",
-                }, &m.content))
+                .map(|m| {
+                    format!(
+                        "{}: {}",
+                        match m.role {
+                            crate::state::chat::Role::User => "user",
+                            crate::state::chat::Role::Agent => "agent",
+                            crate::state::chat::Role::System => "system",
+                        },
+                        &m.content
+                    )
+                })
                 .collect::<Vec<_>>()
                 .into_iter()
                 .rev()
                 .collect()
         };
 
-        let base_url = dispatcher.main_agent.base_url()
+        let base_url = dispatcher
+            .main_agent
+            .base_url()
             .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
         let model = dispatcher.main_agent.model();
 
@@ -624,7 +662,8 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
             &context_turns,
             &pending_message,
             &message,
-        ).await;
+        )
+        .await;
 
         info!(?action, "interrupt classified");
 
@@ -665,11 +704,7 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
                 });
 
                 // Push a new entry onto the stack and start the turn
-                start_chat_turn(
-                    dispatcher,
-                    message,
-                    Some((fork_id, fork_name)),
-                ).await;
+                start_chat_turn(dispatcher, message, Some((fork_id, fork_name))).await;
             }
         }
     } else {
@@ -688,9 +723,8 @@ async fn start_chat_turn(
 ) {
     use crate::dispatcher::{ChatContext, ForkEntry, event_bus::DispatchEvent};
 
-    let (fork_id, fork_name) = fork_info.unwrap_or_else(|| {
-        ("main".to_string(), "Main".to_string())
-    });
+    let (fork_id, fork_name) =
+        fork_info.unwrap_or_else(|| ("main".to_string(), "Main".to_string()));
 
     // Seed fork_history: clone the last 50 entries from the dispatcher's chat history
     // when this is a named fork; empty for "main" entries.
@@ -714,9 +748,7 @@ async fn start_chat_turn(
 
     let d = Arc::clone(&dispatcher);
     let msg = message.clone();
-    let handle = tokio::spawn(async move {
-        d.chat(&msg, ctx).await
-    });
+    let handle = tokio::spawn(async move { d.chat(&msg, ctx).await });
 
     // Push onto the stack
     {
@@ -753,7 +785,9 @@ async fn start_chat_turn(
         }
     }
 
-    dispatcher.event_bus.emit(DispatchEvent::ChatResponse { content: result });
+    dispatcher
+        .event_bus
+        .emit(DispatchEvent::ChatResponse { content: result });
 }
 
 /// Handle "close_fork" command: pop the top fork (if not main) and emit ForkClosed.
@@ -770,12 +804,12 @@ async fn handle_close_fork(dispatcher: &Dispatcher) -> String {
         Some(entry) => {
             entry.abort_handle.abort();
             let id = entry.id.clone();
-            dispatcher.event_bus.emit(
-                crate::dispatcher::event_bus::DispatchEvent::ForkClosed {
+            dispatcher
+                .event_bus
+                .emit(crate::dispatcher::event_bus::DispatchEvent::ForkClosed {
                     id: id.clone(),
                     summary: "Closed by user".to_string(),
-                },
-            );
+                });
             format!("ok: fork {id} closed")
         }
         None => "noop: not in a fork".to_string(),
@@ -785,8 +819,7 @@ async fn handle_close_fork(dispatcher: &Dispatcher) -> String {
 /// Return the full chat history as a JSON array.
 async fn handle_chat_history(dispatcher: &Dispatcher) -> String {
     let history = dispatcher.chat_history.lock().await;
-    serde_json::to_string(&*history)
-        .unwrap_or_else(|_| "[]".to_string())
+    serde_json::to_string(&*history).unwrap_or_else(|_| "[]".to_string())
 }
 
 /// Handle `update_task <id> <json>` -- update a task's title/description on disk.
@@ -796,7 +829,10 @@ fn handle_update_task(args: &str) -> String {
         Ok(v) => v,
         Err(_) => return "error: invalid json".to_string(),
     };
-    let title = updates.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    let title = updates
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let desc = updates
         .get("description")
         .and_then(|v| if v.is_null() { None } else { v.as_str() })
@@ -825,7 +861,10 @@ fn handle_update_epic(args: &str) -> String {
         Ok(v) => v,
         Err(_) => return "error: invalid json".to_string(),
     };
-    let title = updates.get("title").and_then(|v| v.as_str()).map(str::to_string);
+    let title = updates
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
     let desc = updates
         .get("description")
         .and_then(|v| if v.is_null() { None } else { v.as_str() })
@@ -910,7 +949,16 @@ pub async fn ensure_running() -> Result<()> {
     } else {
         // Grab the journal logs so the user sees the actual failure reason
         let logs = std::process::Command::new("journalctl")
-            .args(["--user", "-u", "gitzi.service", "--no-pager", "-n", "20", "-o", "short"])
+            .args([
+                "--user",
+                "-u",
+                "gitzi.service",
+                "--no-pager",
+                "-n",
+                "20",
+                "-o",
+                "short",
+            ])
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
@@ -990,7 +1038,10 @@ fn install_systemd() -> Result<()> {
         .status()
         .ok();
 
-    info!("systemd user service installed at {}", service_path.display());
+    info!(
+        "systemd user service installed at {}",
+        service_path.display()
+    );
     Ok(())
 }
 
@@ -1109,8 +1160,8 @@ fn parse_chat_ctx(encoded: &str) -> (String, String) {
         Ok(p) => p,
         Err(_) => {
             // Fallback: treat the whole thing as a plain message
-            let message: String = serde_json::from_str(encoded)
-                .unwrap_or_else(|_| encoded.to_string());
+            let message: String =
+                serde_json::from_str(encoded).unwrap_or_else(|_| encoded.to_string());
             return (message, String::new());
         }
     };

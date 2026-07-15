@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
 use tower::ServiceExt; // for .oneshot()
 
@@ -130,7 +130,10 @@ async fn initialize_returns_correct_protocol_version() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"]["protocolVersion"], "2025-03-26");
     assert_eq!(body["result"]["serverInfo"]["name"], "gitzi");
-    assert!(body["error"].is_null(), "initialize should not return an error");
+    assert!(
+        body["error"].is_null(),
+        "initialize should not return an error"
+    );
 }
 
 #[tokio::test]
@@ -146,7 +149,10 @@ async fn notifications_initialized_is_accepted() {
     let (status, body) = post_mcp(app, req).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert!(body["error"].is_null(), "notification should not produce an error");
+    assert!(
+        body["error"].is_null(),
+        "notification should not produce an error"
+    );
 }
 
 #[tokio::test]
@@ -162,7 +168,10 @@ async fn unknown_method_returns_method_not_found() {
     let (status, body) = post_mcp(app, req).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["error"]["code"], -32601, "unknown method should return -32601");
+    assert_eq!(
+        body["error"]["code"], -32601,
+        "unknown method should return -32601"
+    );
     assert_eq!(body["id"], 99, "response id should match request id");
 }
 
@@ -217,8 +226,14 @@ async fn tools_list_entries_have_required_fields() {
     let tools = body["result"]["tools"].as_array().unwrap();
     for tool in tools {
         assert!(tool["name"].is_string(), "each tool must have a name");
-        assert!(tool["description"].is_string(), "each tool must have a description");
-        assert!(tool["inputSchema"].is_object(), "each tool must have an inputSchema");
+        assert!(
+            tool["description"].is_string(),
+            "each tool must have a description"
+        );
+        assert!(
+            tool["inputSchema"].is_object(),
+            "each tool must have an inputSchema"
+        );
     }
 }
 
@@ -314,7 +329,11 @@ async fn tools_call_missing_name_returns_invalid_params() {
 
     let (status, body) = post_mcp_authed(app, &token, req).await;
 
-    assert_eq!(status, StatusCode::OK, "HTTP status should be 200 for protocol errors");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "HTTP status should be 200 for protocol errors"
+    );
     assert_eq!(
         body["error"]["code"], -32602,
         "missing 'name' should return invalid params (-32602)"
@@ -339,9 +358,15 @@ async fn tools_call_unknown_tool_returns_internal_error() {
     let (status, body) = post_mcp_authed(app, &token, req).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["error"]["code"], -32603, "unknown tool should return -32603");
+    assert_eq!(
+        body["error"]["code"], -32603,
+        "unknown tool should return -32603"
+    );
     let msg = body["error"]["message"].as_str().unwrap_or("");
-    assert!(msg.contains("unknown tool"), "error should mention 'unknown tool', got: {msg}");
+    assert!(
+        msg.contains("unknown tool"),
+        "error should mention 'unknown tool', got: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -366,7 +391,10 @@ async fn tools_call_scope_mismatch_on_create_review_item_is_rejected() {
     let (status, body) = post_mcp_authed(app, &token, req).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["error"]["code"], -32603, "scope mismatch should return -32603");
+    assert_eq!(
+        body["error"]["code"], -32603,
+        "scope mismatch should return -32603"
+    );
     let msg = body["error"]["message"].as_str().unwrap_or("");
     assert!(
         msg.contains("task-a") || msg.contains("scoped to task"),
@@ -397,7 +425,10 @@ async fn tools_call_scope_mismatch_on_update_task_is_rejected() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["error"]["code"], -32603);
     let msg = body["error"]["message"].as_str().unwrap_or("");
-    assert!(msg.contains("task-a") || msg.contains("scoped to task"), "{msg}");
+    assert!(
+        msg.contains("task-a") || msg.contains("scoped to task"),
+        "{msg}"
+    );
 }
 
 #[tokio::test]
@@ -447,7 +478,10 @@ async fn create_review_item_missing_question_arg_returns_error() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["error"]["code"], -32603);
     let msg = body["error"]["message"].as_str().unwrap_or("");
-    assert!(msg.contains("question"), "error should mention missing 'question', got: {msg}");
+    assert!(
+        msg.contains("question"),
+        "error should mention missing 'question', got: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -473,7 +507,10 @@ async fn create_task_missing_title_returns_error() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["error"]["code"], -32603);
     let msg = body["error"]["message"].as_str().unwrap_or("");
-    assert!(msg.contains("title"), "error should mention missing 'title', got: {msg}");
+    assert!(
+        msg.contains("title"),
+        "error should mention missing 'title', got: {msg}"
+    );
 }
 
 #[tokio::test]

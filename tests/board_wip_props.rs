@@ -2,8 +2,8 @@
 // Feature: event-driven-dispatcher, Property 4: WIP limit enforcement
 // **Validates: Requirements 2.1, 2.2, 4.1, 4.2**
 
-use gitzi::dispatcher::board::{KanbanBoard, WipLimits};
 use gitzi::dispatcher::Column;
+use gitzi::dispatcher::board::{KanbanBoard, WipLimits};
 use gitzi::model::task::{Stage, Task};
 use proptest::prelude::*;
 

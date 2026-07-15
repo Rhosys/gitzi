@@ -1,6 +1,6 @@
+use chrono::Utc;
 use gitzi::model::{HistoryEntry, Stage, Task};
 use serde::{Deserialize, Serialize};
-use chrono::Utc;
 
 #[derive(Serialize, Deserialize)]
 struct StageWrapper {
@@ -17,9 +17,14 @@ fn stage_kebab_case_roundtrip() {
         (Stage::Done, "done"),
     ];
     for (stage, expected) in cases {
-        let wrapped = StageWrapper { stage: stage.clone() };
+        let wrapped = StageWrapper {
+            stage: stage.clone(),
+        };
         let serialized = toml::to_string(&wrapped).unwrap();
-        assert!(serialized.contains(expected), "expected '{expected}' in '{serialized}'");
+        assert!(
+            serialized.contains(expected),
+            "expected '{expected}' in '{serialized}'"
+        );
         let decoded: StageWrapper = toml::from_str(&serialized).unwrap();
         assert_eq!(decoded.stage, stage);
     }
@@ -111,7 +116,11 @@ fn history_entry_roundtrip_rejection() {
     let decoded: Task = toml::from_str(&toml_str).unwrap();
     assert_eq!(decoded.history.len(), 1);
     match &decoded.history[0] {
-        HistoryEntry::Rejection { feedback, returned_to, .. } => {
+        HistoryEntry::Rejection {
+            feedback,
+            returned_to,
+            ..
+        } => {
             assert_eq!(feedback, "Missing error handling for network timeout");
             assert_eq!(*returned_to, Stage::Coding);
         }
@@ -148,9 +157,18 @@ fn history_mixed_entries_roundtrip() {
     let toml_str = toml::to_string_pretty(&task).unwrap();
     let decoded: Task = toml::from_str(&toml_str).unwrap();
     assert_eq!(decoded.history.len(), 4);
-    assert!(matches!(&decoded.history[0], HistoryEntry::StageChange { .. }));
-    assert!(matches!(&decoded.history[1], HistoryEntry::Rejection { .. }));
-    assert!(matches!(&decoded.history[2], HistoryEntry::StageChange { .. }));
+    assert!(matches!(
+        &decoded.history[0],
+        HistoryEntry::StageChange { .. }
+    ));
+    assert!(matches!(
+        &decoded.history[1],
+        HistoryEntry::Rejection { .. }
+    ));
+    assert!(matches!(
+        &decoded.history[2],
+        HistoryEntry::StageChange { .. }
+    ));
     assert!(matches!(&decoded.history[3], HistoryEntry::Approval { .. }));
 }
 
@@ -168,9 +186,14 @@ fn new_column_stages_kebab_case_roundtrip() {
         (Stage::Deploying, "deploying"),
     ];
     for (stage, expected) in cases {
-        let wrapped = StageWrapper { stage: stage.clone() };
+        let wrapped = StageWrapper {
+            stage: stage.clone(),
+        };
         let serialized = toml::to_string(&wrapped).unwrap();
-        assert!(serialized.contains(expected), "expected '{expected}' in '{serialized}'");
+        assert!(
+            serialized.contains(expected),
+            "expected '{expected}' in '{serialized}'"
+        );
         let decoded: StageWrapper = toml::from_str(&serialized).unwrap();
         assert_eq!(decoded.stage, stage);
     }

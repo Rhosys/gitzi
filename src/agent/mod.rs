@@ -47,12 +47,16 @@ impl AgentBackend for PipelineAgent {
                     "Task: {}\n\nDescription: {}\n\nWork in the current directory. \
                      Read existing code first, then make changes. Run tests when done.",
                     task.title,
-                    task.description.as_deref().unwrap_or("No description provided."),
+                    task.description
+                        .as_deref()
+                        .unwrap_or("No description provided."),
                 );
 
                 match coding_agent::run(def, &task_prompt, &ctx.repo_root).await {
                     Ok(output) => Ok(AgentResult::Success { output }),
-                    Err(e) => Ok(AgentResult::Failure { output: e.to_string() }),
+                    Err(e) => Ok(AgentResult::Failure {
+                        output: e.to_string(),
+                    }),
                 }
             }
         }
@@ -66,7 +70,11 @@ impl AgentBackend for PipelineAgent {
 /// that exists but isn't `enabled` (discovered but not yet activated) is
 /// treated the same as no provider at all.
 pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
-    match def.provider.as_ref().and_then(|name| config.providers.get(name)) {
+    match def
+        .provider
+        .as_ref()
+        .and_then(|name| config.providers.get(name))
+    {
         Some(provider) if provider.enabled => {
             // System prompt comes from the hardcoded role default, not config.
             let role_prompt = AgentRole::all()
@@ -79,7 +87,10 @@ pub fn build_agent(config: &Config, def: &AgentDef) -> PipelineAgent {
                     provider.sso_start_url.clone().unwrap_or_default(),
                     provider.sso_account_id.clone().unwrap_or_default(),
                     provider.sso_role_name.clone().unwrap_or_default(),
-                    provider.model_id.clone().unwrap_or_else(|| def.model.clone()),
+                    provider
+                        .model_id
+                        .clone()
+                        .unwrap_or_else(|| def.model.clone()),
                     role_prompt,
                 )),
                 ProviderKind::OpenaiCompatible => PipelineAgent::Rig(RigAgent::new(
@@ -109,7 +120,10 @@ pub fn build_main_agent(config: &Config, def: &AgentDef) -> Box<dyn MainChatBack
                     provider.sso_start_url.clone().unwrap_or_default(),
                     provider.sso_account_id.clone().unwrap_or_default(),
                     provider.sso_role_name.clone().unwrap_or_default(),
-                    provider.model_id.clone().unwrap_or_else(|| def.model.clone()),
+                    provider
+                        .model_id
+                        .clone()
+                        .unwrap_or_else(|| def.model.clone()),
                     main_agent::default_system_prompt(),
                 ));
             }
@@ -134,9 +148,15 @@ mod tests {
     #[test]
     fn build_agent_without_provider_uses_coding_loop() {
         let config = Config::default();
-        let def = AgentDef { provider: None, ..AgentDef::default() };
+        let def = AgentDef {
+            provider: None,
+            ..AgentDef::default()
+        };
 
-        assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
+        assert!(matches!(
+            build_agent(&config, &def),
+            PipelineAgent::CodingLoop(_)
+        ));
     }
 
     #[test]
@@ -151,7 +171,10 @@ mod tests {
             )]),
             ..Config::default()
         };
-        let def = AgentDef { provider: Some("lmstudio".to_string()), ..AgentDef::default() };
+        let def = AgentDef {
+            provider: Some("lmstudio".to_string()),
+            ..AgentDef::default()
+        };
 
         assert!(matches!(build_agent(&config, &def), PipelineAgent::Rig(_)));
     }
@@ -159,9 +182,15 @@ mod tests {
     #[test]
     fn build_agent_with_unconfigured_provider_falls_back_to_coding_loop() {
         let config = Config::default();
-        let def = AgentDef { provider: Some("nonexistent".to_string()), ..AgentDef::default() };
+        let def = AgentDef {
+            provider: Some("nonexistent".to_string()),
+            ..AgentDef::default()
+        };
 
-        assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
+        assert!(matches!(
+            build_agent(&config, &def),
+            PipelineAgent::CodingLoop(_)
+        ));
     }
 
     #[test]
@@ -177,9 +206,15 @@ mod tests {
             )]),
             ..Config::default()
         };
-        let def = AgentDef { provider: Some("lmstudio".to_string()), ..AgentDef::default() };
+        let def = AgentDef {
+            provider: Some("lmstudio".to_string()),
+            ..AgentDef::default()
+        };
 
-        assert!(matches!(build_agent(&config, &def), PipelineAgent::CodingLoop(_)));
+        assert!(matches!(
+            build_agent(&config, &def),
+            PipelineAgent::CodingLoop(_)
+        ));
     }
 
     #[test]
@@ -199,8 +234,14 @@ mod tests {
             )]),
             ..Config::default()
         };
-        let def = AgentDef { provider: Some("bedrock".to_string()), ..AgentDef::default() };
+        let def = AgentDef {
+            provider: Some("bedrock".to_string()),
+            ..AgentDef::default()
+        };
 
-        assert!(matches!(build_agent(&config, &def), PipelineAgent::Bedrock(_)));
+        assert!(matches!(
+            build_agent(&config, &def),
+            PipelineAgent::Bedrock(_)
+        ));
     }
 }

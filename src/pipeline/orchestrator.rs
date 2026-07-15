@@ -1,12 +1,12 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::broadcast;
 use crate::config::Config;
 use crate::error::Result;
 use crate::model::Stage;
 use crate::pipeline::transitions::validate_transition;
-use crate::state::{reader, writer};
 use crate::state::watcher::StateEvent;
+use crate::state::{reader, writer};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::broadcast;
 
 /// Thin compatibility layer retained for the CLI `advance` command. All WIP
 /// enforcement and dispatch logic now lives in `src/dispatcher/mod.rs`.
@@ -18,7 +18,11 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     pub fn new(repo_root: PathBuf, config: Arc<Config>, tx: broadcast::Sender<StateEvent>) -> Self {
-        Self { repo_root, config, tx }
+        Self {
+            repo_root,
+            config,
+            tx,
+        }
     }
 
     /// Advance a task to a new stage. Validates the transition and persists the

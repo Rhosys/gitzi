@@ -1,6 +1,6 @@
-use std::path::PathBuf;
 use crate::error::Result;
 use crate::model::Task;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default)]
 pub struct RunContext {
@@ -26,6 +26,9 @@ pub enum AgentResult {
 }
 
 pub trait AgentBackend: Send + Sync {
-    fn run(&self, task: &Task, ctx: &RunContext)
-        -> impl std::future::Future<Output = Result<AgentResult>> + Send;
+    fn run(
+        &self,
+        task: &Task,
+        ctx: &RunContext,
+    ) -> impl std::future::Future<Output = Result<AgentResult>> + Send;
 }

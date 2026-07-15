@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use crate::error::Result;
+use std::path::PathBuf;
 
 /// Root of the global gitzi state: `~/.gitzi/`
 pub fn gitzi_home() -> PathBuf {

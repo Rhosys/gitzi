@@ -78,7 +78,10 @@ pub fn run() -> crate::error::Result<Config> {
 /// to the local `claude` CLI until the user explicitly activates a
 /// provider). Split out from `run()` so it can be tested without touching
 /// the real `~/.gitzi/` or `~/.aws/` on disk.
-fn build_config_from_discovery(providers: &[DiscoveredProvider], repo_paths: Vec<String>) -> Config {
+fn build_config_from_discovery(
+    providers: &[DiscoveredProvider],
+    repo_paths: Vec<String>,
+) -> Config {
     let mut config = Config::default();
 
     let mut overrides = std::collections::HashMap::new();
@@ -160,8 +163,7 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
     {
         let running = check_port_open(1234);
         let model_loaded = running && has_models_loaded("http://localhost:1234/v1");
-        let default_model = discover_lmstudio_model(path)
-            .or_else(|| Some("qwen3-8b".to_string()));
+        let default_model = discover_lmstudio_model(path).or_else(|| Some("qwen3-8b".to_string()));
         providers.push(DiscoveredProvider {
             name: "lmstudio".to_string(),
             kind: ProviderKind::OpenaiCompatible,
@@ -183,7 +185,8 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
             discover_ollama_model()
         } else {
             None
-        }.or_else(|| Some("qwen3:8b".to_string()));
+        }
+        .or_else(|| Some("qwen3:8b".to_string()));
         providers.push(DiscoveredProvider {
             name: "ollama".to_string(),
             kind: ProviderKind::OpenaiCompatible,
@@ -239,7 +242,13 @@ pub fn discover_providers() -> Vec<DiscoveredProvider> {
     // Sort: running+model first, then running-no-model, then installed-not-running
     providers.sort_by(|a, b| {
         let score = |p: &DiscoveredProvider| -> u8 {
-            if p.model_loaded { 2 } else if p.running { 1 } else { 0 }
+            if p.model_loaded {
+                2
+            } else if p.running {
+                1
+            } else {
+                0
+            }
         };
         score(b).cmp(&score(a)).then(a.name.cmp(&b.name))
     });
@@ -271,7 +280,10 @@ fn parse_aws_sso_sessions(path: &std::path::Path) -> Vec<(String, String, String
     let mut start_url = String::new();
     let mut region = String::new();
 
-    let flush = |current: &mut Option<String>, start_url: &mut String, region: &mut String, sessions: &mut Vec<(String, String, String)>| {
+    let flush = |current: &mut Option<String>,
+                 start_url: &mut String,
+                 region: &mut String,
+                 sessions: &mut Vec<(String, String, String)>| {
         if let Some(name) = current.take()
             && !start_url.is_empty()
         {
@@ -283,7 +295,10 @@ fn parse_aws_sso_sessions(path: &std::path::Path) -> Vec<(String, String, String
 
     for line in text.lines() {
         let line = line.trim();
-        if let Some(name) = line.strip_prefix("[sso-session ").and_then(|s| s.strip_suffix(']')) {
+        if let Some(name) = line
+            .strip_prefix("[sso-session ")
+            .and_then(|s| s.strip_suffix(']'))
+        {
             flush(&mut current, &mut start_url, &mut region, &mut sessions);
             current = Some(name.trim().to_string());
         } else if line.starts_with('[') {
@@ -354,9 +369,7 @@ pub fn ensure_model_loaded(provider: &DiscoveredProvider) -> bool {
                 .join(".lmstudio/bin/lms");
 
             // List downloaded models
-            let output = std::process::Command::new(&lms)
-                .args(["ls"])
-                .output();
+            let output = std::process::Command::new(&lms).args(["ls"]).output();
 
             if let Ok(out) = output {
                 let text = String::from_utf8_lossy(&out.stdout);
@@ -408,9 +421,7 @@ fn discover_lmstudio_model(lms_path: &std::path::Path) -> Option<String> {
     let mut in_llm_section = false;
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("LLM")
-            && (trimmed.contains("PARAMS") || trimmed.contains("Size"))
-        {
+        if trimmed.contains("LLM") && (trimmed.contains("PARAMS") || trimmed.contains("Size")) {
             in_llm_section = true;
             continue;
         }
@@ -491,7 +502,9 @@ pub fn discover_repo_paths() -> Vec<String> {
     found_parents.dedup();
     let mut minimal: Vec<PathBuf> = Vec::new();
     for candidate in &found_parents {
-        let already_covered = minimal.iter().any(|existing| candidate.starts_with(existing));
+        let already_covered = minimal
+            .iter()
+            .any(|existing| candidate.starts_with(existing));
         if !already_covered {
             // Remove any previously-added entries that this candidate covers
             minimal.retain(|existing| !existing.starts_with(candidate));
@@ -520,7 +533,11 @@ fn scan_for_repos(dir: &std::path::Path, depth: u32, parents: &mut Vec<PathBuf>)
         if !path.is_dir() {
             continue;
         }
-        if path.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(false) {
+        if path
+            .file_name()
+            .map(|n| n.to_string_lossy().starts_with('.'))
+            .unwrap_or(false)
+        {
             continue;
         }
         if path.join(".git").is_dir() {
@@ -570,7 +587,8 @@ fn check_port_open(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_millis(200),
-    ).is_ok()
+    )
+    .is_ok()
 }
 
 /// Write config to disk with section headers and discovered values.
@@ -582,24 +600,37 @@ pub fn write_config_with_comments(
 
     let mut out = String::new();
 
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "# gitzi configuration").unwrap();
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     writeln!(out).unwrap();
 
     // Kanban
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "# Kanban").unwrap();
     writeln!(
         out,
         "# Controls how many tasks can be active in each pipeline stage."
-    ).unwrap();
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "[wip_limits]").unwrap();
     for (col, val) in &config.wip_limits.overrides {
         writeln!(out, "{col} = {val}").unwrap();
@@ -608,23 +639,32 @@ pub fn write_config_with_comments(
     writeln!(out).unwrap();
 
     // Agents
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "# Agents").unwrap();
     writeln!(
         out,
         "# Each role handles one pipeline stage. Set model and provider only."
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         out,
         "# Empty by default: every role falls back to the local `claude` CLI."
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         out,
         "# Ask the main agent to activate a discovered provider below to wire it in."
-    ).unwrap();
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     for agent in &config.agents {
         writeln!(out, "[[agents]]").unwrap();
@@ -641,23 +681,32 @@ pub fn write_config_with_comments(
     writeln!(out).unwrap();
 
     // Providers
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "# Providers").unwrap();
     writeln!(
         out,
         "# Discovered LLM endpoints and cloud credentials. All start disabled —"
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         out,
         "# ask the main agent to activate the one(s) you want to use."
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(
         out,
         "# api_key, if set, is a keyring: pointer, not a plaintext secret."
-    ).unwrap();
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     for (name, provider) in &config.providers {
         writeln!(out, "[providers.{name}]").unwrap();
@@ -681,15 +730,22 @@ pub fn write_config_with_comments(
     writeln!(out).unwrap();
 
     // Repos
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "# Repos").unwrap();
     writeln!(
         out,
         "# Glob patterns for repo discovery + per-repo merge overrides."
-    ).unwrap();
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out).unwrap();
     write!(out, "repo_paths = [").unwrap();
     if config.repo_paths.is_empty() {
@@ -706,18 +762,35 @@ pub fn write_config_with_comments(
     // Default merge settings
     let strategy_str = toml::to_string(&config.default_merge_strategy)
         .unwrap_or_else(|_| "\"ff-only\"".to_string());
-    writeln!(out, "# Default merge strategy and main branch for all repos.").unwrap();
+    writeln!(
+        out,
+        "# Default merge strategy and main branch for all repos."
+    )
+    .unwrap();
     writeln!(out, "# Individual repos can override below in [[repos]].").unwrap();
     writeln!(out, "default_merge_strategy = {strategy_str}").unwrap();
-    writeln!(out, "default_main_branch = \"{}\"", config.default_main_branch).unwrap();
+    writeln!(
+        out,
+        "default_main_branch = \"{}\"",
+        config.default_main_branch
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     // merge strategy docs + commented repo examples
     writeln!(out, "# merge_strategy options:").unwrap();
     writeln!(out, "#   ff-only        — fast-forward merge into main.").unwrap();
-    writeln!(out, "#   gitzi-branch   — merge into a local \"gitzi\" branch.").unwrap();
+    writeln!(
+        out,
+        "#   gitzi-branch   — merge into a local \"gitzi\" branch."
+    )
+    .unwrap();
     writeln!(out, "#   merge-commit   — create a merge commit on main.").unwrap();
-    writeln!(out, "#   pull-request   — push + create PR via gh/glab CLI.").unwrap();
+    writeln!(
+        out,
+        "#   pull-request   — push + create PR via gh/glab CLI."
+    )
+    .unwrap();
     writeln!(out, "#   push-to-remote — push branch, no merge or PR.").unwrap();
     writeln!(out, "#").unwrap();
     writeln!(out, "# Uncomment and edit to control per-repo overrides:").unwrap();
@@ -736,7 +809,9 @@ pub fn write_config_with_comments(
         writeln!(out, "# main_branch = \"main\"").unwrap();
     } else {
         for (i, repo) in example_repos.iter().take(2).enumerate() {
-            if i > 0 { writeln!(out, "#").unwrap(); }
+            if i > 0 {
+                writeln!(out, "#").unwrap();
+            }
             writeln!(out, "# [[repos]]").unwrap();
             writeln!(out, "# path = \"{}\"", repo.display()).unwrap();
             writeln!(out, "# merge_strategy = \"ff-only\"").unwrap();
@@ -749,8 +824,8 @@ pub fn write_config_with_comments(
     for repo in &config.repos {
         writeln!(out, "[[repos]]").unwrap();
         writeln!(out, "path = \"{}\"", repo.path).unwrap();
-        let rs = toml::to_string(&repo.merge_strategy)
-            .unwrap_or_else(|_| "\"ff-only\"".to_string());
+        let rs =
+            toml::to_string(&repo.merge_strategy).unwrap_or_else(|_| "\"ff-only\"".to_string());
         writeln!(out, "merge_strategy = {rs}").unwrap();
         if let Some(ref branch) = repo.main_branch {
             writeln!(out, "main_branch = \"{branch}\"").unwrap();
@@ -760,13 +835,23 @@ pub fn write_config_with_comments(
     writeln!(out).unwrap();
 
     // General
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out, "# General").unwrap();
-    writeln!(out, "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        .unwrap();
+    writeln!(
+        out,
+        "# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    .unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "# Set to false to re-trigger the onboarding flow on next daemon restart.").unwrap();
+    writeln!(
+        out,
+        "# Set to false to re-trigger the onboarding flow on next daemon restart."
+    )
+    .unwrap();
     writeln!(out, "onboarding_complete = {}", config.onboarding_complete).unwrap();
     writeln!(out).unwrap();
 
@@ -817,10 +902,15 @@ mod tests {
             Some("us-east-1")
         );
         assert_eq!(
-            config.providers["bedrock-mycompany"].sso_start_url.as_deref(),
+            config.providers["bedrock-mycompany"]
+                .sso_start_url
+                .as_deref(),
             Some("https://mycompany.awsapps.com/start")
         );
-        assert_eq!(config.providers["lmstudio"].api_url, "http://localhost:1234/v1");
+        assert_eq!(
+            config.providers["lmstudio"].api_url,
+            "http://localhost:1234/v1"
+        );
     }
 
     #[test]

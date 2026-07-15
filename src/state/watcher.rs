@@ -1,5 +1,5 @@
-use std::path::Path;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use std::path::Path;
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone)]

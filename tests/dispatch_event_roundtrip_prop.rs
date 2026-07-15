@@ -42,35 +42,33 @@ fn arb_dispatch_event() -> impl Strategy<Value = DispatchEvent> {
     prop_oneof![
         ".{1,100}".prop_map(|task_id| DispatchEvent::TaskCreated { task_id }),
         (".{1,100}", arb_column(), arb_column())
-            .prop_map(|(task_id, from, to)| DispatchEvent::TaskStageChanged {
-                task_id,
-                from,
-                to,
-            }),
-        (".{1,100}", arb_column())
-            .prop_map(|(task_id, target_column)| DispatchEvent::HumanApprovalReceived {
+            .prop_map(|(task_id, from, to)| DispatchEvent::TaskStageChanged { task_id, from, to }),
+        (".{1,100}", arb_column()).prop_map(|(task_id, target_column)| {
+            DispatchEvent::HumanApprovalReceived {
                 task_id,
                 target_column,
-            }),
-        (".{1,100}", arb_column(), ".{1,200}")
-            .prop_map(|(task_id, returned_to, feedback)| {
-                DispatchEvent::HumanRejectionReceived {
-                    task_id,
-                    returned_to,
-                    feedback,
-                }
-            }),
-        (".{1,100}", arb_agent_role())
-            .prop_map(|(task_id, agent_role)| DispatchEvent::AgentCompleted {
+            }
+        }),
+        (".{1,100}", arb_column(), ".{1,200}").prop_map(|(task_id, returned_to, feedback)| {
+            DispatchEvent::HumanRejectionReceived {
+                task_id,
+                returned_to,
+                feedback,
+            }
+        }),
+        (".{1,100}", arb_agent_role()).prop_map(|(task_id, agent_role)| {
+            DispatchEvent::AgentCompleted {
                 task_id,
                 agent_role,
-            }),
-        (".{1,100}", arb_agent_role(), ".{1,300}")
-            .prop_map(|(task_id, agent_role, question)| DispatchEvent::AgentBlocked {
+            }
+        }),
+        (".{1,100}", arb_agent_role(), ".{1,300}").prop_map(|(task_id, agent_role, question)| {
+            DispatchEvent::AgentBlocked {
                 task_id,
                 agent_role,
                 question,
-            }),
+            }
+        }),
         Just(DispatchEvent::BootComplete),
     ]
 }

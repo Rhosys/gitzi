@@ -6,8 +6,8 @@
 // with the lowest priority number. This tests the board's sorting invariant that
 // the agent loop relies on.
 
-use gitzi::dispatcher::board::KanbanBoard;
 use gitzi::dispatcher::Column;
+use gitzi::dispatcher::board::KanbanBoard;
 use gitzi::model::task::{Stage, Task};
 use proptest::prelude::*;
 

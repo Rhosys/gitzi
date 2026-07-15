@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
-use git2::{Repository, Signature};
 use crate::config::MergeStrategy;
 use crate::error::{GitziError, Result};
+use git2::{Repository, Signature};
+use std::path::{Path, PathBuf};
 
 pub fn open_repo(path: &Path) -> Result<Repository> {
     Ok(Repository::discover(path)?)
@@ -23,7 +23,12 @@ impl TaskWorktree {
     /// Create a linked worktree at `~/.gitzi/tmp/tasks/<task_id>/worktrees/<repo_slug>/`
     /// on `branch_name`, creating the branch off HEAD if it does not yet exist.
     /// Idempotent: if the worktree is already registered, returns it as-is.
-    pub fn create(repo: &Repository, task_id: &str, branch_name: &str, repo_slug: &str) -> Result<Self> {
+    pub fn create(
+        repo: &Repository,
+        task_id: &str,
+        branch_name: &str,
+        repo_slug: &str,
+    ) -> Result<Self> {
         let repo_root = repo
             .workdir()
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
@@ -34,7 +39,11 @@ impl TaskWorktree {
 
         // Idempotent: if already registered (e.g. after restart or partial failure), reuse it.
         if repo.find_worktree(&name).is_ok() {
-            return Ok(Self { path: wt_path, name, repo_root });
+            return Ok(Self {
+                path: wt_path,
+                name,
+                repo_root,
+            });
         }
 
         // Create the parent dir only — git2 requires the worktree target dir to not yet exist.
@@ -43,7 +52,10 @@ impl TaskWorktree {
         }
 
         // Ensure the branch exists before attaching a worktree to it.
-        if repo.find_branch(branch_name, git2::BranchType::Local).is_err() {
+        if repo
+            .find_branch(branch_name, git2::BranchType::Local)
+            .is_err()
+        {
             let head_commit = repo.head()?.peel_to_commit()?;
             repo.branch(branch_name, &head_commit, false)?;
         }
@@ -53,18 +65,31 @@ impl TaskWorktree {
         opts.reference(Some(&reference));
         repo.worktree(&name, &wt_path, Some(&opts))?;
 
-        Ok(Self { path: wt_path, name, repo_root })
+        Ok(Self {
+            path: wt_path,
+            name,
+            repo_root,
+        })
     }
 
     /// Open an existing worktree by task ID (e.g. after a restart).
-    pub fn open(repo: &Repository, task_id: &str, branch_name: &str, repo_slug: &str) -> Result<Self> {
+    pub fn open(
+        repo: &Repository,
+        task_id: &str,
+        branch_name: &str,
+        repo_slug: &str,
+    ) -> Result<Self> {
         let repo_root = repo
             .workdir()
             .ok_or_else(|| GitziError::Git(git2::Error::from_str("bare repo")))?
             .to_path_buf();
         let name = worktree_name(branch_name);
         let path = crate::state::reader::task_worktree_path(task_id, repo_slug);
-        Ok(Self { path, name, repo_root })
+        Ok(Self {
+            path,
+            name,
+            repo_root,
+        })
     }
 
     /// Commit everything staged in the worktree using direct object writes —
@@ -112,9 +137,7 @@ fn worktree_name(branch_name: &str) -> String {
 
 pub fn get_diff(repo: &Repository, branch_name: &str) -> Result<String> {
     let branch_ref = format!("refs/heads/{branch_name}");
-    let branch_commit = repo
-        .find_reference(&branch_ref)?
-        .peel_to_commit()?;
+    let branch_commit = repo.find_reference(&branch_ref)?.peel_to_commit()?;
 
     let merge_base_oid = find_merge_base(repo, branch_name)?;
     let base_tree = repo.find_commit(merge_base_oid)?.tree()?;
@@ -182,19 +205,13 @@ pub fn merge_task_branch(
     match strategy {
         MergeStrategy::FfOnly => merge_ff_only(repo_path, task_branch, main_branch),
         MergeStrategy::GitziBranch => merge_into_gitzi_branch(repo_path, task_branch),
-        MergeStrategy::MergeCommit => {
-            merge_with_commit(repo_path, task_branch, main_branch)
-        }
+        MergeStrategy::MergeCommit => merge_with_commit(repo_path, task_branch, main_branch),
         MergeStrategy::PullRequest => create_pull_request(repo_path, task_branch, main_branch),
         MergeStrategy::PushToRemote => push_to_remote(repo_path, task_branch),
     }
 }
 
-fn merge_ff_only(
-    repo_path: &Path,
-    task_branch: &str,
-    main_branch: &str,
-) -> Result<MergeOutcome> {
+fn merge_ff_only(repo_path: &Path, task_branch: &str, main_branch: &str) -> Result<MergeOutcome> {
     let repo = Repository::discover(repo_path)?;
 
     let task_ref = format!("refs/heads/{task_branch}");
@@ -260,16 +277,11 @@ fn merge_with_commit(
             "merge of '{task_branch}' into '{main_branch}' failed \
              — conflicts likely"
         ))),
-        Err(e) => Err(GitziError::AgentFailed(format!(
-            "git merge failed: {e}"
-        ))),
+        Err(e) => Err(GitziError::AgentFailed(format!("git merge failed: {e}"))),
     }
 }
 
-fn push_to_remote(
-    repo_path: &Path,
-    task_branch: &str,
-) -> Result<MergeOutcome> {
+fn push_to_remote(repo_path: &Path, task_branch: &str) -> Result<MergeOutcome> {
     let status = std::process::Command::new("git")
         .args(["push", "-u", "origin", task_branch])
         .current_dir(repo_path)
@@ -282,9 +294,7 @@ fn push_to_remote(
         Ok(_) => Ok(MergeOutcome::FfFailed(format!(
             "push of '{task_branch}' to remote failed"
         ))),
-        Err(e) => Err(GitziError::AgentFailed(format!(
-            "git push failed: {e}"
-        ))),
+        Err(e) => Err(GitziError::AgentFailed(format!("git push failed: {e}"))),
     }
 }
 
@@ -406,7 +416,13 @@ fn create_pull_request(
     // Try gh pr create (GitHub CLI)
     let gh_result = std::process::Command::new("gh")
         .args([
-            "pr", "create", "--fill", "--head", task_branch, "--base", main_branch,
+            "pr",
+            "create",
+            "--fill",
+            "--head",
+            task_branch,
+            "--base",
+            main_branch,
         ])
         .current_dir(repo_path)
         .output();
@@ -422,8 +438,13 @@ fn create_pull_request(
     // Try glab mr create (GitLab CLI)
     let glab_result = std::process::Command::new("glab")
         .args([
-            "mr", "create", "--fill", "--source-branch", task_branch,
-            "--target-branch", main_branch,
+            "mr",
+            "create",
+            "--fill",
+            "--source-branch",
+            task_branch,
+            "--target-branch",
+            main_branch,
         ])
         .current_dir(repo_path)
         .output();

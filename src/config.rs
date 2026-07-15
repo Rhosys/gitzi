@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::path::Path;
-use serde::{Deserialize, Serialize};
-use tracing::warn;
 use crate::dispatcher::AgentRole;
 use crate::error::{GitziError, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::Path;
+use tracing::warn;
 
 /// Merge strategy for completed tasks.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -176,17 +176,22 @@ impl Default for AgentDef {
     }
 }
 
-fn default_model() -> String { String::new() }
+fn default_model() -> String {
+    String::new()
+}
 
-fn default_main_branch() -> String { "main".to_string() }
+fn default_main_branch() -> String {
+    "main".to_string()
+}
 
 fn default_providers() -> HashMap<String, ProviderDef> {
-    HashMap::from([
-        ("lmstudio".to_string(), ProviderDef {
+    HashMap::from([(
+        "lmstudio".to_string(),
+        ProviderDef {
             api_url: "http://localhost:1234/v1".to_string(),
             ..ProviderDef::default()
-        }),
-    ])
+        },
+    )])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,8 +273,7 @@ impl Config {
         let mut config: Self = toml::from_str(&text)?;
 
         // Strip unknown roles silently and rewrite config if changed.
-        let mut valid_roles: Vec<String> =
-            AgentRole::all().iter().map(|r| r.to_string()).collect();
+        let mut valid_roles: Vec<String> = AgentRole::all().iter().map(|r| r.to_string()).collect();
         valid_roles.push("main".to_string());
         valid_roles.push("verifier".to_string());
         let before_len = config.agents.len();
@@ -305,7 +309,8 @@ impl Config {
     fn migrate_secrets(&mut self) -> bool {
         let mut changed = false;
         for (name, provider) in self.providers.iter_mut() {
-            if provider.kind != ProviderKind::OpenaiCompatible || provider.api_key.is_empty()
+            if provider.kind != ProviderKind::OpenaiCompatible
+                || provider.api_key.is_empty()
                 || crate::secrets::is_pointer(&provider.api_key)
             {
                 continue;
@@ -331,8 +336,6 @@ impl Config {
         }
         crate::bootstrap::write_config_with_comments(&path, self)
     }
-
-
 
     /// Validate config on load. Returns error for provider references that don't exist
     /// or unknown WIP column overrides.
@@ -366,14 +369,14 @@ impl Config {
             role: role.to_string(),
             // Resolution: agent model → main's model → provider's default_model → empty
             // (empty triggers runtime query at call time)
-            model: main.map(|m| m.model.clone())
-                .unwrap_or_else(|| {
-                    provider_ref
-                        .and_then(|name| self.providers.get(name))
-                        .and_then(|p| p.default_model.clone())
-                        .unwrap_or_default()
-                }),
-            api_url: main.and_then(|m| m.api_url.clone())
+            model: main.map(|m| m.model.clone()).unwrap_or_else(|| {
+                provider_ref
+                    .and_then(|name| self.providers.get(name))
+                    .and_then(|p| p.default_model.clone())
+                    .unwrap_or_default()
+            }),
+            api_url: main
+                .and_then(|m| m.api_url.clone())
                 .or(Some("http://localhost:1234/v1".to_string())),
             provider: provider_ref.cloned(),
         }
@@ -520,7 +523,8 @@ repo_paths = []
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # General
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"#.to_string()
+"#
+    .to_string()
 }
 
 #[cfg(test)]
@@ -533,9 +537,14 @@ mod tests {
         let text = render_scaffold_toml();
         let config: Config = toml::from_str(&text)
             .unwrap_or_else(|e| panic!("scaffold failed to parse: {e}\n\n{text}"));
-        config.validate().expect("scaffold config failed validate()");
+        config
+            .validate()
+            .expect("scaffold config failed validate()");
         assert!(config.providers.contains_key("lmstudio"));
-        assert!(!config.agents.is_empty(), "scaffold should include agent entries");
+        assert!(
+            !config.agents.is_empty(),
+            "scaffold should include agent entries"
+        );
         let roles: Vec<&str> = config.agents.iter().map(|a| a.role.as_str()).collect();
         assert!(roles.contains(&"main"));
     }
@@ -605,7 +614,9 @@ mod tests {
             ..Config::default()
         };
 
-        let err = config.validate().expect_err("unknown provider should be rejected");
+        let err = config
+            .validate()
+            .expect_err("unknown provider should be rejected");
         assert!(err.to_string().contains("nonexistent"));
     }
 
@@ -627,7 +638,9 @@ mod tests {
             ..Config::default()
         };
 
-        config.validate().expect("known provider reference should be accepted");
+        config
+            .validate()
+            .expect("known provider reference should be accepted");
     }
 
     #[test]
@@ -673,7 +686,10 @@ mod tests {
         let provider = parsed.providers.get("bedrock").unwrap();
         assert_eq!(provider.kind, ProviderKind::Bedrock);
         assert_eq!(provider.region.as_deref(), Some("us-east-1"));
-        assert_eq!(provider.sso_start_url.as_deref(), Some("https://example.awsapps.com/start"));
+        assert_eq!(
+            provider.sso_start_url.as_deref(),
+            Some("https://example.awsapps.com/start")
+        );
         assert!(!provider.enabled);
     }
 

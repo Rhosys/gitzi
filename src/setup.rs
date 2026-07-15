@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bootstrap::{discover_providers, DiscoveredProvider};
+use crate::bootstrap::{DiscoveredProvider, discover_providers};
 use crate::config::{Config, ProviderDef, ProviderKind};
 
 /// A provider candidate offered to the user during setup. This is the
@@ -67,7 +67,10 @@ pub enum SetupState {
     NeedsProvider { candidates: Vec<ProviderCandidate> },
     /// The scan found nothing, or an activation failed. Every error is listed;
     /// `can_rescan` tells the frontend to offer a re-scan.
-    Error { messages: Vec<String>, can_rescan: bool },
+    Error {
+        messages: Vec<String>,
+        can_rescan: bool,
+    },
     /// A valid control-plane provider exists; the app is usable.
     Ready,
 }
@@ -76,7 +79,11 @@ pub enum SetupState {
 fn main_provider_enabled(config: &Config) -> bool {
     let def = config.resolve_agent("main");
     match def.provider {
-        Some(name) => config.providers.get(&name).map(|d| d.enabled).unwrap_or(false),
+        Some(name) => config
+            .providers
+            .get(&name)
+            .map(|d| d.enabled)
+            .unwrap_or(false),
         None => false,
     }
 }
@@ -84,7 +91,11 @@ fn main_provider_enabled(config: &Config) -> bool {
 /// Is the distinguished fallback provider set and enabled?
 fn fallback_enabled(config: &Config) -> bool {
     match &config.fallback_provider {
-        Some(name) => config.providers.get(name).map(|d| d.enabled).unwrap_or(false),
+        Some(name) => config
+            .providers
+            .get(name)
+            .map(|d| d.enabled)
+            .unwrap_or(false),
         None => false,
     }
 }
@@ -199,9 +210,11 @@ pub async fn activate(
     account_id: Option<String>,
     role_name: Option<String>,
 ) -> anyhow::Result<ActivationOutcome> {
-    let mut provider = config.providers.get(name).cloned().ok_or_else(|| {
-        anyhow::anyhow!("no provider named '{name}' — run a rescan first")
-    })?;
+    let mut provider = config
+        .providers
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("no provider named '{name}' — run a rescan first"))?;
 
     if provider.kind == ProviderKind::OpenaiCompatible {
         provider.enabled = true;
@@ -218,12 +231,14 @@ pub async fn activate(
     }
 
     // Bedrock: AWS SSO login → account → role → validate.
-    let region = provider.region.clone().ok_or_else(|| {
-        anyhow::anyhow!("provider '{name}' has no AWS region configured")
-    })?;
-    let start_url = provider.sso_start_url.clone().ok_or_else(|| {
-        anyhow::anyhow!("provider '{name}' has no sso_start_url configured")
-    })?;
+    let region = provider
+        .region
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("provider '{name}' has no AWS region configured"))?;
+    let start_url = provider
+        .sso_start_url
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("provider '{name}' has no sso_start_url configured"))?;
 
     let token = match crate::aws_sso::load_token(&start_url) {
         Some(t) => t,
@@ -240,7 +255,12 @@ pub async fn activate(
         }
         let listing = accounts
             .iter()
-            .map(|a| format!("- {} ({}) <{}>", a.account_id, a.account_name, a.email_address))
+            .map(|a| {
+                format!(
+                    "- {} ({}) <{}>",
+                    a.account_id, a.account_name, a.email_address
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         return Ok(ActivationOutcome::NeedsMoreInput {

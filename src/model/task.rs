@@ -241,8 +241,8 @@ mod tests {
     /// Generate a new-format ID: 22-char base64url prefix + hyphen + 3-word slug.
     fn arb_new_id() -> impl Strategy<Value = String> {
         prop::array::uniform16(prop::num::u8::ANY).prop_map(|bytes| {
-            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
             use base64::Engine;
+            use base64::engine::general_purpose::URL_SAFE_NO_PAD;
             let b64 = URL_SAFE_NO_PAD.encode(bytes);
             format!("{b64}-ace-box-fin")
         })

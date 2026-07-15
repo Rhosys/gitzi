@@ -1,12 +1,12 @@
+use super::backend::{AgentBackend, AgentResult, RunContext};
+use super::prompt::{DEFAULT_PREAMBLE, build_task_content};
+use crate::aws_sso::SsoCredentialsProvider;
+use crate::error::{GitziError, Result};
+use crate::model::Task;
 use aws_config::BehaviorVersion;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig_bedrock::client::Client;
-use crate::aws_sso::SsoCredentialsProvider;
-use crate::error::{GitziError, Result};
-use crate::model::Task;
-use super::backend::{AgentBackend, AgentResult, RunContext};
-use super::prompt::{build_task_content, DEFAULT_PREAMBLE};
 
 /// Runs a pipeline agent against AWS Bedrock, authenticating via
 /// [`SsoCredentialsProvider`] — credentials are handed to the AWS SDK
@@ -61,7 +61,8 @@ impl AgentBackend for BedrockAgent {
             .preamble(self.system_prompt.as_deref().unwrap_or(DEFAULT_PREAMBLE))
             .build();
 
-        let prompt = build_task_content(task, ctx.resume_summary.as_deref(), &ctx.answered_questions);
+        let prompt =
+            build_task_content(task, ctx.resume_summary.as_deref(), &ctx.answered_questions);
 
         let response: String = agent
             .prompt(prompt.as_str())

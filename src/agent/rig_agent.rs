@@ -1,10 +1,10 @@
+use super::backend::{AgentBackend, AgentResult, RunContext};
+use super::prompt::{DEFAULT_PREAMBLE, build_task_content};
+use crate::error::{GitziError, Result};
+use crate::model::Task;
 use rig::client::CompletionClient;
 use rig::completion::Prompt;
 use rig::providers::openai;
-use crate::error::{GitziError, Result};
-use crate::model::Task;
-use super::backend::{AgentBackend, AgentResult, RunContext};
-use super::prompt::{build_task_content, DEFAULT_PREAMBLE};
 
 /// Runs a pipeline agent against an OpenAI-compatible chat-completions endpoint
 /// (LM Studio, or anything else speaking the same wire format) via `rig`.
@@ -48,7 +48,8 @@ impl AgentBackend for RigAgent {
             .preamble(self.system_prompt.as_deref().unwrap_or(DEFAULT_PREAMBLE))
             .build();
 
-        let prompt = build_task_content(task, ctx.resume_summary.as_deref(), &ctx.answered_questions);
+        let prompt =
+            build_task_content(task, ctx.resume_summary.as_deref(), &ctx.answered_questions);
 
         let response: String = agent
             .prompt(prompt.as_str())

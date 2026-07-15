@@ -42,9 +42,7 @@ fn arb_stage() -> impl Strategy<Value = Stage> {
 /// round-trip equality.
 fn arb_datetime() -> impl Strategy<Value = DateTime<Utc>> {
     // Range: 2020-01-01 to 2030-01-01 (seconds)
-    (1_577_836_800i64..1_893_456_000i64).prop_map(|secs| {
-        Utc.timestamp_opt(secs, 0).unwrap()
-    })
+    (1_577_836_800i64..1_893_456_000i64).prop_map(|secs| Utc.timestamp_opt(secs, 0).unwrap())
 }
 
 /// Generate an arbitrary note (Option<String>). Avoid TOML-breaking characters
@@ -66,21 +64,19 @@ fn arb_feedback() -> impl Strategy<Value = String> {
 fn arb_history_entry() -> impl Strategy<Value = HistoryEntry> {
     prop_oneof![
         // StageChange
-        (arb_stage(), arb_stage(), arb_datetime(), arb_note()).prop_map(
-            |(from, to, at, note)| HistoryEntry::StageChange { from, to, at, note }
-        ),
+        (arb_stage(), arb_stage(), arb_datetime(), arb_note())
+            .prop_map(|(from, to, at, note)| HistoryEntry::StageChange { from, to, at, note }),
         // Approval
-        (arb_datetime(), arb_stage()).prop_map(|(at, target_stage)| {
-            HistoryEntry::Approval { at, target_stage }
-        }),
+        (arb_datetime(), arb_stage())
+            .prop_map(|(at, target_stage)| { HistoryEntry::Approval { at, target_stage } }),
         // Rejection
-        (arb_datetime(), arb_feedback(), arb_stage()).prop_map(
-            |(at, feedback, returned_to)| HistoryEntry::Rejection {
+        (arb_datetime(), arb_feedback(), arb_stage()).prop_map(|(at, feedback, returned_to)| {
+            HistoryEntry::Rejection {
                 at,
                 feedback,
                 returned_to,
             }
-        ),
+        }),
     ]
 }
 

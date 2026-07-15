@@ -5,10 +5,10 @@
 // build it. Candidate tools: web_search, git_diff, git_log, run_tests,
 // semantic_search, ask_human.
 
-use std::path::{Path, PathBuf};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
-use crate::agent::main_agent::{OaiTool, OaiFunctionDef};
+use crate::agent::main_agent::{OaiFunctionDef, OaiTool};
 
 /// Build the tool list for the coding agent.
 pub fn coding_agent_tools() -> Vec<OaiTool> {
@@ -172,11 +172,7 @@ pub fn coding_agent_tools() -> Vec<OaiTool> {
 
 /// Execute a coding tool call. Returns the result.
 /// `worktree_root` is the sandbox — all paths are resolved relative to it.
-pub fn execute_tool(
-    name: &str,
-    args: &serde_json::Value,
-    worktree_root: &Path,
-) -> ToolResult {
+pub fn execute_tool(name: &str, args: &serde_json::Value, worktree_root: &Path) -> ToolResult {
     match name {
         "bash" => exec_bash(args, worktree_root),
         "read_file" => exec_read_file(args, worktree_root),
@@ -185,9 +181,10 @@ pub fn execute_tool(
         "list_dir" => exec_list_dir(args, worktree_root),
         "grep" => exec_grep(args, worktree_root),
         // gitzi tools are handled by the dispatcher, not here
-        "gitzi_create_review_item" | "gitzi_park_task" | "gitzi_create_task" | "gitzi_block_task" => {
-            ToolResult::DelegateToDispatcher
-        }
+        "gitzi_create_review_item"
+        | "gitzi_park_task"
+        | "gitzi_create_task"
+        | "gitzi_block_task" => ToolResult::DelegateToDispatcher,
         other => ToolResult::UnknownTool(other.to_string()),
     }
 }
@@ -328,9 +325,9 @@ fn exec_edit_file(args: &serde_json::Value, root: &Path) -> ToolResult {
         return ToolResult::Output("error: old_str not found in file".to_string());
     }
     if count > 1 {
-        return ToolResult::Output(
-            format!("error: old_str found {count} times -- must be unique"),
-        );
+        return ToolResult::Output(format!(
+            "error: old_str found {count} times -- must be unique"
+        ));
     }
     let new_content = content.replacen(old_str, new_str, 1);
     match std::fs::write(&path, &new_content) {

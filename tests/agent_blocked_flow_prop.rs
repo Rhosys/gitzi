@@ -8,10 +8,10 @@
 
 use std::sync::Arc;
 
+use gitzi::dispatcher::AgentRole;
 use gitzi::dispatcher::agent_pool::AgentHandle;
 use gitzi::dispatcher::event_bus::{DispatchEvent, EventBus};
 use gitzi::dispatcher::review_queue::{HumanReviewItem, HumanReviewQueue, ReviewItemKind};
-use gitzi::dispatcher::AgentRole;
 use gitzi::state::review::{PersistedReviewItem, PersistedReviewKind};
 use proptest::prelude::*;
 use tokio::sync::Mutex;
