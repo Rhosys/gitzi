@@ -85,6 +85,14 @@
 - [ ] As a developer, switch MainAgent to `stream: true` and consume SSE token events
       for progress tracking (not for word-by-word display)
 
+### TUI — Input field + thinking indicator
+
+- [ ] Fix: pasting into the input field is slow (likely per-char redraw — batch paste events)
+- [ ] Fix: remove `...` from input field — the input area is exclusively for user text
+- [ ] After user submits (Enter), clear the input field immediately and show a spinner
+      in the chat messages area as a pending assistant bubble (e.g. `⠋ thinking...`)
+- [ ] The spinner animates until the response arrives, then is replaced by the actual text
+
 ---
 
 ## Context threading
