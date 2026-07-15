@@ -2,15 +2,18 @@ mod app;
 mod daemon_client;
 mod ui;
 
+use ratatui::crossterm::{
+    cursor::Show,
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io::{self, stdout};
 use std::time::Duration;
-use ratatui::crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-    cursor::Show,
-};
-use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
 
 use crate::error::Result;
@@ -20,7 +23,7 @@ use app::{App, DaemonCommand, DaemonMessage, Panel};
 pub async fn run_async() -> Result<()> {
     enable_raw_mode()?;
     let mut out = stdout();
-    execute!(out, EnterAlternateScreen)?;
+    execute!(out, EnterAlternateScreen, EnableBracketedPaste)?;
 
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
@@ -29,7 +32,12 @@ pub async fn run_async() -> Result<()> {
 
     // Always restore terminal
     let _ = disable_raw_mode();
-    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, Show);
+    let _ = execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste,
+        Show
+    );
     let _ = terminal.show_cursor();
 
     result
@@ -40,9 +48,7 @@ pub fn run(_repo_root: std::path::PathBuf) -> Result<()> {
     let rt = tokio::runtime::Handle::try_current();
     match rt {
         Ok(handle) => {
-            std::thread::scope(|s| {
-                s.spawn(|| handle.block_on(run_async())).join().unwrap()
-            })
+            std::thread::scope(|s| s.spawn(|| handle.block_on(run_async())).join().unwrap())
         }
         Err(_) => {
             let rt = tokio::runtime::Runtime::new()?;
@@ -51,9 +57,7 @@ pub fn run(_repo_root: std::path::PathBuf) -> Result<()> {
     }
 }
 
-async fn run_event_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> Result<()> {
+async fn run_event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<DaemonCommand>();
     let mut msg_rx = daemon_client::spawn(cmd_rx);
     let mut app = App::new(cmd_tx);
@@ -110,6 +114,18 @@ async fn run_event_loop(
                 DaemonMessage::SetupMessage(msg) => {
                     app.setup_message = Some(msg);
                 }
+                DaemonMessage::StreamingTokens(count) => {
+                    app.stream_tokens += count;
+                }
+                DaemonMessage::StreamingToolCall(name) => {
+                    if !app.stream_tools.contains(&name) {
+                        app.stream_tools.push(name);
+                    }
+                }
+                DaemonMessage::StreamingDone => {
+                    app.stream_tokens = 0;
+                    app.stream_tools.clear();
+                }
             }
         }
 
@@ -117,7 +133,21 @@ async fn run_event_loop(
         if !event::poll(Duration::from_millis(50))? {
             continue;
         }
-        let Event::Key(key) = event::read()? else { continue };
+        let ev = event::read()?;
+
+        // Bracketed paste: batch the entire pasted string in one redraw
+        if let Event::Paste(text) = ev {
+            if app.editor_focused {
+                app.editor_buffer.push_str(&text);
+                app.editor_dirty = true;
+                app.editor_esc_warned = false;
+            } else if app.llm_available && !app.panel_focused && !app.in_setup() {
+                app.chat_input.push_str(&text);
+            }
+            continue;
+        }
+
+        let Event::Key(key) = ev else { continue };
         if key.kind != KeyEventKind::Press {
             continue;
         }
@@ -145,16 +175,22 @@ async fn run_event_loop(
         // Global: Ctrl+Up/Down switch panels and focus them (works in any state)
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             match key.code {
-                KeyCode::Up => { app.prev_panel(); app.panel_focused = true; continue; }
-                KeyCode::Down => { app.next_panel(); app.panel_focused = true; continue; }
+                KeyCode::Up => {
+                    app.prev_panel();
+                    app.panel_focused = true;
+                    continue;
+                }
+                KeyCode::Down => {
+                    app.next_panel();
+                    app.panel_focused = true;
+                    continue;
+                }
                 _ => {}
             }
         }
 
         if app.editor_focused {
-            if key.modifiers.contains(KeyModifiers::CONTROL)
-                && key.code == KeyCode::Char('s')
-            {
+            if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('s') {
                 app.save_editor();
             } else {
                 match key.code {
@@ -179,7 +215,9 @@ async fn run_event_loop(
             }
         } else if app.panel_focused {
             match key.code {
-                KeyCode::Esc => { app.panel_focused = false; }
+                KeyCode::Esc => {
+                    app.panel_focused = false;
+                }
                 KeyCode::Up => app.move_up(),
                 KeyCode::Down => app.move_down(),
                 KeyCode::Left => app.move_left(),
@@ -194,10 +232,14 @@ async fn run_event_loop(
             }
         } else if app.llm_available {
             match key.code {
-                KeyCode::Tab => { app.panel_focused = true; }
+                KeyCode::Tab => {
+                    app.panel_focused = true;
+                }
                 KeyCode::Esc => app.close_current_fork(),
                 KeyCode::Enter => app.submit_chat(),
-                KeyCode::Backspace => { app.chat_input.pop(); }
+                KeyCode::Backspace => {
+                    app.chat_input.pop();
+                }
                 KeyCode::Char(c) => app.chat_input.push(c),
                 _ => {}
             }

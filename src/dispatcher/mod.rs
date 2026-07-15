@@ -9,10 +9,10 @@ use std::sync::Arc;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::{info, warn};
 
-use crate::agent::{build_main_agent, ChatTurn, MainAgent, MainChatBackend, OaiMessage};
+use crate::agent::{ChatTurn, MainAgent, MainChatBackend, OaiMessage, build_main_agent};
 use crate::config::Config;
 use crate::mcp::auth::TokenStore;
 use crate::state::chat::{self as chat_store, ChatMessage, Role};
@@ -73,7 +73,11 @@ impl Column {
     /// The previous column before this one, or None if Prioritized.
     pub fn prev(&self) -> Option<Column> {
         let idx = ALL_COLUMNS.iter().position(|c| c == self)?;
-        if idx == 0 { None } else { ALL_COLUMNS.get(idx - 1).copied() }
+        if idx == 0 {
+            None
+        } else {
+            ALL_COLUMNS.get(idx - 1).copied()
+        }
     }
 
     /// True for buffer columns (require human approval to advance).
@@ -183,8 +187,11 @@ Buffer columns require human approval. Work columns have dedicated AI agents. \
 Use your tools to look up any state you need — never guess.\n\n";
 
         let role_prompt = match self {
-            AgentRole::Prioritizer => "You break epics into minimal, independently-shippable tasks ordered by dependency and value.",
-            AgentRole::Designer => "\
+            AgentRole::Prioritizer => {
+                "You break epics into minimal, independently-shippable tasks ordered by dependency and value."
+            }
+            AgentRole::Designer => {
+                "\
 You produce concise technical designs. No code — architecture, data models, interfaces only.\n\n\
 BEFORE proposing anything new for a task:\n\
 1. Review the existing codebase for code, components, icons, buttons, and UI patterns that \
@@ -199,8 +206,10 @@ extend the closest match, duplicate it, or build new.\n\
 5. Only design from scratch outright when nothing similar exists anywhere in the codebase or \
 in available public libraries.\n\
 6. Explicitly list every existing test file that will need to change as a result of this design, \
-and describe what each change will be. If no existing tests need to change, state that explicitly.",
-            AgentRole::Coder => "\
+and describe what each change will be. If no existing tests need to change, state that explicitly."
+            }
+            AgentRole::Coder => {
+                "\
 You are a disciplined coding agent. Make the smallest possible change. No refactoring, no extras.\n\n\
 CODE PATTERNS:\n\
 - Prefer early returns with `if` over `if`/`else`. Handle the exceptional or \
@@ -228,8 +237,10 @@ EXISTING TESTS:\n\
 and describes the required change.\n\
 - Adding new tests is always allowed.\n\
 - If you find that an existing test must change but the task does not mention it, stop: \
-call gitzi_create_review_item to ask the human whether to update the test and how.",
-            AgentRole::Reviewer => "\
+call gitzi_create_review_item to ask the human whether to update the test and how."
+            }
+            AgentRole::Reviewer => {
+                "\
 You are an adversarial code auditor. Your job is to find everything wrong with the \
 coder's work. Assume the coder attempted to:\n\
 - Build the most wrong implementation possible for the task\n\
@@ -255,9 +266,14 @@ existing tests are not.\n\
 8. Report ALL findings as a structured list of problems.\n\
 9. If problems found: reject the task with specific, actionable feedback.\n\
 10. If clean: approve (respond with text, no tool calls).\n\n\
-NEVER approve work that has problems. Be ruthless. The coder can handle it.",
-            AgentRole::Auditor => "You perform security audits. Check for vulnerabilities, leaked secrets, unsafe patterns.",
-            AgentRole::Infrarian => "You manage deployment infrastructure. Minimal, reproducible, observable.",
+NEVER approve work that has problems. Be ruthless. The coder can handle it."
+            }
+            AgentRole::Auditor => {
+                "You perform security audits. Check for vulnerabilities, leaked secrets, unsafe patterns."
+            }
+            AgentRole::Infrarian => {
+                "You manage deployment infrastructure. Minimal, reproducible, observable."
+            }
         };
         format!("{GITZI_PREAMBLE}{role_prompt}")
     }
@@ -340,12 +356,14 @@ impl Dispatcher {
     pub async fn approve(&self, task_id: &str) -> anyhow::Result<()> {
         let next_col = {
             let board = self.board.read().await;
-            let current_col = board.column_of(task_id)
+            let current_col = board
+                .column_of(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
             if !current_col.is_buffer() {
                 anyhow::bail!("task '{task_id}' is in {current_col}, not a buffer column");
             }
-            current_col.next()
+            current_col
+                .next()
                 .ok_or_else(|| anyhow::anyhow!("buffer column {current_col} has no next column"))?
         };
 
@@ -353,19 +371,22 @@ impl Dispatcher {
         {
             let mut board = self.board.write().await;
             board.advance(task_id, next_col)?;
-            let task = board.task_mut(task_id)
+            let task = board
+                .task_mut(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
-            task.history.push(crate::model::task::HistoryEntry::Approval {
-                at: chrono::Utc::now(),
-                target_stage: next_col.into(),
-            });
+            task.history
+                .push(crate::model::task::HistoryEntry::Approval {
+                    at: chrono::Utc::now(),
+                    target_stage: next_col.into(),
+                });
         }
 
         // Persist task to disk
         {
             let board = self.board.read().await;
             if let Some(task) = board.task(task_id)
-                && let Err(e) = self.store.write_task(task) {
+                && let Err(e) = self.store.write_task(task)
+            {
                 warn!(%task_id, error = %e, "failed to persist task after approval");
             }
         }
@@ -406,13 +427,15 @@ impl Dispatcher {
         // Default: send back to the previous column (one step back)
         let target_col = {
             let board = self.board.read().await;
-            let current_col = board.column_of(task_id)
+            let current_col = board
+                .column_of(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
             if !current_col.is_buffer() {
                 anyhow::bail!("task '{task_id}' is in {current_col}, not a buffer column");
             }
-            current_col.prev()
-                .ok_or_else(|| anyhow::anyhow!("buffer column {current_col} has no previous column"))?
+            current_col.prev().ok_or_else(|| {
+                anyhow::anyhow!("buffer column {current_col} has no previous column")
+            })?
         };
         self.reject_to(task_id, target_col, feedback).await
     }
@@ -420,11 +443,17 @@ impl Dispatcher {
     /// Send a task back to a specific target work column with feedback.
     /// Used when the human decides to skip intermediate columns (e.g. ReviewBuffer → Coding
     /// instead of ReviewBuffer → Reviewing, for "review valid, send back to coder").
-    pub async fn reject_to(&self, task_id: &str, target_col: Column, feedback: String) -> anyhow::Result<()> {
+    pub async fn reject_to(
+        &self,
+        task_id: &str,
+        target_col: Column,
+        feedback: String,
+    ) -> anyhow::Result<()> {
         // Validate: task must be in a buffer column
         {
             let board = self.board.read().await;
-            let current_col = board.column_of(task_id)
+            let current_col = board
+                .column_of(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
             if !current_col.is_buffer() {
                 anyhow::bail!("task '{task_id}' is in {current_col}, not a buffer column");
@@ -441,21 +470,24 @@ impl Dispatcher {
             let mut board = self.board.write().await;
             board.advance(task_id, target_col)?;
             board.set_priority(task_id, 0);
-            let task = board.task_mut(task_id)
+            let task = board
+                .task_mut(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
             task.agent_feedback = Some(feedback.clone());
-            task.history.push(crate::model::task::HistoryEntry::Rejection {
-                at: chrono::Utc::now(),
-                feedback: feedback.clone(),
-                returned_to: target_col.into(),
-            });
+            task.history
+                .push(crate::model::task::HistoryEntry::Rejection {
+                    at: chrono::Utc::now(),
+                    feedback: feedback.clone(),
+                    returned_to: target_col.into(),
+                });
         }
 
         // Persist task to disk
         {
             let board = self.board.read().await;
             if let Some(task) = board.task(task_id)
-                && let Err(e) = self.store.write_task(task) {
+                && let Err(e) = self.store.write_task(task)
+            {
                 warn!(%task_id, error = %e, "failed to persist task after rejection");
             }
         }
@@ -492,7 +524,7 @@ impl Dispatcher {
 
     /// Attempt to merge a completed task's branch into its target branch.
     async fn attempt_merge(&self, task_id: &str) {
-        use crate::git::ops::{merge_task_branch, MergeOutcome};
+        use crate::git::ops::{MergeOutcome, merge_task_branch};
 
         let task = match self.store.load_task(task_id) {
             Ok(t) => t,
@@ -529,9 +561,10 @@ impl Dispatcher {
                     repo_config.main_branch
                 );
                 crate::state::repo_cache::increment_commits(
-                    repo_path.file_name()
+                    repo_path
+                        .file_name()
                         .and_then(|n| n.to_str())
-                        .unwrap_or("default")
+                        .unwrap_or("default"),
                 );
             }
             Ok(MergeOutcome::Skipped(reason)) => {
@@ -565,7 +598,8 @@ impl Dispatcher {
         // Dequeue the item from the in-memory review queue
         let item = {
             let mut queue = self.review_queue.lock().await;
-            queue.dequeue(item_id)
+            queue
+                .dequeue(item_id)
                 .ok_or_else(|| anyhow::anyhow!("review item '{item_id}' not found in queue"))?
         };
 
@@ -596,11 +630,16 @@ impl Dispatcher {
         // Determine which agent role is blocked (read-only board access)
         let role = {
             let board = self.board.read().await;
-            let task = board.task(&item.task_id)
+            let task = board
+                .task(&item.task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{}' not found on board", item.task_id))?;
             let col = task.stage.to_column();
-            col.agent_role()
-                .ok_or_else(|| anyhow::anyhow!("task '{}' is in column {col} which has no agent", item.task_id))?
+            col.agent_role().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "task '{}' is in column {col} which has no agent",
+                    item.task_id
+                )
+            })?
         };
 
         // Unblock the agent with the answer
@@ -615,7 +654,10 @@ impl Dispatcher {
         Ok(self.store.load_all_epics()?)
     }
 
-    pub async fn gitzi_list_tasks(&self, epic_id: Option<&str>) -> anyhow::Result<Vec<crate::model::Task>> {
+    pub async fn gitzi_list_tasks(
+        &self,
+        epic_id: Option<&str>,
+    ) -> anyhow::Result<Vec<crate::model::Task>> {
         let all = self.store.load_all_tasks()?;
         if let Some(id) = epic_id {
             Ok(all.into_iter().filter(|t| t.epic == id).collect())
@@ -668,7 +710,9 @@ impl Dispatcher {
             let mut board = self.board.write().await;
             board.add_task(task.clone());
         }
-        self.event_bus.emit(DispatchEvent::TaskCreated { task_id: id.clone() });
+        self.event_bus.emit(DispatchEvent::TaskCreated {
+            task_id: id.clone(),
+        });
 
         Ok(task)
     }
@@ -680,8 +724,12 @@ impl Dispatcher {
         description: Option<String>,
     ) -> anyhow::Result<crate::model::Task> {
         let mut task = self.store.load_task(task_id)?;
-        if let Some(t) = title { task.title = t; }
-        if let Some(d) = description { task.description = Some(d); }
+        if let Some(t) = title {
+            task.title = t;
+        }
+        if let Some(d) = description {
+            task.description = Some(d);
+        }
         task.updated_at = chrono::Utc::now();
         self.store.write_task(&task)?;
 
@@ -696,7 +744,11 @@ impl Dispatcher {
         Ok(task)
     }
 
-    pub async fn gitzi_prioritize_task(&self, task_id: &str, priority: u32) -> anyhow::Result<crate::model::Task> {
+    pub async fn gitzi_prioritize_task(
+        &self,
+        task_id: &str,
+        priority: u32,
+    ) -> anyhow::Result<crate::model::Task> {
         let mut task = self.store.load_task(task_id)?;
         task.priority = priority;
         task.updated_at = chrono::Utc::now();
@@ -734,14 +786,20 @@ impl Dispatcher {
     /// `blocked_by` reaches `Stage::Done` (see `KanbanBoard::next_unblocked`).
     /// Unlike `gitzi_park_task` (a free-text note only), this creates a
     /// structural link the pipeline actually enforces.
-    pub async fn gitzi_block_task(&self, task_id: &str, blocked_by: Vec<String>) -> anyhow::Result<()> {
+    pub async fn gitzi_block_task(
+        &self,
+        task_id: &str,
+        blocked_by: Vec<String>,
+    ) -> anyhow::Result<()> {
         let from_col = {
             let mut board = self.board.write().await;
-            let from_col = board.column_of(task_id)
+            let from_col = board
+                .column_of(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' not found on board"))?;
             board.advance(task_id, Column::Prioritized)?;
             board.set_priority(task_id, 0);
-            let task = board.task_mut(task_id)
+            let task = board
+                .task_mut(task_id)
                 .ok_or_else(|| anyhow::anyhow!("task '{task_id}' disappeared after advance"))?;
             task.blocked_by = blocked_by;
             task.updated_at = chrono::Utc::now();
@@ -753,7 +811,8 @@ impl Dispatcher {
         {
             let board = self.board.read().await;
             if let Some(task) = board.task(task_id)
-                && let Err(e) = self.store.write_task(task) {
+                && let Err(e) = self.store.write_task(task)
+            {
                 warn!(%task_id, error = %e, "failed to persist task after block");
             }
         }
@@ -791,7 +850,9 @@ impl Dispatcher {
         let persisted = PersistedReviewItem {
             id: item_id.clone(),
             task_id: task_id.clone(),
-            kind: PersistedReviewKind::AgentQuestion { question: full_question.clone() },
+            kind: PersistedReviewKind::AgentQuestion {
+                question: full_question.clone(),
+            },
             created_at: now,
             actions: Vec::new(),
         };
@@ -803,7 +864,9 @@ impl Dispatcher {
             q.enqueue(review_queue::HumanReviewItem {
                 id: item_id,
                 task_id: task_id.clone(),
-                kind: review_queue::ReviewItemKind::AgentQuestion { question: full_question },
+                kind: review_queue::ReviewItemKind::AgentQuestion {
+                    question: full_question,
+                },
                 created_at: now,
             });
         }
@@ -832,26 +895,35 @@ impl Dispatcher {
         }
 
         if discovered.is_empty() {
-            return Ok("No LLM providers or AWS Bedrock access discovered on this machine.".to_string());
+            return Ok(
+                "No LLM providers or AWS Bedrock access discovered on this machine.".to_string(),
+            );
         }
 
-        let lines: Vec<String> = discovered.iter().map(|p| {
-            let enabled = config.providers.get(&p.name).map(|d| d.enabled).unwrap_or(false);
-            let status = if p.model_loaded {
-                "running, model loaded"
-            } else if p.running {
-                "running, no model loaded"
-            } else if p.installed {
-                "installed, not running"
-            } else {
-                "not installed"
-            };
-            let kind = match p.kind {
-                crate::config::ProviderKind::OpenaiCompatible => "openai-compatible",
-                crate::config::ProviderKind::Bedrock => "bedrock",
-            };
-            format!("- {} [{kind}] {status}, enabled={enabled}", p.name)
-        }).collect();
+        let lines: Vec<String> = discovered
+            .iter()
+            .map(|p| {
+                let enabled = config
+                    .providers
+                    .get(&p.name)
+                    .map(|d| d.enabled)
+                    .unwrap_or(false);
+                let status = if p.model_loaded {
+                    "running, model loaded"
+                } else if p.running {
+                    "running, no model loaded"
+                } else if p.installed {
+                    "installed, not running"
+                } else {
+                    "not installed"
+                };
+                let kind = match p.kind {
+                    crate::config::ProviderKind::OpenaiCompatible => "openai-compatible",
+                    crate::config::ProviderKind::Bedrock => "bedrock",
+                };
+                format!("- {} [{kind}] {status}, enabled={enabled}", p.name)
+            })
+            .collect();
 
         let added_note = if added.is_empty() {
             String::new()
@@ -859,7 +931,10 @@ impl Dispatcher {
             format!("\n\nNewly discovered: {}", added.join(", "))
         };
 
-        Ok(format!("Discovered providers:\n{}{added_note}", lines.join("\n")))
+        Ok(format!(
+            "Discovered providers:\n{}{added_note}",
+            lines.join("\n")
+        ))
     }
 
     /// Activate a discovered provider so agents actually use it. For
@@ -916,12 +991,13 @@ impl Dispatcher {
                         PersistedReviewKind::AgentQuestion { question } => {
                             review_queue::ReviewItemKind::AgentQuestion { question }
                         }
-                        PersistedReviewKind::BufferApproval { buffer_column, task_priority } => {
-                            review_queue::ReviewItemKind::BufferApproval {
-                                buffer_column,
-                                task_priority,
-                            }
-                        }
+                        PersistedReviewKind::BufferApproval {
+                            buffer_column,
+                            task_priority,
+                        } => review_queue::ReviewItemKind::BufferApproval {
+                            buffer_column,
+                            task_priority,
+                        },
                     };
                     let item = review_queue::HumanReviewItem {
                         id: p.id,
@@ -931,7 +1007,10 @@ impl Dispatcher {
                     };
                     queue.enqueue(item);
                 }
-                info!(count = queue.len(), "loaded unresolved review items from disk");
+                info!(
+                    count = queue.len(),
+                    "loaded unresolved review items from disk"
+                );
             }
             Err(e) => {
                 warn!(error = %e, "failed to load persisted review items — starting with empty queue");
@@ -1057,18 +1136,16 @@ impl Dispatcher {
             while rx.try_recv().is_ok() {}
 
             match Config::load(std::path::Path::new(".")) {
-                Ok(new_config) => {
-                    match WipLimits::from_config(&new_config.wip_limits.overrides) {
-                        Ok(new_limits) => {
-                            *self.wip_limits.write().await = new_limits;
-                            info!("config.toml changed — WIP limits reloaded");
-                        }
-                        Err(e) => warn!(
-                            error = %e,
-                            "config.toml changed but WIP limits are invalid — keeping previous limits"
-                        ),
+                Ok(new_config) => match WipLimits::from_config(&new_config.wip_limits.overrides) {
+                    Ok(new_limits) => {
+                        *self.wip_limits.write().await = new_limits;
+                        info!("config.toml changed — WIP limits reloaded");
                     }
-                }
+                    Err(e) => warn!(
+                        error = %e,
+                        "config.toml changed but WIP limits are invalid — keeping previous limits"
+                    ),
+                },
                 Err(e) => warn!(
                     error = %e,
                     "config.toml changed but failed to reload — keeping previous config"
@@ -1105,7 +1182,8 @@ impl Dispatcher {
         let final_response = self.run_main_agent_turn(message, &history).await?;
 
         // Persist the original user message (not augmented) and the agent response
-        let persist_path = ctx.as_ref()
+        let persist_path = ctx
+            .as_ref()
             .map(|c| c.persist_path.clone())
             .unwrap_or_else(home::current_chat_file);
 
@@ -1135,7 +1213,8 @@ impl Dispatcher {
 
         // Record this exchange on the review item's own structured history.
         if let Some(task_id) = discussed_task_id
-            && let Ok(Some(mut review_item)) = self.store.find_unresolved_for_task(&task_id) {
+            && let Ok(Some(mut review_item)) = self.store.find_unresolved_for_task(&task_id)
+        {
             let now = chrono::Utc::now();
             review_item.actions.push(ReviewAction::Comment {
                 at: now,
@@ -1181,7 +1260,11 @@ impl Dispatcher {
     /// Shared agent turn: peek the review queue, switch the panel and inject queue
     /// context if something is pending, then run the tool-calling loop to completion.
     /// Does not persist anything to chat history — callers decide what to record.
-    async fn run_main_agent_turn(&self, message: &str, history: &[ChatMessage]) -> anyhow::Result<String> {
+    async fn run_main_agent_turn(
+        &self,
+        message: &str,
+        history: &[ChatMessage],
+    ) -> anyhow::Result<String> {
         // 1. Peek review queue (lock released immediately after clone)
         let pending_review = {
             let queue = self.review_queue.lock().await;
@@ -1197,7 +1280,8 @@ impl Dispatcher {
         let llm_message = if let Some(ref item) = pending_review {
             let task_title = {
                 let board = self.board.read().await;
-                board.task(&item.task_id)
+                board
+                    .task(&item.task_id)
                     .map(|t| t.title.clone())
                     .unwrap_or_else(|| item.task_id.clone())
             };
@@ -1229,9 +1313,12 @@ impl Dispatcher {
             if repos.is_empty() {
                 String::new()
             } else {
-                let listing: String = repos.iter().take(20).map(|r| {
-                    format!("  {} [{}]", r.path, r.labels.join(", "))
-                }).collect::<Vec<_>>().join("\n");
+                let listing: String = repos
+                    .iter()
+                    .take(20)
+                    .map(|r| format!("  {} [{}]", r.path, r.labels.join(", ")))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 format!("[Repos]\n{listing}\n\n")
             }
         };
@@ -1242,7 +1329,9 @@ impl Dispatcher {
             for col in crate::dispatcher::Column::all() {
                 let task_ids = board.tasks_in(*col);
                 if !task_ids.is_empty() {
-                    let task_list: String = task_ids.iter().take(5)
+                    let task_list: String = task_ids
+                        .iter()
+                        .take(5)
                         .filter_map(|id| board.task(id))
                         .map(|t| format!("  - {} ({})", t.title, t.id))
                         .collect::<Vec<_>>()
@@ -1268,10 +1357,7 @@ impl Dispatcher {
             let guard = self.chat_stack.lock().await;
             guard.last().is_some_and(|e| e.id != "main")
         };
-        let tools = crate::agent::main_agent::tools_for_context(
-            in_fork,
-            true,
-        );
+        let tools = crate::agent::main_agent::tools_for_context(in_fork, true);
 
         // 6. Tool-calling loop. If main's provider is down, fall back *once* to
         // the control-plane brain to run a recovery conversation (ADR-002) —
@@ -1279,12 +1365,13 @@ impl Dispatcher {
         let mut active_agent: &dyn MainChatBackend = &*self.main_agent;
         let mut recovered = false;
         let final_response = loop {
-            let (raw_assistant, turn) = match active_agent.turn(&messages, &tools).await {
+            let (raw_assistant, turn) = match active_agent
+                .turn_streaming(&messages, &tools, &self.event_bus)
+                .await
+            {
                 Ok(t) => t,
                 Err(e) => {
-                    if !recovered
-                        && let Some(fallback) = self.fallback_agent.as_ref()
-                    {
+                    if !recovered && let Some(fallback) = self.fallback_agent.as_ref() {
                         warn!(error = %e, "main provider failed — handing off to the fallback brain for recovery");
                         recovered = true;
                         active_agent = &**fallback;
@@ -1332,11 +1419,7 @@ impl Dispatcher {
     }
 
     /// Dispatch a tool call from the main agent to the appropriate Dispatcher method.
-    async fn execute_main_agent_tool(
-        &self,
-        name: &str,
-        args: &serde_json::Value,
-    ) -> String {
+    async fn execute_main_agent_tool(&self, name: &str, args: &serde_json::Value) -> String {
         match name {
             "gitzi_create_epic" => {
                 let title = args
@@ -1422,7 +1505,10 @@ impl Dispatcher {
                     .get("repo")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string);
-                match self.gitzi_create_task(epic_id, title, description, priority, repo).await {
+                match self
+                    .gitzi_create_task(epic_id, title, description, priority, repo)
+                    .await
+                {
                     Ok(task) => serde_json::to_string(&task).unwrap_or_else(|_| "{}".to_string()),
                     Err(e) => format!("error: {e}"),
                 }
@@ -1480,9 +1566,7 @@ impl Dispatcher {
             },
 
             "gitzi_list_tasks" => {
-                let epic_id = args
-                    .get("epic_id")
-                    .and_then(serde_json::Value::as_str);
+                let epic_id = args.get("epic_id").and_then(serde_json::Value::as_str);
                 match self.gitzi_list_tasks(epic_id).await {
                     Ok(tasks) => serde_json::to_string(&tasks).unwrap_or_else(|_| "[]".to_string()),
                     Err(e) => format!("error: {e}"),
@@ -1543,9 +1627,11 @@ impl Dispatcher {
                 if repos.is_empty() {
                     "No repos discovered. Configure repo_paths in config.toml.".to_string()
                 } else {
-                    repos.iter().map(|r| {
-                        format!("- {} [{}]\n  {}", r.path, r.labels.join(", "), r.summary)
-                    }).collect::<Vec<_>>().join("\n")
+                    repos
+                        .iter()
+                        .map(|r| format!("- {} [{}]\n  {}", r.path, r.labels.join(", "), r.summary))
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 }
             }
 
@@ -1572,9 +1658,10 @@ impl Dispatcher {
                     guard.pop().map(|e| e.id).unwrap_or_default()
                 };
                 // Emit close event
-                self.event_bus.emit(
-                    event_bus::DispatchEvent::ForkClosed { id: fork_id, summary: summary.clone() }
-                );
+                self.event_bus.emit(event_bus::DispatchEvent::ForkClosed {
+                    id: fork_id,
+                    summary: summary.clone(),
+                });
                 format!("ok: fork closed — {summary}")
             }
 
@@ -1600,7 +1687,10 @@ impl Dispatcher {
                     .get("role_name")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string);
-                match self.gitzi_activate_provider(&name, account_id, role_name).await {
+                match self
+                    .gitzi_activate_provider(&name, account_id, role_name)
+                    .await
+                {
                     Ok(summary) => summary,
                     Err(e) => format!("error: {e}"),
                 }
@@ -1667,9 +1757,7 @@ impl Dispatcher {
                         // Create a BufferApproval review item
                         let priority = {
                             let b = self.board.read().await;
-                            b.task(&task_id)
-                                .map(|t| t.priority)
-                                .unwrap_or(u32::MAX)
+                            b.task(&task_id).map(|t| t.priority).unwrap_or(u32::MAX)
                         };
 
                         // Persist review item to disk
@@ -1706,13 +1794,20 @@ impl Dispatcher {
                     }
                 }
 
-                DispatchEvent::AgentCompleted { task_id, agent_role } => {
+                DispatchEvent::AgentCompleted {
+                    task_id,
+                    agent_role,
+                } => {
                     // The agent loop already handles advancing the task to the next buffer.
                     // This event is for downstream consumers (TUI, logging).
                     info!(%task_id, %agent_role, "agent completed");
                 }
 
-                DispatchEvent::AgentBlocked { task_id, agent_role, ref question } => {
+                DispatchEvent::AgentBlocked {
+                    task_id,
+                    agent_role,
+                    ref question,
+                } => {
                     info!(%task_id, %agent_role, "agent blocked — creating review item");
                     let item = review_queue::HumanReviewItem::new(
                         &task_id,
@@ -1724,13 +1819,20 @@ impl Dispatcher {
                     q.enqueue(item);
                 }
 
-                DispatchEvent::HumanApprovalReceived { task_id, target_column } => {
+                DispatchEvent::HumanApprovalReceived {
+                    task_id,
+                    target_column,
+                } => {
                     // NO-OP: approve() already signalled the agent.
                     // This event exists for TUI/logging consumers only.
                     info!(%task_id, %target_column, "approval event received (no-op in run loop)");
                 }
 
-                DispatchEvent::HumanRejectionReceived { task_id, returned_to, feedback: _ } => {
+                DispatchEvent::HumanRejectionReceived {
+                    task_id,
+                    returned_to,
+                    feedback: _,
+                } => {
                     // NO-OP: reject() already signalled the agent.
                     // This event exists for TUI/logging consumers only.
                     info!(%task_id, %returned_to, "rejection event received (no-op in run loop)");
@@ -1755,6 +1857,12 @@ impl Dispatcher {
 
                 DispatchEvent::LogEntry { .. } => {
                     // TUI-only — no-op in dispatcher run loop.
+                }
+
+                DispatchEvent::StreamingTokens { .. }
+                | DispatchEvent::StreamingToolCall { .. }
+                | DispatchEvent::StreamingDone => {
+                    // TUI-only — progress tracking, no-op in dispatcher run loop.
                 }
             }
         }
@@ -1856,7 +1964,10 @@ mod tests {
             Column::Deploying,
         ];
         for col in &work_columns {
-            assert!(col.agent_role().is_some(), "{col} should have an agent role");
+            assert!(
+                col.agent_role().is_some(),
+                "{col} should have an agent role"
+            );
         }
     }
 
@@ -1918,8 +2029,14 @@ mod tests {
         // fallback is built and aimed at the fallback provider's endpoint.
         let config = Config {
             providers: std::collections::HashMap::from([
-                ("remote".to_string(), openai_provider("http://remote:8080/v1")),
-                ("local".to_string(), openai_provider("http://localhost:11434/v1")),
+                (
+                    "remote".to_string(),
+                    openai_provider("http://remote:8080/v1"),
+                ),
+                (
+                    "local".to_string(),
+                    openai_provider("http://localhost:11434/v1"),
+                ),
             ]),
             agents: vec![crate::config::AgentDef {
                 role: "main".to_string(),
@@ -1930,7 +2047,10 @@ mod tests {
             ..Config::default()
         };
         let fallback = build_fallback_agent(&config).expect("distinct fallback should build");
-        assert_eq!(fallback.base_url(), Some("http://localhost:11434/v1".to_string()));
+        assert_eq!(
+            fallback.base_url(),
+            Some("http://localhost:11434/v1".to_string())
+        );
     }
 
     #[test]

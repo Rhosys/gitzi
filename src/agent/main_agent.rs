@@ -2,10 +2,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use super::main_chat::MainChatBackend;
 use crate::config::AgentDef;
 use crate::error::{GitziError, Result};
 use crate::state::chat::{ChatMessage, Role};
-use super::main_chat::MainChatBackend;
 
 pub struct MainAgent {
     client: Client,
@@ -70,6 +70,8 @@ struct ChatRequest {
     tools: Vec<OaiTool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    stream: bool,
 }
 
 #[derive(Deserialize)]
@@ -446,10 +448,14 @@ impl MainAgent {
 
         // Resolve model: use configured value, or query the server for whatever's loaded
         let model = if self.model.is_empty() {
-            query_loaded_model_async(&self.client, &self.base_url).await
-                .ok_or_else(|| GitziError::AgentFailed(
-                    format!("no model configured and none loaded at {}", self.base_url)
-                ))?
+            query_loaded_model_async(&self.client, &self.base_url)
+                .await
+                .ok_or_else(|| {
+                    GitziError::AgentFailed(format!(
+                        "no model configured and none loaded at {}",
+                        self.base_url
+                    ))
+                })?
         } else {
             self.model.clone()
         };
@@ -459,6 +465,7 @@ impl MainAgent {
             messages: full_messages,
             tools: tools.to_vec(),
             temperature: None,
+            stream: false,
         };
 
         let parsed: ChatResponse =
@@ -466,11 +473,9 @@ impl MainAgent {
                 .await
                 .map_err(|e| GitziError::AgentFailed(format!("LLM call failed: {e}")))?;
 
-        let choice = parsed
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| GitziError::AgentFailed("LM Studio returned empty choices".to_string()))?;
+        let choice = parsed.choices.into_iter().next().ok_or_else(|| {
+            GitziError::AgentFailed("LM Studio returned empty choices".to_string())
+        })?;
 
         let is_tool_call = choice.finish_reason.as_deref() == Some("tool_calls")
             || !choice.message.tool_calls.is_empty();
@@ -499,13 +504,204 @@ impl MainAgent {
                 .collect();
             ChatTurn::ToolCalls(calls)
         } else {
-            let text = choice
-                .message
-                .content
-                .unwrap_or_default();
+            let text = choice.message.content.unwrap_or_default();
             ChatTurn::Text(strip_special_tokens(&text))
         };
 
+        Ok((raw_assistant, turn))
+    }
+
+    /// Streaming turn: sends `stream: true` to the LLM and emits
+    /// `StreamingTokens` / `StreamingToolCall` / `StreamingDone` events on
+    /// the bus as chunks arrive. Returns the same (OaiMessage, ChatTurn) as
+    /// the non-streaming turn once the stream completes.
+    pub async fn turn_streaming(
+        &self,
+        messages: &[OaiMessage],
+        tools: &[OaiTool],
+        event_bus: &crate::dispatcher::event_bus::EventBus,
+    ) -> Result<(OaiMessage, ChatTurn)> {
+        use crate::dispatcher::event_bus::DispatchEvent;
+        use futures_util::StreamExt;
+
+        let mut full_messages = vec![OaiMessage {
+            role: "system".to_string(),
+            content: Some(self.system_prompt.clone()),
+            tool_calls: vec![],
+            tool_call_id: None,
+        }];
+        full_messages.extend_from_slice(messages);
+
+        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+
+        let model = if self.model.is_empty() {
+            query_loaded_model_async(&self.client, &self.base_url)
+                .await
+                .ok_or_else(|| {
+                    GitziError::AgentFailed(format!(
+                        "no model configured and none loaded at {}",
+                        self.base_url
+                    ))
+                })?
+        } else {
+            self.model.clone()
+        };
+
+        let body = ChatRequest {
+            model: model.clone(),
+            messages: full_messages,
+            tools: tools.to_vec(),
+            temperature: None,
+            stream: true,
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .timeout(std::time::Duration::from_secs(300))
+            .send()
+            .await
+            .map_err(|e| GitziError::AgentFailed(format!("streaming LLM call failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(GitziError::AgentFailed(format!(
+                "LLM returned {status}: {text}"
+            )));
+        }
+
+        // Parse SSE stream
+        let mut stream = resp.bytes_stream();
+        let mut content_acc = String::new();
+        let mut tool_calls_acc: Vec<OaiToolCall> = Vec::new();
+        let mut token_count: usize = 0;
+        let mut finish_reason: Option<String> = None;
+        let mut buffer = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let bytes =
+                chunk.map_err(|e| GitziError::AgentFailed(format!("stream read error: {e}")))?;
+            buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+            // Process complete SSE lines
+            while let Some(newline_pos) = buffer.find('\n') {
+                let line = buffer[..newline_pos].trim_end_matches('\r').to_string();
+                buffer = buffer[newline_pos + 1..].to_string();
+
+                if line.is_empty() || line.starts_with(':') {
+                    continue;
+                }
+                let data = if let Some(stripped) = line.strip_prefix("data: ") {
+                    stripped
+                } else {
+                    continue;
+                };
+                if data == "[DONE]" {
+                    continue;
+                }
+
+                let Ok(chunk_json) = serde_json::from_str::<serde_json::Value>(data) else {
+                    continue;
+                };
+
+                let Some(choices) = chunk_json.get("choices").and_then(|c| c.as_array()) else {
+                    continue;
+                };
+                let Some(choice) = choices.first() else {
+                    continue;
+                };
+
+                // Check finish_reason
+                if let Some(fr) = choice.get("finish_reason").and_then(|v| v.as_str()) {
+                    finish_reason = Some(fr.to_string());
+                }
+
+                let Some(delta) = choice.get("delta") else {
+                    continue;
+                };
+
+                // Content tokens
+                if let Some(content) = delta.get("content").and_then(|c| c.as_str())
+                    && !content.is_empty()
+                {
+                    content_acc.push_str(content);
+                    let new_tokens = content.split_whitespace().count().max(1);
+                    token_count += new_tokens;
+                    event_bus.emit(DispatchEvent::StreamingTokens { count: new_tokens });
+                }
+
+                // Tool calls (streamed incrementally)
+                if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
+                    for tc in tcs {
+                        let idx = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+
+                        while tool_calls_acc.len() <= idx {
+                            tool_calls_acc.push(OaiToolCall {
+                                id: String::new(),
+                                r#type: "function".to_string(),
+                                function: OaiFunctionBody {
+                                    name: String::new(),
+                                    arguments: String::new(),
+                                },
+                            });
+                        }
+
+                        if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
+                            tool_calls_acc[idx].id = id.to_string();
+                        }
+                        if let Some(func) = tc.get("function") {
+                            if let Some(name) = func.get("name").and_then(|v| v.as_str()) {
+                                tool_calls_acc[idx].function.name = name.to_string();
+                                event_bus.emit(DispatchEvent::StreamingToolCall {
+                                    name: name.to_string(),
+                                });
+                            }
+                            if let Some(args) = func.get("arguments").and_then(|v| v.as_str()) {
+                                tool_calls_acc[idx].function.arguments.push_str(args);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        event_bus.emit(DispatchEvent::StreamingDone);
+
+        let is_tool_call =
+            finish_reason.as_deref() == Some("tool_calls") || !tool_calls_acc.is_empty();
+
+        let raw_assistant = OaiMessage {
+            role: "assistant".to_string(),
+            content: if content_acc.is_empty() {
+                None
+            } else {
+                Some(content_acc.clone())
+            },
+            tool_calls: tool_calls_acc.clone(),
+            tool_call_id: None,
+        };
+
+        let turn = if is_tool_call {
+            let calls = tool_calls_acc
+                .into_iter()
+                .map(|tc| {
+                    let arguments = serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+                    ToolCallRequest {
+                        id: tc.id,
+                        name: tc.function.name,
+                        arguments,
+                    }
+                })
+                .collect();
+            ChatTurn::ToolCalls(calls)
+        } else {
+            ChatTurn::Text(strip_special_tokens(&content_acc))
+        };
+
+        let _ = token_count; // used via events
         Ok((raw_assistant, turn))
     }
 
@@ -528,6 +724,15 @@ impl MainChatBackend for MainAgent {
         tools: &'a [OaiTool],
     ) -> super::main_chat::TurnFuture<'a> {
         Box::pin(self.turn(messages, tools))
+    }
+
+    fn turn_streaming<'a>(
+        &'a self,
+        messages: &'a [OaiMessage],
+        tools: &'a [OaiTool],
+        event_bus: &'a crate::dispatcher::event_bus::EventBus,
+    ) -> super::main_chat::TurnFuture<'a> {
+        Box::pin(self.turn_streaming(messages, tools, event_bus))
     }
 
     fn model(&self) -> String {

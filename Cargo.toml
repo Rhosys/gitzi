@@ -20,6 +20,7 @@ rig-bedrock = "0.39"
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
+futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 notify = "6"
