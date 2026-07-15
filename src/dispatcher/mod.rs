@@ -172,9 +172,17 @@ impl AgentRole {
         }
     }
 
-    /// Hardcoded default system prompt for this role.
-    pub fn default_system_prompt(&self) -> &'static str {
-        match self {
+    /// Hardcoded default system prompt for this role, prefixed with shared
+    /// gitzi/kanban context so every agent understands the pipeline.
+    pub fn default_system_prompt(&self) -> String {
+        const GITZI_PREAMBLE: &str = "\
+You are an AI agent in gitzi, an agile SDLC harness. The pipeline has a Kanban board: \
+Prioritized → Designing → CodingBuffer → Coding → ReviewBuffer → Reviewing → \
+SecurityAuditBuffer → Auditing → DeploymentBuffer → Deploying → Done. \
+Buffer columns require human approval. Work columns have dedicated AI agents. \
+Use your tools to look up any state you need — never guess.\n\n";
+
+        let role_prompt = match self {
             AgentRole::Prioritizer => "You break epics into minimal, independently-shippable tasks ordered by dependency and value.",
             AgentRole::Designer => "\
 You produce concise technical designs. No code — architecture, data models, interfaces only.\n\n\
@@ -250,7 +258,8 @@ existing tests are not.\n\
 NEVER approve work that has problems. Be ruthless. The coder can handle it.",
             AgentRole::Auditor => "You perform security audits. Check for vulnerabilities, leaked secrets, unsafe patterns.",
             AgentRole::Infrarian => "You manage deployment infrastructure. Minimal, reproducible, observable.",
-        }
+        };
+        format!("{GITZI_PREAMBLE}{role_prompt}")
     }
 }
 
@@ -1226,7 +1235,30 @@ impl Dispatcher {
                 format!("[Repos]\n{listing}\n\n")
             }
         };
-        let llm_message = format!("{repo_context}{llm_message}");
+        // Inject board state so the agent knows what tasks are in flight
+        let board_context = {
+            let board = self.board.read().await;
+            let mut lines = Vec::new();
+            for col in crate::dispatcher::Column::all() {
+                let task_ids = board.tasks_in(*col);
+                if !task_ids.is_empty() {
+                    let task_list: String = task_ids.iter().take(5)
+                        .filter_map(|id| board.task(id))
+                        .map(|t| format!("  - {} ({})", t.title, t.id))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !task_list.is_empty() {
+                        lines.push(format!("[{col}]\n{task_list}"));
+                    }
+                }
+            }
+            if lines.is_empty() {
+                String::new()
+            } else {
+                format!("[Board]\n{}\n\n", lines.join("\n"))
+            }
+        };
+        let llm_message = format!("{repo_context}{board_context}{llm_message}");
 
         // 4. Build messages from history + (possibly augmented) message
         let mut messages = MainAgent::history_to_messages(history, &llm_message);
