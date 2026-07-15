@@ -89,9 +89,18 @@
 
 - [ ] Fix: pasting into the input field is slow (likely per-char redraw — batch paste events)
 - [ ] Fix: remove `...` from input field — the input area is exclusively for user text
+- [ ] Fix: long text goes off-panel and is hidden — add word-wrap (multi-line expansion)
 - [ ] After user submits (Enter), clear the input field immediately and show a spinner
       in the chat messages area as a pending assistant bubble (e.g. `⠋ thinking...`)
 - [ ] The spinner animates until the response arrives, then is replaced by the actual text
+
+### TUI — Framework evaluation
+
+- [ ] Evaluate whether ratatui is still the right framework for gitzi's TUI needs.
+      Current pain points: no built-in text input widget, no paste buffering, manual
+      scroll/wrap management, no native multi-line input. Candidates to compare:
+      ratatui (current), cursive, web-based dashboard (axum + htmx), Ink (if Node
+      acceptable). Write ADR with decision.
 
 ---
 
