@@ -331,25 +331,42 @@ impl Config {
     /// live in `AgentRole::default_system_prompt()` and `main_agent.rs`.
     pub fn resolve_agent(&self, role: &str) -> AgentDef {
         if let Some(agent) = self.agents.iter().find(|a| a.role == role) {
-            return agent.clone();
+            let mut agent = agent.clone();
+            agent.model = self.resolve_model(agent.model, agent.provider.as_deref());
+            return agent;
         }
         // Fall back to main role's model/provider/api_url
         let main = self.agents.iter().find(|a| a.role == "main");
         let provider_ref = main.and_then(|m| m.provider.as_ref());
         AgentDef {
             role: role.to_string(),
-            // Resolution: agent model → main's model → provider's default_model → empty
-            // (empty triggers runtime query at call time)
-            model: main.map(|m| m.model.clone()).unwrap_or_else(|| {
-                provider_ref
-                    .and_then(|name| self.providers.get(name))
-                    .and_then(|p| p.default_model.clone())
-                    .unwrap_or_default()
-            }),
+            model: self.resolve_model(
+                main.map(|m| m.model.clone()).unwrap_or_default(),
+                provider_ref.map(String::as_str),
+            ),
             api_url: main
                 .and_then(|m| m.api_url.clone())
                 .or(Some("http://localhost:1234/v1".to_string())),
             provider: provider_ref.cloned(),
+        }
+    }
+
+    /// Resolve a possibly-empty agent model to a concrete choice:
+    /// explicit model → the provider's `default_model` → the terminal fallback
+    /// (`qwen3-8b`). A provider whose `default_model` is `Some("")` deliberately
+    /// means "route to whatever model the provider has loaded" (e.g. LM Studio
+    /// GUI) and is preserved as empty; only a provider with no default (`None`)
+    /// or no provider at all falls through to the terminal fallback.
+    fn resolve_model(&self, model: String, provider: Option<&str>) -> String {
+        if !model.is_empty() {
+            return model;
+        }
+        match provider
+            .and_then(|name| self.providers.get(name))
+            .map(|p| p.default_model.clone())
+        {
+            Some(Some(default_model)) => default_model,
+            _ => "qwen3-8b".to_string(),
         }
     }
 
@@ -563,10 +580,11 @@ mod tests {
                         "model mismatch for role '{}'", role_name
                     );
                 } else {
-                    // Falls back to empty (resolved at runtime via /v1/models query)
+                    // No agent entry, no `main` fallback, no provider → terminal
+                    // fallback model (see `resolve_model`).
                     prop_assert_eq!(
-                        &resolved.model, "",
-                        "model should be main-fallback default for role '{}'",
+                        &resolved.model, "qwen3-8b",
+                        "model should be the terminal fallback for role '{}'",
                         role_name
                     );
                 }
