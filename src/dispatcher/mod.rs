@@ -166,16 +166,6 @@ impl AgentRole {
 }
 
 impl AgentRole {
-    /// Hardcoded default AgentDef for this role.
-    pub fn default_agent_def(&self) -> crate::config::AgentDef {
-        crate::config::AgentDef {
-            role: self.to_string(),
-            model: "claude-sonnet-4-20250514".to_string(),
-            api_url: None,
-            provider: None,
-        }
-    }
-
     /// Hardcoded default system prompt for this role, prefixed with shared
     /// gitzi/kanban context so every agent understands the pipeline.
     pub fn default_system_prompt(&self) -> String {

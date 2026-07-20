@@ -333,13 +333,7 @@ async fn cmd_daemon() -> Result<()> {
                 .send()
                 .await
                 .ok()
-                .and_then(|r| {
-                    if r.status().is_success() {
-                        Some(r)
-                    } else {
-                        None
-                    }
-                })
+                .filter(|r| r.status().is_success())
                 .is_some()
         };
         if !model_loaded

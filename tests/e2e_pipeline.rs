@@ -2,7 +2,8 @@
 
 use std::collections::HashMap;
 
-use axum::{Json, Router, routing::post};
+use axum::response::{IntoResponse, Response};
+use axum::{Json, Router, http::header, routing::post};
 use serde_json::json;
 use tempfile::TempDir;
 
@@ -12,18 +13,40 @@ use gitzi::state::home;
 
 // ── Mock LLM server ───────────────────────────────────────────────────────────
 
-/// Returns a canned assistant text response for any chat completions request.
-async fn mock_completions() -> Json<serde_json::Value> {
+/// Canned assistant text every mock turn returns.
+const MOCK_REPLY: &str = "Task acknowledged. Working on it now.";
+
+/// Mock the chat-completions endpoint. The main chat backend streams
+/// (`turn_streaming` sends `stream: true`) while sub-agents use a plain
+/// non-streaming call, so respond in the matching shape for each: a
+/// Server-Sent Events body for streaming requests, a single JSON object
+/// otherwise.
+async fn mock_completions(Json(req): Json<serde_json::Value>) -> Response {
+    let streaming = req
+        .get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if streaming {
+        let body = format!(
+            "data: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            json!({ "choices": [{ "delta": { "role": "assistant", "content": MOCK_REPLY } }] }),
+            json!({ "choices": [{ "delta": {}, "finish_reason": "stop" }] }),
+        );
+        return ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response();
+    }
+
     Json(json!({
         "choices": [{
             "finish_reason": "stop",
             "message": {
                 "role": "assistant",
-                "content": "Task acknowledged. Working on it now.",
+                "content": MOCK_REPLY,
                 "tool_calls": []
             }
         }]
     }))
+    .into_response()
 }
 
 /// Respond to /v1/models so the health-check in llm_client works.
