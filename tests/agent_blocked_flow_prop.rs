@@ -62,7 +62,7 @@ proptest! {
 
             // 1. Persist review item to disk
             let item = PersistedReviewItem {
-                id: format!("review-{}", &task_id),
+                id: format!("review-{}", task_id),
                 task_id: task_id.clone(),
                 kind: PersistedReviewKind::AgentQuestion {
                     question: question.clone(),
@@ -72,7 +72,7 @@ proptest! {
             };
             let reviews_dir = tmp.path().join("reviews");
             std::fs::create_dir_all(&reviews_dir).unwrap();
-            let path = reviews_dir.join(format!("{}.toml", &item.id));
+            let path = reviews_dir.join(format!("{}.toml", item.id));
             let serialized = toml::to_string_pretty(&item).unwrap();
             std::fs::write(&path, &serialized).unwrap();
 

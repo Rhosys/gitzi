@@ -40,7 +40,7 @@ fn arb_task(id: usize) -> impl Strategy<Value = Task> {
 /// Strategy that generates a vector of tasks with unique ids, arbitrary stages and priorities.
 fn arb_task_vec(max_len: usize) -> impl Strategy<Value = Vec<Task>> {
     (1usize..=max_len).prop_flat_map(|len| {
-        let strategies: Vec<_> = (0..len).map(|i| arb_task(i)).collect();
+        let strategies: Vec<_> = (0..len).map(arb_task).collect();
         strategies
     })
 }

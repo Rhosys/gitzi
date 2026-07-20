@@ -641,7 +641,7 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
                             crate::state::chat::Role::Agent => "agent",
                             crate::state::chat::Role::System => "system",
                         },
-                        &m.content
+                        m.content
                     )
                 })
                 .collect::<Vec<_>>()

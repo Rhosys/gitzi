@@ -139,17 +139,15 @@ proptest! {
                         );
 
                         // Within same column: priority ascending
-                        if col_idx == prev_col_idx {
-                            if let (Some(prev_prio), Some(prev_col)) = (last_approval_prio, last_approval_col_for_prio) {
-                                if prev_col == *buffer_column {
+                        if col_idx == prev_col_idx
+                            && let (Some(prev_prio), Some(prev_col)) = (last_approval_prio, last_approval_col_for_prio)
+                                && prev_col == *buffer_column {
                                     prop_assert!(
                                         *task_priority >= prev_prio,
                                         "Approval '{}' (prio={}) in {:?} should come after prio={} (ascending)",
                                         item.task_id, task_priority, buffer_column, prev_prio
                                     );
                                 }
-                            }
-                        }
                     }
 
                     last_approval_col_idx = Some(col_idx);
