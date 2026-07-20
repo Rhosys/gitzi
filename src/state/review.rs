@@ -292,7 +292,7 @@ mod tests {
         #[test]
         fn review_item_round_trip(item in arb_persisted_review_item()) {
             let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join(format!("{}.toml", &item.id));
+            let path = dir.path().join(format!("{}.toml", item.id));
 
             let serialized = toml::to_string_pretty(&item).unwrap();
             std::fs::write(&path, &serialized).unwrap();

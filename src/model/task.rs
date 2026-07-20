@@ -267,7 +267,7 @@ mod tests {
 
             // Write to a temp directory
             let tmp = tempfile::tempdir().unwrap();
-            let path = tmp.path().join(format!("{}.toml", &task.id));
+            let path = tmp.path().join(format!("{}.toml", task.id));
             let serialized = toml::to_string_pretty(&task).unwrap();
             std::fs::write(&path, &serialized).unwrap();
 
