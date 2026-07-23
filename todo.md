@@ -211,24 +211,10 @@ acked   = false
 The chat history grows unboundedly; the right panel and any LLM context must always
 reflect a coherent, up-to-date summary rather than raw transcript replay.
 
-- [ ] As a developer, the session maintains a rolling summary stored at
-      `~/.gitzi/chats/summary.md`
-- [ ] As a developer, after every N messages (configurable, default 10) the summarizer
-      runs and updates `summary.md` with what is known: active epics, tasks in flight,
-      decisions made, open questions
-- [ ] As a developer, the summary is injected as the first message in any new LLM
-      context window so the agent never loses prior decisions
 - [ ] As a developer, the right panel in the TUI shows the current summary when no
       specific task or epic is selected
 - [ ] As a developer, I can trigger a manual re-summarize with `/summarize` in the
       chat input
-
-### Implementation notes
-
-The summarizer is itself an LLM call using the configured agent backend, given the
-last N messages plus the previous summary as input. Output replaces `summary.md`.
-The summary is append-logged to `chat.jsonl` as a `system` role message with a
-`"summarized": true` marker so it can be distinguished from organic system messages.
 
 ---
 
