@@ -53,6 +53,7 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
         wip_limits,
         wip_waiting,
         chat_history: Arc::new(Mutex::new(vec![])),
+        chat_summary: Arc::new(Mutex::new(None)),
         main_agent,
         fallback_agent: None,
         token_store: Arc::clone(&token_store),

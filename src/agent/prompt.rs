@@ -29,6 +29,12 @@ pub fn build_task_content(
         prompt.push_str(&format!("\nDescription:\n{desc}\n"));
     }
 
+    if let Some(summary) = resume_summary {
+        prompt.push_str(&format!(
+            "\nResuming from previous session. Existing work on this branch:\n{summary}\n"
+        ));
+    }
+
     // Inject answers from the human review queue. These are decisions already
     // made — implement them directly, do not raise the same question again.
     if !answered_questions.is_empty() {
@@ -37,13 +43,17 @@ pub fn build_task_content(
         for (question, answer) in answered_questions {
             prompt.push_str(&format!("Q: {question}\nA: {answer}\n\n"));
         }
-    }
 
-    if let Some(summary) = resume_summary {
-        prompt.push_str(&format!(
-            "\nResuming from previous session. Existing work state:\n{summary}\n\
-            Review this state before making changes. Continue from where the previous session left off.\n"
-        ));
+        // When prior work exists AND new decisions have been provided, the agent
+        // must evaluate whether its earlier commits are still valid.
+        if resume_summary.is_some() {
+            prompt.push_str(
+                "CRITICAL: Your previous session committed changes before asking the question \
+                 above. Review the existing branch diff against the decisions just provided. \
+                 If prior changes contradict a decision, revert them before continuing. \
+                 Do not build on top of incorrect work.\n",
+            );
+        }
     }
 
     if let Some(feedback) = &task.agent_feedback {

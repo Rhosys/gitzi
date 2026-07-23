@@ -391,15 +391,31 @@ impl MainAgent {
     }
 
     /// Convert stored chat history + a new user message into OaiMessage format.
-    pub fn history_to_messages(history: &[ChatMessage], user_message: &str) -> Vec<OaiMessage> {
+    /// When a rolling summary is available, injects it as the first message and
+    /// includes only the last 10 turns of raw history. Without a summary, falls
+    /// back to the last 10 turns directly.
+    pub fn history_to_messages(
+        history: &[ChatMessage],
+        user_message: &str,
+        summary: Option<&str>,
+    ) -> Vec<OaiMessage> {
         let mut messages = Vec::new();
 
-        // System prompt is injected by the caller via the first OaiMessage
-        // (we don't store it here — MainAgent injects it in turn())
+        // Inject rolling summary as context preamble
+        if let Some(summary_text) = summary {
+            messages.push(OaiMessage {
+                role: "system".to_string(),
+                content: Some(format!(
+                    "[Conversation summary — prior context]\n{summary_text}"
+                )),
+                tool_calls: vec![],
+                tool_call_id: None,
+            });
+        }
 
-        // Include the last 20 turns to keep context manageable
-        let recent = if history.len() > 20 {
-            &history[history.len() - 20..]
+        // Include only the last 10 turns to keep context tight
+        let recent = if history.len() > 10 {
+            &history[history.len() - 10..]
         } else {
             history
         };
@@ -707,7 +723,7 @@ impl MainAgent {
 
     /// Send a user message and return the model's response (no tool loop — compatibility shim).
     pub async fn chat(&self, history: &[ChatMessage], message: &str) -> Result<String> {
-        let messages = Self::history_to_messages(history, message);
+        let messages = Self::history_to_messages(history, message, None);
         let tools = main_agent_tools();
         let (_raw, turn) = self.turn(&messages, &tools).await?;
         match turn {
@@ -859,6 +875,38 @@ WHAT YOU SURFACE:\n\
 - Tasks needing approval (buffer columns)\n\
 - Blocked agents with questions\n\
 - Pipeline progress\n\
-- One thing at a time. Always."
+- One thing at a time. Always.\n\n\
+CONTEXT SUMMARY — MANDATORY:\n\
+End every response with a <context_summary> block. This summary is your memory \
+across turns — it will be fed back to you as prior context. Include:\n\
+- Active epics and their current status\n\
+- Tasks in flight and their stages\n\
+- Decisions made this session\n\
+- Open questions waiting for answers\n\
+- What was just discussed/done\n\
+Keep it factual and concise (max 300 words). The user sees your response above \
+the tag; the summary is for YOUR continuity only.\n\
+Format: <context_summary>\\n...summary...\\n</context_summary>"
         .to_string()
+}
+
+/// Extract the `<context_summary>` block from an agent response, returning
+/// (visible_text, optional_summary). The summary tag and its content are
+/// stripped from the user-visible response.
+pub fn extract_summary(response: &str) -> (String, Option<String>) {
+    if let Some(start) = response.find("<context_summary>") {
+        let before = response[..start].trim_end().to_string();
+        let tag_end = start + "<context_summary>".len();
+        if let Some(close) = response[tag_end..].find("</context_summary>") {
+            let summary = response[tag_end..tag_end + close].trim().to_string();
+            let after = response[tag_end + close + "</context_summary>".len()..].trim_start();
+            let visible = if after.is_empty() {
+                before
+            } else {
+                format!("{before}\n{after}")
+            };
+            return (visible, Some(summary));
+        }
+    }
+    (response.to_string(), None)
 }

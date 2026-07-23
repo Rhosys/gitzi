@@ -662,49 +662,34 @@ fn resume_context(task: &Task) -> Option<String> {
         return None;
     }
 
-    // Get diff stats (files changed between merge-base and branch tip)
-    let diff_stats = match get_diff_stats(&repo, branch_name) {
-        Some(s) => s,
-        None => "  (unable to compute diff stats)".to_string(),
+    // Get full diff (between merge-base and branch tip) so the agent can
+    // evaluate whether prior work is still correct given new answers.
+    let diff_content = ops::get_diff(&repo, branch_name).unwrap_or_default();
+
+    // Truncate diff to avoid blowing the context window — 8k chars is enough
+    // for the agent to evaluate correctness without exhausting token budget.
+    const MAX_DIFF_CHARS: usize = 8_000;
+    let diff_section = if diff_content.is_empty() {
+        "  (no diff — branch matches main)".to_string()
+    } else if diff_content.len() > MAX_DIFF_CHARS {
+        format!(
+            "{}\n  ... (truncated, {} total chars)",
+            &diff_content[..MAX_DIFF_CHARS],
+            diff_content.len()
+        )
+    } else {
+        diff_content
     };
 
     let summary = format!(
-        "Branch: {branch_name}\nRecent commits:\n{commits}\nDiff stats:\n{diff_stats}",
+        "Branch: {branch_name}\n\
+         Recent commits:\n{commits}\n\n\
+         Full diff of prior work:\n{diff_section}",
         commits = commits.join("\n"),
     );
 
-    info!(task_id = %task.id, branch = %branch_name, "boot resume: found recoverable work state");
+    info!(task_id = %task.id, branch = %branch_name, "resume: found recoverable work state");
     Some(summary)
-}
-
-/// Get a short diff stat summary (files changed, insertions, deletions) between
-/// the merge-base and the branch tip.
-fn get_diff_stats(repo: &git2::Repository, branch_name: &str) -> Option<String> {
-    let branch_ref = format!("refs/heads/{branch_name}");
-    let branch_commit = repo
-        .find_reference(&branch_ref)
-        .ok()?
-        .peel_to_commit()
-        .ok()?;
-
-    // Find merge base with HEAD (main branch)
-    let head_oid = repo.head().ok()?.target()?;
-    let merge_base = repo.merge_base(head_oid, branch_commit.id()).ok()?;
-
-    let base_tree = repo.find_commit(merge_base).ok()?.tree().ok()?;
-    let branch_tree = branch_commit.tree().ok()?;
-
-    let diff = repo
-        .diff_tree_to_tree(Some(&base_tree), Some(&branch_tree), None)
-        .ok()?;
-    let stats = diff.stats().ok()?;
-
-    Some(format!(
-        "  {} file(s) changed, {} insertions(+), {} deletions(-)",
-        stats.files_changed(),
-        stats.insertions(),
-        stats.deletions(),
-    ))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

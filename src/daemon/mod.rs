@@ -750,7 +750,8 @@ async fn start_chat_turn(
     let msg = message.clone();
     let handle = tokio::spawn(async move { d.chat(&msg, ctx).await });
 
-    // Push onto the stack
+    // Push onto the stack (capturing parent's summary for isolation)
+    let parent_summary = dispatcher.chat_summary.lock().await.clone();
     {
         let mut guard = dispatcher.chat_stack.lock().await;
         guard.push(ForkEntry {
@@ -760,6 +761,8 @@ async fn start_chat_turn(
             abort_handle: handle.abort_handle(),
             turn_active: true,
             fork_history,
+            fork_summary: parent_summary.clone(),
+            parent_summary,
         });
     }
 

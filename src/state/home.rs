@@ -93,6 +93,11 @@ pub fn current_chat_file() -> PathBuf {
     chats_dir().join("current.jsonl")
 }
 
+/// Rolling context summary persisted across daemon restarts.
+pub fn summary_file() -> PathBuf {
+    chats_dir().join("summary.txt")
+}
+
 /// Chat file for a specific fork session.
 pub fn fork_chat_file(fork_id: &str) -> PathBuf {
     chats_dir().join(format!("{fork_id}.jsonl"))

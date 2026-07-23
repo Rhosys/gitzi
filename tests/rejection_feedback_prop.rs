@@ -64,6 +64,7 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         wip_limits,
         wip_waiting,
         chat_history: Arc::new(Mutex::new(vec![])),
+        chat_summary: Arc::new(Mutex::new(None)),
         main_agent,
         fallback_agent: None,
         token_store,

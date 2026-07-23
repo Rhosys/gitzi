@@ -298,6 +298,9 @@ pub struct Dispatcher {
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
     /// Persistent chat history (in-memory mirror of chat.jsonl).
     pub chat_history: Arc<Mutex<Vec<ChatMessage>>>,
+    /// Rolling summary of conversation context beyond the recent window.
+    /// Extracted from the `<context_summary>` block in each agent response.
+    pub chat_summary: Arc<Mutex<Option<String>>>,
     /// The main coordination agent that drives the chat interface.
     pub main_agent: Box<dyn MainChatBackend>,
     /// The distinguished fallback "control-plane" brain (ADR-002). Built only
@@ -328,6 +331,12 @@ pub struct ForkEntry {
     pub turn_active: bool,
     /// Isolated chat history for this fork (seeded from the last 50 main entries).
     pub fork_history: Vec<crate::state::chat::ChatMessage>,
+    /// Rolling summary scoped to this fork's conversation. Initialized from the
+    /// parent's summary at fork creation; evolves independently during the fork.
+    pub fork_summary: Option<String>,
+    /// Snapshot of the parent conversation's summary at the time this fork was
+    /// created. Restored to `chat_summary` when the fork closes.
+    pub parent_summary: Option<String>,
 }
 
 /// Context for a chat turn — determines which history and persistence path to use.
@@ -1052,6 +1061,16 @@ impl Dispatcher {
             Arc::new(Mutex::new(messages))
         };
 
+        // 10b. Load rolling summary from disk
+        let chat_summary = {
+            let path = home::summary_file();
+            let summary = std::fs::read_to_string(&path).ok().filter(|s| !s.is_empty());
+            if summary.is_some() {
+                info!("loaded chat summary from disk");
+            }
+            Arc::new(Mutex::new(summary))
+        };
+
         // 11. Build main agent from config, plus the fallback control-plane
         // brain used to drive recovery when main's own provider is down.
         let main_agent_def = config.resolve_agent("main");
@@ -1067,6 +1086,7 @@ impl Dispatcher {
             wip_limits,
             wip_waiting,
             chat_history,
+            chat_summary,
             main_agent,
             fallback_agent,
             token_store,
@@ -1166,6 +1186,23 @@ impl Dispatcher {
         };
         let final_response = self.run_main_agent_turn(message, &history).await?;
 
+        // Extract and store rolling summary; strip it from user-visible response.
+        // Fork turns update the fork's own summary; main turns update the global one.
+        let (visible_response, new_summary) =
+            crate::agent::main_agent::extract_summary(&final_response);
+        if let Some(ref summary) = new_summary {
+            let is_fork = ctx.as_ref().is_some_and(|c| c.fork_id != "main");
+            if is_fork {
+                let mut guard = self.chat_stack.lock().await;
+                if let Some(entry) = guard.last_mut() {
+                    entry.fork_summary = Some(summary.clone());
+                }
+            } else {
+                *self.chat_summary.lock().await = Some(summary.clone());
+                std::fs::write(home::summary_file(), summary).ok();
+            }
+        }
+
         // Persist the original user message (not augmented) and the agent response
         let persist_path = ctx
             .as_ref()
@@ -1174,7 +1211,7 @@ impl Dispatcher {
 
         if ctx.is_none() || ctx.as_ref().is_some_and(|c| c.fork_id == "main") {
             let user_msg = ChatMessage::user(message);
-            let agent_msg = ChatMessage::agent(&final_response);
+            let agent_msg = ChatMessage::agent(&visible_response);
             chat_store::append(&persist_path, &user_msg).ok();
             chat_store::append(&persist_path, &agent_msg).ok();
 
@@ -1183,7 +1220,7 @@ impl Dispatcher {
             hist.push(agent_msg);
         } else {
             let user_msg = ChatMessage::user(message);
-            let agent_msg = ChatMessage::agent(&final_response);
+            let agent_msg = ChatMessage::agent(&visible_response);
             chat_store::append(&persist_path, &user_msg).ok();
             chat_store::append(&persist_path, &agent_msg).ok();
 
@@ -1209,14 +1246,14 @@ impl Dispatcher {
             review_item.actions.push(ReviewAction::Comment {
                 at: now,
                 role: Role::Agent,
-                content: final_response.clone(),
+                content: visible_response.clone(),
             });
             if let Err(e) = self.store.write_review_item(&review_item) {
                 warn!(%task_id, error = %e, "failed to persist rework discussion comment");
             }
         }
 
-        Ok(final_response)
+        Ok(visible_response)
     }
 
     /// Proactively surface project status at session start, without a user message.
@@ -1230,16 +1267,23 @@ impl Dispatcher {
         let history = self.chat_history.lock().await.clone();
         let final_response = self.run_main_agent_turn(prompt, &history).await?;
 
+        let (visible_response, new_summary) =
+            crate::agent::main_agent::extract_summary(&final_response);
+        if let Some(ref summary) = new_summary {
+            *self.chat_summary.lock().await = Some(summary.clone());
+            std::fs::write(home::summary_file(), summary).ok();
+        }
+
         {
             let path = home::current_chat_file();
-            let agent_msg = ChatMessage::agent(&final_response);
+            let agent_msg = ChatMessage::agent(&visible_response);
             chat_store::append(&path, &agent_msg).ok();
 
             let mut hist = self.chat_history.lock().await;
             hist.push(agent_msg);
         }
 
-        Ok(final_response)
+        Ok(visible_response)
     }
 
     /// Shared agent turn: peek the review queue, switch the panel and inject queue
@@ -1334,8 +1378,18 @@ impl Dispatcher {
         };
         let llm_message = format!("{repo_context}{board_context}{llm_message}");
 
-        // 4. Build messages from history + (possibly augmented) message
-        let mut messages = MainAgent::history_to_messages(history, &llm_message);
+        // 4. Build messages from history + rolling summary + (possibly augmented) message.
+        // When inside a fork, use the fork's own evolving summary instead of main's.
+        let summary = {
+            let guard = self.chat_stack.lock().await;
+            if let Some(entry) = guard.last().filter(|e| e.id != "main") {
+                entry.fork_summary.clone()
+            } else {
+                self.chat_summary.lock().await.clone()
+            }
+        };
+        let mut messages =
+            MainAgent::history_to_messages(history, &llm_message, summary.as_deref());
 
         // 5. Determine tools based on fork context
         let in_fork = {
@@ -1637,10 +1691,15 @@ impl Dispatcher {
                 if !in_fork {
                     return "error: not inside a fork — cannot close".to_string();
                 }
-                // Pop the fork from the stack
+                // Pop the fork from the stack and restore parent's summary
                 let fork_id = {
                     let mut guard = self.chat_stack.lock().await;
-                    guard.pop().map(|e| e.id).unwrap_or_default()
+                    let entry = guard.pop();
+                    // Restore the parent conversation's summary
+                    if let Some(ref e) = entry {
+                        *self.chat_summary.lock().await = e.parent_summary.clone();
+                    }
+                    entry.map(|e| e.id).unwrap_or_default()
                 };
                 // Emit close event
                 self.event_bus.emit(event_bus::DispatchEvent::ForkClosed {
