@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router, http::header, routing::post};
 use serde_json::json;
+use serial_test::serial;
 use tempfile::TempDir;
 
 use gitzi::config::{AgentDef, Config, ProviderDef};
@@ -118,6 +119,7 @@ fn with_test_home() -> TempDir {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
+#[serial]
 async fn chat_with_mock_agent_returns_response() {
     let _tmp = with_test_home();
     let port = start_mock_server().await;
@@ -138,6 +140,7 @@ async fn chat_with_mock_agent_returns_response() {
 }
 
 #[tokio::test]
+#[serial]
 async fn create_epic_and_task_via_dispatcher() {
     let _tmp = with_test_home();
     let port = start_mock_server().await;
@@ -182,6 +185,7 @@ async fn create_epic_and_task_via_dispatcher() {
 }
 
 #[tokio::test]
+#[serial]
 async fn opening_status_succeeds_with_mock() {
     let _tmp = with_test_home();
     let port = start_mock_server().await;
