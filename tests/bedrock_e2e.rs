@@ -18,7 +18,7 @@ fn build_bedrock_agent() -> BedrockMainAgent {
     BedrockMainAgent::new(
         "us-east-1",
         "https://d-9a672c0294.awsapps.com/start",
-        "REDACTED",
+        "123456789012",
         "AdministratorAccess",
         "us.anthropic.claude-sonnet-4-20250514-v1:0",
         "You are a test assistant. Respond concisely.".to_string(),
