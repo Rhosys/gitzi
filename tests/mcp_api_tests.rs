@@ -32,14 +32,16 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
     let event_bus = Arc::new(EventBus::new(256));
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(vec![])));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
-    let config = Arc::new(Config::default());
+    let config = Arc::new(tokio::sync::RwLock::new(Config::default()));
     let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(HashMap::new()));
 
     let agent_pool = AgentPool::inert();
 
-    let main_agent_def = config.resolve_agent("main");
-    let main_agent = build_main_agent(&config, &main_agent_def);
+    let main_agent_def = config.read().await.resolve_agent("main");
+    let config_guard = config.read().await;
+    let main_agent = build_main_agent(&*config_guard, &main_agent_def);
+    drop(config_guard);
 
     let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
         std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
@@ -54,8 +56,8 @@ async fn build_test_app() -> (axum::Router, Arc<TokenStore>) {
         wip_waiting,
         chat_history: Arc::new(Mutex::new(vec![])),
         chat_summary: Arc::new(Mutex::new(None)),
-        main_agent,
-        fallback_agent: None,
+        main_agent: tokio::sync::RwLock::new(main_agent),
+        fallback_agent: tokio::sync::RwLock::new(None),
         token_store: Arc::clone(&token_store),
         store,
         chat_stack: Mutex::new(Vec::new()),

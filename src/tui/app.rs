@@ -29,6 +29,9 @@ pub struct BoardColumn {
 pub struct ChatEntry {
     pub is_user: bool,
     pub content: String,
+    /// True when this message represents an error (displayed in red, also
+    /// pushed to the Logs panel).
+    pub is_error: bool,
 }
 
 // ─── Fork info (received from daemon events) ─────────────────────────────────
@@ -48,6 +51,28 @@ pub enum EditorTarget {
     Task,
 }
 
+// ─── Settings provider entry ──────────────────────────────────────────────────
+
+/// A provider entry for the Settings panel.
+#[derive(Debug, Clone)]
+pub struct SettingsProvider {
+    pub name: String,
+    pub kind: String,
+    pub active: bool,
+}
+
+// ─── Active review item ───────────────────────────────────────────────────────
+
+/// Active review item — shown as a context banner in the chat pane.
+#[derive(Debug, Clone)]
+pub struct ActiveReview {
+    pub id: String,
+    pub task_id: String,
+    pub task_title: Option<String>,
+    pub description: String,
+    pub kind: String, // "agent_question" or "buffer_approval"
+}
+
 // ─── TUI Mode ─────────────────────────────────────────────────────────────────
 // No Mode enum — chat input is always active. Arrow keys navigate the board,
 // printable chars go to chat, Enter submits, Backspace deletes, Ctrl+Q quits.
@@ -60,6 +85,7 @@ pub enum Panel {
     Kanban,
     Task,
     Logs,
+    Settings,
 }
 
 impl Panel {
@@ -69,6 +95,7 @@ impl Panel {
         Panel::Kanban,
         Panel::Task,
         Panel::Logs,
+        Panel::Settings,
     ];
 
     pub fn key(self) -> char {
@@ -78,6 +105,7 @@ impl Panel {
             Panel::Kanban => 'K',
             Panel::Task => 'T',
             Panel::Logs => 'L',
+            Panel::Settings => 'G',
         }
     }
 
@@ -88,6 +116,7 @@ impl Panel {
             Panel::Kanban => "Kanban",
             Panel::Task => "Task",
             Panel::Logs => "Logs",
+            Panel::Settings => "Settings",
         }
     }
 }
@@ -137,6 +166,9 @@ pub struct App {
 
     /// Count of pending agent-question review items (clarification queue size).
     pub question_count: usize,
+
+    /// The current review item being surfaced to the user (context banner).
+    pub active_review: Option<ActiveReview>,
 
     /// True while waiting for a chat response from the main agent.
     pub chat_pending: bool,
@@ -207,6 +239,30 @@ pub struct App {
     pub stream_tokens: usize,
     /// Tool names called during the current streaming response.
     pub stream_tools: Vec<String>,
+
+    // ── Settings panel ─────────────────────────────────────────────────────
+    /// Settings panel: provider list from daemon.
+    pub settings_providers: Vec<SettingsProvider>,
+    /// Settings panel: which provider is currently active.
+    pub settings_active: Option<String>,
+    /// Settings panel: setup state for the provider activation flow.
+    pub settings_setup_state: Option<crate::setup::SetupState>,
+    /// Settings panel: message from last activation attempt.
+    pub settings_message: Option<String>,
+    /// Settings panel: selected index in provider picker.
+    pub settings_selected: usize,
+
+    // ── Settings: multi-step SSO flow ──────────────────────────────────────
+    /// The provider name currently being activated (for multi-step).
+    pub settings_sso_provider: Option<String>,
+    /// The chosen account_id (set after step 1).
+    pub settings_sso_account_id: Option<String>,
+    /// Selectable items for the current SSO step (accounts or roles).
+    pub settings_sso_choices: Vec<String>,
+    /// Selected index in the SSO choices picker.
+    pub settings_sso_selected: usize,
+    /// Label for the current SSO step ("Select account" or "Select role").
+    pub settings_sso_label: Option<String>,
 }
 
 /// Commands sent from the TUI event loop to the daemon client task.
@@ -233,6 +289,16 @@ pub enum DaemonCommand {
     },
     /// Re-run the environment scan during bootstrap setup.
     SetupRescan,
+    /// Request current settings state (provider list + active provider).
+    SettingsState,
+    /// Switch to a different provider via settings panel.
+    SettingsSelect {
+        name: String,
+        account_id: Option<String>,
+        role_name: Option<String>,
+    },
+    /// Re-scan providers from settings panel.
+    SettingsRescan,
 }
 
 /// Describes what the user is currently looking at in the TUI.
@@ -256,7 +322,7 @@ pub struct ViewContext {
 #[derive(Debug)]
 pub enum DaemonMessage {
     BoardSnapshot(Vec<BoardColumn>),
-    ReviewPending(bool),
+    ReviewPending(Option<ActiveReview>),
     Epics(Vec<crate::model::Epic>),
     QueueLen(usize),
     ChatHistory(Vec<ChatEntry>),
@@ -282,6 +348,17 @@ pub enum DaemonMessage {
     StreamingToolCall(String),
     /// Streaming: response complete.
     StreamingDone,
+    /// Settings panel: provider list + active provider.
+    SettingsState {
+        providers: Vec<SettingsProvider>,
+        active: Option<String>,
+    },
+    /// Settings panel: setup state from rescan.
+    SettingsSetupState(crate::setup::SetupState),
+    /// Settings panel: message from last activation attempt.
+    SettingsMessage(String),
+    /// Settings panel: needs more input (multi-step SSO flow).
+    SettingsNeedsInput(String),
 }
 
 impl App {
@@ -291,6 +368,7 @@ impl App {
             board: HashMap::new(),
             epics: Vec::new(),
             question_count: 0,
+            active_review: None,
             chat_pending: false,
             panel: Panel::Status,
             panel_focused: false,
@@ -318,6 +396,16 @@ impl App {
             setup_message: None,
             stream_tokens: 0,
             stream_tools: Vec::new(),
+            settings_providers: Vec::new(),
+            settings_active: None,
+            settings_setup_state: None,
+            settings_message: None,
+            settings_selected: 0,
+            settings_sso_provider: None,
+            settings_sso_account_id: None,
+            settings_sso_choices: Vec::new(),
+            settings_sso_selected: 0,
+            settings_sso_label: None,
         }
     }
 
@@ -380,6 +468,132 @@ impl App {
         let _ = self.cmd_tx.send(DaemonCommand::SetupRescan);
     }
 
+    // ── Settings panel (live provider switching) ────────────────────────────
+
+    /// Apply settings state received from the daemon.
+    pub fn apply_settings_state(
+        &mut self,
+        providers: Vec<SettingsProvider>,
+        active: Option<String>,
+    ) {
+        self.settings_providers = providers;
+        self.settings_active = active;
+    }
+
+    /// Activate the highlighted provider in the settings panel.
+    pub fn settings_select_provider(&mut self) {
+        if let Some(provider) = self.settings_providers.get(self.settings_selected) {
+            let name = provider.name.clone();
+            self.settings_message = Some(format!("Switching to {name}..."));
+            self.settings_sso_provider = Some(name.clone());
+            self.settings_sso_account_id = None;
+            self.settings_sso_choices.clear();
+            self.settings_sso_selected = 0;
+            self.settings_sso_label = None;
+            let _ = self.cmd_tx.send(DaemonCommand::SettingsSelect {
+                name,
+                account_id: None,
+                role_name: None,
+            });
+        }
+    }
+
+    /// Handle a NeedsMoreInput response: parse the listing and show a picker.
+    pub fn settings_apply_needs_input(&mut self, message: &str) {
+        // Parse lines starting with "- " as selectable choices.
+        let choices: Vec<String> = message
+            .lines()
+            .filter(|l| l.starts_with("- "))
+            .map(|l| l.strip_prefix("- ").unwrap_or(l).to_string())
+            .collect();
+
+        if choices.is_empty() {
+            // Unparseable — just show as a message
+            self.settings_message = Some(message.to_string());
+            return;
+        }
+
+        // Determine which step we're at based on whether account_id is set
+        if self.settings_sso_account_id.is_none() {
+            self.settings_sso_label = Some("Select AWS account:".to_string());
+        } else {
+            self.settings_sso_label = Some("Select IAM role:".to_string());
+        }
+        self.settings_sso_choices = choices;
+        self.settings_sso_selected = 0;
+        self.settings_message = None;
+    }
+
+    /// Whether the settings panel is in the SSO multi-step picker.
+    pub fn settings_in_sso_picker(&self) -> bool {
+        !self.settings_sso_choices.is_empty()
+    }
+
+    /// Confirm the selected SSO choice and advance to the next step.
+    pub fn settings_sso_confirm(&mut self) {
+        let Some(provider_name) = self.settings_sso_provider.clone() else {
+            return;
+        };
+        let Some(choice) = self.settings_sso_choices.get(self.settings_sso_selected).cloned()
+        else {
+            return;
+        };
+
+        if self.settings_sso_account_id.is_none() {
+            // Step 1: extract account_id from the choice line.
+            // Format: "123456789012 (Account Name) <email>"
+            let account_id = choice.split_whitespace().next().unwrap_or(&choice).to_string();
+            self.settings_sso_account_id = Some(account_id.clone());
+            self.settings_sso_choices.clear();
+            self.settings_sso_selected = 0;
+            self.settings_sso_label = None;
+            self.settings_message = Some("Fetching roles...".to_string());
+            let _ = self.cmd_tx.send(DaemonCommand::SettingsSelect {
+                name: provider_name,
+                account_id: Some(account_id),
+                role_name: None,
+            });
+        } else {
+            // Step 2: extract role_name from the choice line.
+            let role_name = choice.trim().to_string();
+            let account_id = self.settings_sso_account_id.clone();
+            self.settings_sso_choices.clear();
+            self.settings_sso_selected = 0;
+            self.settings_sso_label = None;
+            self.settings_message = Some("Activating...".to_string());
+            let _ = self.cmd_tx.send(DaemonCommand::SettingsSelect {
+                name: provider_name,
+                account_id,
+                role_name: Some(role_name),
+            });
+        }
+    }
+
+    /// Cancel the SSO multi-step flow.
+    pub fn settings_sso_cancel(&mut self) {
+        self.settings_sso_provider = None;
+        self.settings_sso_account_id = None;
+        self.settings_sso_choices.clear();
+        self.settings_sso_selected = 0;
+        self.settings_sso_label = None;
+        self.settings_message = None;
+    }
+
+    /// Move selection up in the settings provider list.
+    pub fn settings_move_up(&mut self) {
+        if self.settings_selected > 0 {
+            self.settings_selected -= 1;
+        }
+    }
+
+    /// Move selection down in the settings provider list.
+    pub fn settings_move_down(&mut self) {
+        let n = self.settings_providers.len();
+        if n > 0 && self.settings_selected < n - 1 {
+            self.settings_selected += 1;
+        }
+    }
+
     /// Apply a board snapshot from the daemon.
     pub fn apply_board_snapshot(&mut self, columns: Vec<BoardColumn>) {
         self.board.clear();
@@ -398,6 +612,7 @@ impl App {
             "board" | "kanban" => self.panel = Panel::Kanban,
             "task" => self.panel = Panel::Task,
             "logs" => self.panel = Panel::Logs,
+            "settings" => self.panel = Panel::Settings,
             _ => {} // ignore unknown views
         }
     }
@@ -410,6 +625,32 @@ impl App {
     /// Apply a fresh clarification-queue count from the daemon.
     pub fn apply_queue_len(&mut self, count: usize) {
         self.question_count = count;
+    }
+
+    /// Apply a review item from the daemon. When a review is active, auto-switch
+    /// to the Task panel and try to select the relevant task on the board.
+    pub fn apply_review(&mut self, review: Option<ActiveReview>) {
+        let had_review = self.active_review.is_some();
+        self.active_review = review.clone();
+
+        if let Some(ref item) = review {
+            // Switch to Task panel
+            self.panel = Panel::Task;
+
+            // Try to select the relevant task on the board
+            for (col_idx, col) in column_order().iter().enumerate() {
+                if let Some(tasks) = self.board.get(&col.to_string()) {
+                    if let Some(task_idx) = tasks.iter().position(|t| t.id == item.task_id) {
+                        self.board_col = col_idx;
+                        self.board_task = task_idx;
+                        break;
+                    }
+                }
+            }
+        } else if had_review {
+            // Review resolved — go back to Status
+            self.panel = Panel::Status;
+        }
     }
 
     /// The epic with the most outstanding (non-Done) work, with its progress.
@@ -563,6 +804,7 @@ impl App {
         self.chat_history.push(ChatEntry {
             is_user: true,
             content: message.clone(),
+            is_error: false,
         });
 
         let selected_task = self.selected_board_task();
@@ -591,9 +833,16 @@ impl App {
             let tools_line = format!("Tools: [{}]\n", self.stream_tools.join(", "));
             format!("{tools_line}{response}")
         };
+
+        let is_error = content.starts_with("Error:");
+        if is_error {
+            self.push_log(format!("[ERROR] {content}"));
+        }
+
         self.chat_history.push(ChatEntry {
             is_user: false,
             content,
+            is_error,
         });
         self.chat_pending = false;
         self.stream_tokens = 0;

@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, sleep};
 use tracing::warn;
 
-use super::app::{BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, EditorTarget};
+use super::app::{ActiveReview, BoardColumn, ChatEntry, DaemonCommand, DaemonMessage, EditorTarget, SettingsProvider};
 use crate::daemon::socket_path;
 use crate::setup::SetupState;
 use crate::state::chat::{ChatMessage as StoredMessage, Role};
@@ -226,8 +226,8 @@ async fn run_board_phase(
         return;
     }
     if let Ok(Some(line)) = lines.next_line().await {
-        let pending = line.trim() != "null";
-        let _ = msg_tx.send(DaemonMessage::ReviewPending(pending));
+        let review = parse_review_response(&line);
+        let _ = msg_tx.send(DaemonMessage::ReviewPending(review));
     }
 
     // Initial epics list (for the Status panel's "Current epic" section)
@@ -397,8 +397,8 @@ async fn run_board_phase(
                             return;
                         }
                         if let Ok(Some(line)) = lines.next_line().await {
-                            let pending = line.trim() != "null";
-                            let _ = msg_tx.send(DaemonMessage::ReviewPending(pending));
+                            let review = parse_review_response(&line);
+                            let _ = msg_tx.send(DaemonMessage::ReviewPending(review));
                         }
                     }
                     DaemonCommand::RefreshEpics => {
@@ -448,6 +448,139 @@ async fn run_board_phase(
                     }
                     // Setup commands are meaningless once on the board — drop them.
                     DaemonCommand::SetupSelect { .. } | DaemonCommand::SetupRescan => {}
+                    DaemonCommand::SettingsState => {
+                        if writer.write_all(b"settings_state\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected(
+                                "write failed".to_string(),
+                            ));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await {
+                            if let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(&line)
+                            {
+                                let active = val
+                                    .get("active_provider")
+                                    .and_then(|v| v.as_str())
+                                    .map(String::from);
+                                let providers: Vec<SettingsProvider> = val
+                                    .get("providers")
+                                    .and_then(|v| v.as_array())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .filter_map(|p| {
+                                                Some(SettingsProvider {
+                                                    name: p.get("name")?.as_str()?.to_string(),
+                                                    kind: p.get("kind")?.as_str()?.to_string(),
+                                                    active: p.get("active")?.as_bool()?,
+                                                })
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let _ = msg_tx
+                                    .send(DaemonMessage::SettingsState { providers, active });
+                            }
+                        }
+                    }
+                    DaemonCommand::SettingsSelect { name, account_id, role_name } => {
+                        let payload = serde_json::json!({
+                            "name": name,
+                            "account_id": account_id,
+                            "role_name": role_name,
+                        });
+                        let cmd = format!(
+                            "settings_select {}\n",
+                            serde_json::to_string(&payload).unwrap_or_default()
+                        );
+                        if writer.write_all(cmd.as_bytes()).await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected(
+                                "write failed".to_string(),
+                            ));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await {
+                            if let Ok(val) =
+                                serde_json::from_str::<serde_json::Value>(&line)
+                            {
+                                let message = val
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let done =
+                                    val.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+                                if done {
+                                    let _ =
+                                        msg_tx.send(DaemonMessage::SettingsMessage(message));
+                                    // Refresh settings state after successful switch
+                                    if writer
+                                        .write_all(b"settings_state\n")
+                                        .await
+                                        .is_err()
+                                    {
+                                        let _ = msg_tx.send(DaemonMessage::Disconnected(
+                                            "write failed".to_string(),
+                                        ));
+                                        return;
+                                    }
+                                    if let Ok(Some(line2)) = lines.next_line().await {
+                                        if let Ok(val2) =
+                                            serde_json::from_str::<serde_json::Value>(&line2)
+                                        {
+                                            let active = val2
+                                                .get("active_provider")
+                                                .and_then(|v| v.as_str())
+                                                .map(String::from);
+                                            let providers: Vec<SettingsProvider> = val2
+                                                .get("providers")
+                                                .and_then(|v| v.as_array())
+                                                .map(|arr| {
+                                                    arr.iter()
+                                                        .filter_map(|p| {
+                                                            Some(SettingsProvider {
+                                                                name: p.get("name")?.as_str()?
+                                                                    .to_string(),
+                                                                kind: p.get("kind")?.as_str()?
+                                                                    .to_string(),
+                                                                active: p.get("active")?
+                                                                    .as_bool()?,
+                                                            })
+                                                        })
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
+                                            let _ = msg_tx.send(
+                                                DaemonMessage::SettingsState {
+                                                    providers,
+                                                    active,
+                                                },
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    let _ =
+                                        msg_tx.send(DaemonMessage::SettingsNeedsInput(message));
+                                }
+                            }
+                        }
+                    }
+                    DaemonCommand::SettingsRescan => {
+                        if writer.write_all(b"settings_rescan\n").await.is_err() {
+                            let _ = msg_tx.send(DaemonMessage::Disconnected(
+                                "write failed".to_string(),
+                            ));
+                            return;
+                        }
+                        if let Ok(Some(line)) = lines.next_line().await {
+                            if let Ok(state) =
+                                serde_json::from_str::<crate::setup::SetupState>(&line)
+                            {
+                                let _ =
+                                    msg_tx.send(DaemonMessage::SettingsSetupState(state));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -461,12 +594,43 @@ fn stored_to_entries(stored: Vec<StoredMessage>) -> Vec<ChatEntry> {
             Role::User => Some(ChatEntry {
                 is_user: true,
                 content: m.content,
+                is_error: false,
             }),
-            Role::Agent => Some(ChatEntry {
-                is_user: false,
-                content: m.content,
-            }),
+            Role::Agent => {
+                let is_error = m.content.starts_with("Error:");
+                Some(ChatEntry {
+                    is_user: false,
+                    content: m.content,
+                    is_error,
+                })
+            }
             Role::System => None,
         })
         .collect()
+}
+
+/// Parse the JSON response from `peek_review` into an `ActiveReview`.
+/// Returns `None` if the response is "null" or unparseable.
+fn parse_review_response(line: &str) -> Option<ActiveReview> {
+    if line.trim() == "null" {
+        return None;
+    }
+    let val: serde_json::Value = serde_json::from_str(line).ok()?;
+    let id = val.get("id")?.as_str()?.to_string();
+    let task_id = val.get("task_id")?.as_str()?.to_string();
+    let task_title = val.get("task_title").and_then(|v| v.as_str()).map(String::from);
+    let description = val.get("description")?.as_str()?.to_string();
+    let kind = val
+        .get("kind")
+        .and_then(|v| v.get("type"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    Some(ActiveReview {
+        id,
+        task_id,
+        task_title,
+        description,
+        kind,
+    })
 }

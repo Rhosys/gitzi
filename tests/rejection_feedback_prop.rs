@@ -42,15 +42,17 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
     let event_bus = Arc::new(EventBus::new(256));
     let board = Arc::new(RwLock::new(KanbanBoard::from_tasks(tasks)));
     let review_queue = Arc::new(Mutex::new(HumanReviewQueue::new()));
-    let config = Arc::new(Config::default());
+    let config = Arc::new(tokio::sync::RwLock::new(Config::default()));
     let wip_limits = Arc::new(RwLock::new(WipLimits::default()));
     let wip_waiting = Arc::new(Mutex::new(std::collections::HashMap::new()));
 
     let token_store = Arc::new(gitzi::mcp::auth::TokenStore::new());
     let agent_pool = AgentPool::inert();
 
-    let main_agent_def = config.resolve_agent("main");
-    let main_agent = gitzi::agent::build_main_agent(&config, &main_agent_def);
+    let main_agent_def = config.read().await.resolve_agent("main");
+    let config_guard = config.read().await;
+    let main_agent = gitzi::agent::build_main_agent(&*config_guard, &main_agent_def);
+    drop(config_guard);
 
     let store: std::sync::Arc<dyn gitzi::state::store::StateStore> =
         std::sync::Arc::new(gitzi::state::store::InMemoryStore::new());
@@ -65,8 +67,8 @@ async fn build_test_dispatcher(tasks: Vec<Task>) -> Dispatcher {
         wip_waiting,
         chat_history: Arc::new(Mutex::new(vec![])),
         chat_summary: Arc::new(Mutex::new(None)),
-        main_agent,
-        fallback_agent: None,
+        main_agent: tokio::sync::RwLock::new(main_agent),
+        fallback_agent: tokio::sync::RwLock::new(None),
         token_store,
         store,
         chat_stack: Mutex::new(Vec::new()),

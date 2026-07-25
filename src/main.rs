@@ -563,6 +563,35 @@ async fn watch_binary_for_restart() {
     // Debounce: wait for writes to settle (linker may still be writing)
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
+    // Drain any additional events that arrived during the debounce window
+    while rx.try_recv().is_ok() {}
+
+    // Wait for the binary to exist and be stable (cargo deletes then writes)
+    let mut attempts = 0;
+    loop {
+        if exe_path.exists() {
+            // Check the binary is no longer being written to by comparing
+            // size across a short interval
+            let size_a = std::fs::metadata(&exe_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let size_b = std::fs::metadata(&exe_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            if size_a == size_b && size_a > 0 {
+                break;
+            }
+        }
+        attempts += 1;
+        if attempts > 30 {
+            error!("binary never stabilized after 15s — skipping hot-reload");
+            std::future::pending::<()>().await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
     info!("binary modification detected — preparing to restart");
 }
 

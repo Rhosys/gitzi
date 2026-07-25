@@ -292,7 +292,7 @@ pub struct Dispatcher {
     pub board: Arc<RwLock<KanbanBoard>>,
     pub review_queue: Arc<Mutex<HumanReviewQueue>>,
     pub agent_pool: AgentPool,
-    pub config: Arc<Config>,
+    pub config: Arc<tokio::sync::RwLock<Config>>,
     pub wip_limits: Arc<RwLock<WipLimits>>,
     /// Agents waiting to advance into a full column.
     pub wip_waiting: Arc<Mutex<HashMap<Column, AgentRole>>>,
@@ -302,12 +302,12 @@ pub struct Dispatcher {
     /// Extracted from the `<context_summary>` block in each agent response.
     pub chat_summary: Arc<Mutex<Option<String>>>,
     /// The main coordination agent that drives the chat interface.
-    pub main_agent: Box<dyn MainChatBackend>,
+    pub main_agent: tokio::sync::RwLock<Box<dyn MainChatBackend>>,
     /// The distinguished fallback "control-plane" brain (ADR-002). Built only
     /// when a fallback provider is configured *and* distinct from main's own
     /// provider, so it can run the recovery conversation when main is down.
     /// `None` when main already is the fallback (recovery couldn't help).
-    pub fallback_agent: Option<Box<dyn MainChatBackend>>,
+    pub fallback_agent: tokio::sync::RwLock<Option<Box<dyn MainChatBackend>>>,
     /// Token store for MCP sub-agent authorization.
     pub token_store: Arc<TokenStore>,
     /// Persistence layer for tasks, epics, and review items.
@@ -544,7 +544,7 @@ impl Dispatcher {
         let repo_path = home::repo_path();
         let repo_path_str = repo_path.to_string_lossy().to_string();
 
-        let repo_config = self.config.repo_config(&repo_path_str);
+        let repo_config = self.config.read().await.repo_config(&repo_path_str);
 
         match merge_task_branch(
             &repo_path,
@@ -964,6 +964,35 @@ impl Dispatcher {
         }
     }
 
+    /// Live-switch the active LLM provider. Drives `setup::activate()`, persists
+    /// config, and hot-swaps the main agent without restarting the daemon.
+    pub async fn switch_provider(
+        &self,
+        name: &str,
+        account_id: Option<String>,
+        role_name: Option<String>,
+    ) -> anyhow::Result<crate::setup::ActivationOutcome> {
+        let outcome = {
+            let mut config = self.config.write().await;
+            crate::setup::activate(&mut config, name, account_id, role_name).await?
+        };
+
+        if let crate::setup::ActivationOutcome::Activated { .. } = &outcome {
+            // Rebuild main agent from updated config
+            let config = self.config.read().await;
+            let main_def = config.resolve_agent("main");
+            let new_main = crate::agent::build_main_agent(&config, &main_def);
+            let new_fallback = build_fallback_agent(&config);
+            let _ = config.write(std::path::Path::new("."));
+            drop(config);
+
+            *self.main_agent.write().await = new_main;
+            *self.fallback_agent.write().await = new_fallback;
+        }
+
+        Ok(outcome)
+    }
+
     /// Boot the dispatcher: load tasks, build board, spawn agents, emit BootComplete,
     /// and signal agents whose columns contain work.
     pub async fn start(config: Config) -> anyhow::Result<Self> {
@@ -1087,13 +1116,15 @@ impl Dispatcher {
             board,
             review_queue,
             agent_pool,
-            config,
+            config: Arc::new(tokio::sync::RwLock::new(
+                (*config).clone(),
+            )),
             wip_limits,
             wip_waiting,
             chat_history,
             chat_summary,
-            main_agent,
-            fallback_agent,
+            main_agent: tokio::sync::RwLock::new(main_agent),
+            fallback_agent: tokio::sync::RwLock::new(fallback_agent),
             token_store,
             store,
             chat_stack: Mutex::new(Vec::new()),
@@ -1305,12 +1336,7 @@ impl Dispatcher {
             queue.peek().cloned()
         };
 
-        // 2. Switch side panel when something needs human attention
-        if pending_review.is_some() {
-            self.gitzi_switch_panel("task".to_string()).await;
-        }
-
-        // 3. Build context-augmented message for the LLM
+        // 2. Build context-augmented message for the LLM
         let llm_message = if let Some(ref item) = pending_review {
             let task_title = {
                 let board = self.board.read().await;
@@ -1343,7 +1369,8 @@ impl Dispatcher {
 
         // Inject repo context so the agent knows what repos are available
         let repo_context = {
-            let repos = crate::state::repo_cache::populate(&self.config.repo_paths);
+            let repo_paths = self.config.read().await.repo_paths.clone();
+            let repos = crate::state::repo_cache::populate(&repo_paths);
             if repos.is_empty() {
                 String::new()
             } else {
@@ -1406,7 +1433,9 @@ impl Dispatcher {
         // 6. Tool-calling loop. If main's provider is down, fall back *once* to
         // the control-plane brain to run a recovery conversation (ADR-002) —
         // never a silent swap for the user's real request.
-        let mut active_agent: &dyn MainChatBackend = &*self.main_agent;
+        let agent_guard = self.main_agent.read().await;
+        let fallback_guard = self.fallback_agent.read().await;
+        let mut active_agent: &dyn MainChatBackend = &**agent_guard;
         let mut recovered = false;
         let final_response = loop {
             let (raw_assistant, turn) = match active_agent
@@ -1415,7 +1444,7 @@ impl Dispatcher {
             {
                 Ok(t) => t,
                 Err(e) => {
-                    if !recovered && let Some(fallback) = self.fallback_agent.as_ref() {
+                    if !recovered && let Some(fallback) = fallback_guard.as_ref() {
                         warn!(error = %e, "main provider failed — handing off to the fallback brain for recovery");
                         recovered = true;
                         active_agent = &**fallback;
@@ -1667,7 +1696,8 @@ impl Dispatcher {
             }
 
             "gitzi_list_repos" => {
-                let repos = crate::state::repo_cache::populate(&self.config.repo_paths);
+                let repo_paths = self.config.read().await.repo_paths.clone();
+                let repos = crate::state::repo_cache::populate(&repo_paths);
                 if repos.is_empty() {
                     "No repos discovered. Configure repo_paths in config.toml.".to_string()
                 } else {

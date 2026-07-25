@@ -287,12 +287,51 @@ fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
     let width = area.width.saturating_sub(2) as usize;
     let mut lines: Vec<Line> = Vec::new();
 
+    // Review context banner
+    if let Some(ref review) = app.active_review {
+        let kind_label = match review.kind.as_str() {
+            "agent_question" => "Agent Question",
+            "buffer_approval" => "Awaiting Approval",
+            _ => "Review Item",
+        };
+        lines.push(Line::from(Span::styled(
+            format!("\u{2501}\u{2501} {kind_label} \u{2501}\u{2501}"),
+            Style::default()
+                .fg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+        if let Some(ref title) = review.task_title {
+            lines.push(Line::from(Span::styled(
+                format!("Task: {title}"),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        for wrapped_line in wrap_text(&review.description, width) {
+            lines.push(Line::from(Span::styled(
+                wrapped_line,
+                Style::default().fg(Color::LightYellow),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            "\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}\u{2501}",
+            Style::default().fg(Color::LightYellow),
+        )));
+        lines.push(Line::from(""));
+    }
+
     for entry in &app.chat_history {
         if entry.is_user {
             lines.push(Line::from(Span::styled(
                 "You",
                 Style::default()
                     .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        } else if entry.is_error {
+            lines.push(Line::from(Span::styled(
+                "error",
+                Style::default()
+                    .fg(Color::LightRed)
                     .add_modifier(Modifier::BOLD),
             )));
         } else {
@@ -307,6 +346,8 @@ fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
         for wrapped_line in wrap_text(&entry.content, width) {
             let style = if entry.is_user {
                 Style::default().fg(Color::White)
+            } else if entry.is_error {
+                Style::default().fg(Color::LightRed)
             } else {
                 Style::default().fg(Color::Gray)
             };
@@ -367,11 +408,27 @@ fn draw_chat_history(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_chat_input(frame: &mut Frame, app: &App, area: Rect) {
+    let border_color = if app.panel_focused {
+        Color::DarkGray
+    } else {
+        Color::Cyan
+    };
     let input_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(border_color));
     let input_inner = input_block.inner(area);
     frame.render_widget(input_block, area);
+
+    if app.panel_focused {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "Hit Esc to resume chatting.",
+                Style::default().fg(Color::DarkGray),
+            )),
+            input_inner,
+        );
+        return;
+    }
 
     // Word-wrap the input text across multiple lines within available width
     let width = input_inner.width as usize;
@@ -433,6 +490,7 @@ fn draw_right_panel(frame: &mut Frame, app: &App, area: Rect) {
         Panel::Epic => draw_epic(frame, app, area),
         Panel::Task => draw_task(frame, app, area),
         Panel::Logs => draw_logs(frame, app, area),
+        Panel::Settings => draw_settings(frame, app, area),
     }
 }
 
@@ -652,6 +710,127 @@ fn draw_logs(frame: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+// -- Settings panel -----------------------------------------------------------
+
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Settings ")
+        .border_style(Style::default().fg(Color::Magenta));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Header
+    lines.push(Line::from(Span::styled(
+        "Provider Configuration",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(""));
+
+    // Active provider
+    let active_label = app.settings_active.as_deref().unwrap_or("none");
+    lines.push(Line::from(vec![
+        Span::styled("Active: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(active_label.to_string(), Style::default().fg(Color::Cyan)),
+    ]));
+    lines.push(Line::from(""));
+
+    // SSO multi-step picker (takes over the provider list when active)
+    if app.settings_in_sso_picker() {
+        if let Some(ref label) = app.settings_sso_label {
+            lines.push(Line::from(Span::styled(
+                label.clone(),
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+        }
+        for (i, choice) in app.settings_sso_choices.iter().enumerate() {
+            let selected = i == app.settings_sso_selected;
+            let marker = if selected { "\u{25b6} " } else { "  " };
+            let style = if selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{marker}{choice}"),
+                style,
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Up/Down select  Enter confirm  Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        return;
+    }
+
+    // Provider list
+    lines.push(Line::from(Span::styled(
+        "Available providers:",
+        Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    if app.settings_providers.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No providers configured. Press 'r' to rescan.",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, provider) in app.settings_providers.iter().enumerate() {
+            let selected = app.panel_focused && i == app.settings_selected;
+            let marker = if selected { "> " } else { "  " };
+            let active_mark = if provider.active { " *" } else { "" };
+            let style = if selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if provider.active {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{marker}{} [{}]{active_mark}", provider.name, provider.kind),
+                style,
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // Message from last action
+    if let Some(ref msg) = app.settings_message {
+        lines.push(Line::from(Span::styled(
+            msg.clone(),
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    // Footer hint
+    if app.panel_focused {
+        lines.push(Line::from(Span::styled(
+            "Up/Down select  Enter switch  r rescan  Esc back",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "Tab to focus  Ctrl+Up/Down to navigate panels",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }
 
 // -- Status card ------------------------------------------------------------

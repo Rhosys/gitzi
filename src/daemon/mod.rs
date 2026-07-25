@@ -267,6 +267,15 @@ struct SetupSelect {
     role_name: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct SettingsSelect {
+    name: String,
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    role_name: Option<String>,
+}
+
 async fn handle_setup_client(stream: UnixStream, session: Arc<SetupSession>) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
@@ -475,6 +484,68 @@ async fn handle_client(stream: UnixStream, dispatcher: Arc<Dispatcher>) {
             cmd if cmd.starts_with("update_epic ") => {
                 handle_update_epic(cmd.strip_prefix("update_epic ").unwrap().trim())
             }
+            "settings_state" => {
+                let config = dispatcher.config.read().await;
+                let active_provider = config.resolve_agent("main").provider.clone();
+                let providers: Vec<serde_json::Value> = config
+                    .providers
+                    .iter()
+                    .map(|(name, def)| {
+                        serde_json::json!({
+                            "name": name,
+                            "kind": match def.kind {
+                                crate::config::ProviderKind::OpenaiCompatible => "openai-compatible",
+                                crate::config::ProviderKind::Bedrock => "bedrock",
+                            },
+                            "active": active_provider.as_deref() == Some(name.as_str()),
+                        })
+                    })
+                    .collect();
+                serde_json::json!({
+                    "active_provider": active_provider,
+                    "providers": providers,
+                })
+                .to_string()
+            }
+            cmd if cmd.starts_with("settings_select ") => {
+                let payload = cmd.strip_prefix("settings_select ").unwrap().trim();
+                match serde_json::from_str::<SettingsSelect>(payload) {
+                    Err(e) => {
+                        format!(
+                            "{{\"ok\":false,\"message\":\"invalid: {e}\",\"done\":false}}"
+                        )
+                    }
+                    Ok(sel) => {
+                        match dispatcher
+                            .switch_provider(&sel.name, sel.account_id, sel.role_name)
+                            .await
+                        {
+                            Ok(crate::setup::ActivationOutcome::Activated { message }) => {
+                                json_ok(&message, true)
+                            }
+                            Ok(crate::setup::ActivationOutcome::NeedsMoreInput {
+                                message,
+                            }) => json_ok(&message, false),
+                            Err(e) => {
+                                format!(
+                                    "{{\"ok\":false,\"message\":{},\"done\":false}}",
+                                    serde_json::to_string(&e.to_string())
+                                        .unwrap_or_else(|_| "\"error\"".to_string())
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            "settings_rescan" => {
+                let state = {
+                    let mut config = dispatcher.config.write().await;
+                    let state = crate::setup::scan_to_state(&mut config);
+                    let _ = config.write(std::path::Path::new("."));
+                    state
+                };
+                serde_json::to_string(&state).unwrap_or_else(|e| format!("error: {e}"))
+            }
             other => format!("error: unknown command '{other}'"),
         };
         if writer
@@ -650,11 +721,14 @@ async fn handle_chat_with_interrupt(dispatcher: Arc<Dispatcher>, message: String
                 .collect()
         };
 
-        let base_url = dispatcher
-            .main_agent
-            .base_url()
-            .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
-        let model = dispatcher.main_agent.model();
+        let (base_url, model) = {
+            let agent = dispatcher.main_agent.read().await;
+            let url = agent
+                .base_url()
+                .unwrap_or_else(|| "http://localhost:1234/v1".to_string());
+            let m = agent.model();
+            (url, m)
+        };
 
         let action = classifier::classify(
             &base_url,
