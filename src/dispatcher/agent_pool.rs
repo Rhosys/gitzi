@@ -320,6 +320,7 @@ async fn handle_agent_result(
                 kind: PersistedReviewKind::AgentQuestion {
                     question: question.clone(),
                 },
+                description: question.clone(),
                 created_at: chrono::Utc::now(),
                 actions: Vec::new(),
             };
@@ -342,7 +343,7 @@ async fn handle_agent_result(
 
             // Enqueue in-memory review item
             let queue_item =
-                HumanReviewItem::new(&task.id, ReviewItemKind::AgentQuestion { question });
+                HumanReviewItem::new(&task.id, ReviewItemKind::AgentQuestion { question: question.clone() }, question);
             let mut q = review_queue.lock().await;
             q.enqueue(queue_item);
 
@@ -525,6 +526,7 @@ async fn escalate_verification_failure(
         kind: PersistedReviewKind::AgentQuestion {
             question: question.clone(),
         },
+        description: question.clone(),
         created_at: Utc::now(),
         actions: Vec::new(),
     };
@@ -542,7 +544,7 @@ async fn escalate_verification_failure(
     handle.set_blocked(true);
 
     // Enqueue in-memory review item
-    let queue_item = HumanReviewItem::new(&task.id, ReviewItemKind::AgentQuestion { question });
+    let queue_item = HumanReviewItem::new(&task.id, ReviewItemKind::AgentQuestion { question: question.clone() }, question);
     review_queue.lock().await.enqueue(queue_item);
 }
 

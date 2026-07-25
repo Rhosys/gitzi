@@ -54,6 +54,10 @@ pub struct PersistedReviewItem {
     pub id: String,
     pub task_id: String,
     pub kind: PersistedReviewKind,
+    /// Short human-readable summary so the user knows what this is about
+    /// without drilling into the full item.
+    #[serde(default)]
+    pub description: String,
     pub created_at: DateTime<Utc>,
     #[serde(default)]
     pub actions: Vec<ReviewAction>,
@@ -245,12 +249,14 @@ mod tests {
             "[a-z0-9]{8}",
             "[a-z0-9]{8}",
             arb_review_kind(),
+            "[a-z ]{1,60}",
             arb_datetime(),
         )
-            .prop_map(|(id, task_id, kind, created_at)| PersistedReviewItem {
+            .prop_map(|(id, task_id, kind, description, created_at)| PersistedReviewItem {
                 id,
                 task_id,
                 kind,
+                description,
                 created_at,
                 actions: Vec::new(),
             })
@@ -261,14 +267,16 @@ mod tests {
             "[a-z0-9]{5,20}",
             "[a-z0-9]{5,20}",
             arb_review_kind(),
+            "[a-z ]{1,60}",
             arb_datetime(),
             prop::collection::vec(arb_review_action(), 0..5),
         )
             .prop_map(
-                |(id, task_id, kind, created_at, actions)| PersistedReviewItem {
+                |(id, task_id, kind, description, created_at, actions)| PersistedReviewItem {
                     id,
                     task_id,
                     kind,
+                    description,
                     created_at,
                     actions,
                 },

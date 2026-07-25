@@ -67,6 +67,7 @@ proptest! {
                 kind: PersistedReviewKind::AgentQuestion {
                     question: question.clone(),
                 },
+                description: question.clone(),
                 created_at: chrono::Utc::now(),
                 actions: Vec::new(),
             };
@@ -92,6 +93,7 @@ proptest! {
                 ReviewItemKind::AgentQuestion {
                     question: question.clone(),
                 },
+                question.clone(),
             );
             {
                 let mut q = review_queue.lock().await;

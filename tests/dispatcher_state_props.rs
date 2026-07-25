@@ -319,6 +319,7 @@ async fn buffer_entry_creates_review_item() {
                 buffer_column: buf_col,
                 task_priority: priority,
             },
+            format!("review-task — awaiting approval in {buf_col:?}"),
         );
         {
             let mut q = dispatcher.review_queue.lock().await;

@@ -571,16 +571,18 @@ impl Dispatcher {
             }
             Ok(MergeOutcome::FfFailed(reason)) => {
                 warn!(%task_id, %reason, "ff-merge failed — creating review item");
+                let question_text = format!(
+                    "Task '{}' is done but cannot be fast-forward \
+                     merged: {}. What should I do? (rebase the \
+                     branch, force merge, or leave it)",
+                    task.title, reason
+                );
                 let item = review_queue::HumanReviewItem::new(
                     task_id,
                     review_queue::ReviewItemKind::AgentQuestion {
-                        question: format!(
-                            "Task '{}' is done but cannot be fast-forward \
-                             merged: {}. What should I do? (rebase the \
-                             branch, force merge, or leave it)",
-                            task.title, reason
-                        ),
+                        question: question_text.clone(),
                     },
+                    question_text,
                 );
                 let mut q = self.review_queue.lock().await;
                 q.enqueue(item);
@@ -852,6 +854,7 @@ impl Dispatcher {
             kind: PersistedReviewKind::AgentQuestion {
                 question: full_question.clone(),
             },
+            description: full_question.clone(),
             created_at: now,
             actions: Vec::new(),
         };
@@ -864,8 +867,9 @@ impl Dispatcher {
                 id: item_id,
                 task_id: task_id.clone(),
                 kind: review_queue::ReviewItemKind::AgentQuestion {
-                    question: full_question,
+                    question: full_question.clone(),
                 },
+                description: full_question,
                 created_at: now,
             });
         }
@@ -997,6 +1001,7 @@ impl Dispatcher {
                         id: p.id,
                         task_id: p.task_id,
                         kind,
+                        description: p.description,
                         created_at: p.created_at,
                     };
                     queue.enqueue(item);
@@ -1799,9 +1804,14 @@ impl Dispatcher {
                         self.agent_pool.signal(role);
                     } else if to.is_buffer() {
                         // Create a BufferApproval review item
-                        let priority = {
+                        let (priority, description) = {
                             let b = self.board.read().await;
-                            b.task(&task_id).map(|t| t.priority).unwrap_or(u32::MAX)
+                            let task = b.task(&task_id);
+                            let p = task.map(|t| t.priority).unwrap_or(u32::MAX);
+                            let desc = task
+                                .map(|t| format!("{} — awaiting approval in {to}", t.title))
+                                .unwrap_or_else(|| format!("{task_id} — awaiting approval in {to}"));
+                            (p, desc)
                         };
 
                         // Persist review item to disk
@@ -1812,6 +1822,7 @@ impl Dispatcher {
                                 buffer_column: to,
                                 task_priority: priority,
                             },
+                            description: description.clone(),
                             created_at: chrono::Utc::now(),
                             actions: Vec::new(),
                         };
@@ -1826,6 +1837,7 @@ impl Dispatcher {
                                 buffer_column: to,
                                 task_priority: priority,
                             },
+                            description,
                         );
                         let mut q = self.review_queue.lock().await;
                         q.enqueue(item);
@@ -1858,6 +1870,7 @@ impl Dispatcher {
                         review_queue::ReviewItemKind::AgentQuestion {
                             question: question.clone(),
                         },
+                        question.clone(),
                     );
                     let mut q = self.review_queue.lock().await;
                     q.enqueue(item);

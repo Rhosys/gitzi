@@ -27,16 +27,20 @@ pub struct HumanReviewItem {
     pub id: String,
     pub task_id: String,
     pub kind: ReviewItemKind,
+    /// Short human-readable summary so the user knows what this is about
+    /// without drilling into the full item.
+    pub description: String,
     pub created_at: DateTime<Utc>,
 }
 
 impl HumanReviewItem {
     /// Create a new review item with a generated UUID.
-    pub fn new(task_id: impl Into<String>, kind: ReviewItemKind) -> Self {
+    pub fn new(task_id: impl Into<String>, kind: ReviewItemKind, description: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             task_id: task_id.into(),
             kind,
+            description: description.into(),
             created_at: Utc::now(),
         }
     }
@@ -45,19 +49,18 @@ impl HumanReviewItem {
     pub fn with_timestamp(
         task_id: impl Into<String>,
         kind: ReviewItemKind,
+        description: impl Into<String>,
         created_at: DateTime<Utc>,
     ) -> Self {
         Self {
             id: Uuid::new_v4().to_string(),
             task_id: task_id.into(),
             kind,
+            description: description.into(),
             created_at,
         }
     }
 
-    fn is_question(&self) -> bool {
-        matches!(self.kind, ReviewItemKind::AgentQuestion { .. })
-    }
 }
 
 // ─── Sort key ─────────────────────────────────────────────────────────────────
@@ -97,14 +100,12 @@ fn sort_key(item: &HumanReviewItem) -> (u8, usize, u32, DateTime<Utc>) {
 
 /// Priority queue of items awaiting human action.
 ///
-/// Ordering invariant:
-/// 1. Agent questions always appear before buffer approvals
-/// 2. Questions are sorted by arrival time (FIFO)
-/// 3. Buffer approvals are sorted by rightmost column first, then task priority ascending
+/// Ordering:
+/// 1. Agent questions are sorted by arrival time (FIFO)
+/// 2. Buffer approvals are sorted by rightmost column first, then task priority ascending
+/// 3. Questions sort before approvals at equal rank (kind_rank 0 vs 1)
 ///
-/// Visibility rule (suppression):
-/// When agent questions exist, `peek()` returns only the topmost question.
-/// Buffer approvals are invisible until all questions are resolved.
+/// All items are visible at all times — the human decides what to handle first.
 #[derive(Debug, Clone)]
 pub struct HumanReviewQueue {
     items: Vec<HumanReviewItem>,
@@ -126,16 +127,14 @@ impl HumanReviewQueue {
         self.items.insert(pos, item);
     }
 
-    /// The topmost visible item, respecting suppression rules.
-    /// When agent questions exist, only questions are visible.
+    /// The topmost item by sort order.
     pub fn peek(&self) -> Option<&HumanReviewItem> {
-        if self.items.is_empty() {
-            return None;
-        }
-        // The first item is always the correct one to peek because
-        // questions sort before approvals. If the first item is a question,
-        // it's the oldest question. If it's an approval, there are no questions.
-        Some(&self.items[0])
+        self.items.first()
+    }
+
+    /// All items in queue order (for rendering a full list to the user).
+    pub fn items(&self) -> &[HumanReviewItem] {
+        &self.items
     }
 
     /// Remove and return the item with the given ID.
@@ -152,14 +151,12 @@ impl HumanReviewQueue {
         Some(self.items.remove(pos))
     }
 
-    /// True if any agent question items exist (suppresses buffer approvals from peek).
-    pub fn has_agent_questions(&self) -> bool {
-        self.items.iter().any(|i| i.is_question())
-    }
-
-    /// Count of agent-question items in the queue — the clarification queue size.
+    /// Count of agent-question items in the queue (informational).
     pub fn question_count(&self) -> usize {
-        self.items.iter().filter(|i| i.is_question()).count()
+        self.items
+            .iter()
+            .filter(|i| matches!(i.kind, ReviewItemKind::AgentQuestion { .. }))
+            .count()
     }
 
     /// True if the queue has no items at all.
@@ -196,6 +193,7 @@ mod tests {
             ReviewItemKind::AgentQuestion {
                 question: q.to_string(),
             },
+            q,
             time,
         )
     }
@@ -207,6 +205,7 @@ mod tests {
                 buffer_column: col,
                 task_priority: priority,
             },
+            format!("Approve {task_id} in {col:?}"),
             time,
         )
     }
@@ -215,7 +214,7 @@ mod tests {
     fn empty_queue() {
         let q = HumanReviewQueue::new();
         assert!(q.is_empty());
-        assert!(!q.has_agent_questions());
+        assert_eq!(q.question_count(), 0);
         assert!(q.peek().is_none());
     }
 
@@ -225,7 +224,7 @@ mod tests {
         q.enqueue(question("t1", "What color?", ts(100)));
 
         assert!(!q.is_empty());
-        assert!(q.has_agent_questions());
+        assert_eq!(q.question_count(), 1);
         assert_eq!(q.peek().unwrap().task_id, "t1");
     }
 
@@ -241,16 +240,17 @@ mod tests {
     }
 
     #[test]
-    fn questions_always_before_approvals() {
+    fn questions_sort_before_approvals() {
         let mut q = HumanReviewQueue::new();
         // Add approval first
         q.enqueue(approval("t1", Column::DeploymentBuffer, 1, ts(50)));
         // Then question
         q.enqueue(question("t2", "Help?", ts(200)));
 
-        // Question should be visible even though approval was enqueued first
+        // Question sorts first due to kind_rank
         assert_eq!(q.peek().unwrap().task_id, "t2");
-        assert!(q.has_agent_questions());
+        // But both are visible
+        assert_eq!(q.items().len(), 2);
     }
 
     #[test]
@@ -310,22 +310,26 @@ mod tests {
     }
 
     #[test]
-    fn suppression_reveals_approvals_after_questions_cleared() {
+    fn all_items_visible_regardless_of_kind() {
         let mut q = HumanReviewQueue::new();
-        let q_item = question("t1", "Help?", ts(100));
-        let q_id = q_item.id.clone();
-        q.enqueue(q_item);
+        q.enqueue(question("t1", "Help?", ts(100)));
         q.enqueue(approval("t2", Column::DeploymentBuffer, 1, ts(50)));
 
-        // While question exists, peek returns question
-        assert_eq!(q.peek().unwrap().task_id, "t1");
+        // Both items accessible via items()
+        assert_eq!(q.items().len(), 2);
+        // Question sorts first
+        assert_eq!(q.items()[0].task_id, "t1");
+        assert_eq!(q.items()[1].task_id, "t2");
+    }
 
-        // Remove the question
-        q.dequeue(&q_id);
+    #[test]
+    fn description_populated_on_items() {
+        let mut q = HumanReviewQueue::new();
+        q.enqueue(question("t1", "What color?", ts(100)));
+        q.enqueue(approval("t2", Column::CodingBuffer, 1, ts(200)));
 
-        // Now approval is visible
-        assert!(!q.has_agent_questions());
-        assert_eq!(q.peek().unwrap().task_id, "t2");
+        assert_eq!(q.items()[0].description, "What color?");
+        assert_eq!(q.items()[1].description, "Approve t2 in CodingBuffer");
     }
 
     #[test]
@@ -342,7 +346,6 @@ mod tests {
         // Questions first (by time): q2 (t=100) before q1 (t=300)
         let peeked = q.peek().unwrap();
         assert_eq!(peeked.task_id, "q2");
-        assert!(q.has_agent_questions());
 
         // Remove both questions
         let q2_id = q
@@ -362,9 +365,9 @@ mod tests {
         q.dequeue(&q2_id);
         q.dequeue(&q1_id);
 
-        // Now approvals visible. Rightmost column first = DeploymentBuffer
+        // Now approvals are at top. Rightmost column first = DeploymentBuffer
         // Within DeploymentBuffer: a2 (prio 5) before a3 (prio 20)
-        assert!(!q.has_agent_questions());
+        assert_eq!(q.question_count(), 0);
         let peeked = q.peek().unwrap();
         assert_eq!(peeked.task_id, "a2");
 

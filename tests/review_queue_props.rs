@@ -1,6 +1,6 @@
 // Feature: event-driven-dispatcher, Property 12: Queue ordering invariant
-// Feature: event-driven-dispatcher, Property 13: Queue visibility — questions suppress approvals
-// **Validates: Requirements 7.2, 7.3, 7.4, 6.5**
+// Feature: event-driven-dispatcher, Property 13: All items visible (no suppression)
+// **Validates: Requirements 7.2**
 
 use chrono::{DateTime, TimeZone, Utc};
 use gitzi::dispatcher::Column;
@@ -33,6 +33,7 @@ fn arb_question() -> impl Strategy<Value = HumanReviewItem> {
             ReviewItemKind::AgentQuestion {
                 question: format!("Question {id}?"),
             },
+            format!("Question {id}?"),
             ts,
         )
     })
@@ -53,6 +54,7 @@ fn arb_approval() -> impl Strategy<Value = HumanReviewItem> {
                     buffer_column: col,
                     task_priority: prio,
                 },
+                format!("Approve task-a-{id} in {col:?}"),
                 ts,
             )
         })
@@ -158,13 +160,13 @@ proptest! {
         }
     }
 
-    /// Property 13: Queue visibility — questions suppress approvals
+    /// Property 13: All items visible — no suppression
     ///
-    /// When the queue contains at least one AgentQuestion, `peek()` returns a question
-    /// (not an approval). When all questions are dequeued, `peek()` returns the
-    /// highest-priority approval.
+    /// When the queue contains both questions and approvals, `items()` returns all of them.
+    /// `peek()` returns the first by sort order (a question, since questions sort first),
+    /// but approvals are never hidden.
     #[test]
-    fn queue_visibility_questions_suppress_approvals(
+    fn all_items_visible_no_suppression(
         questions in proptest::collection::vec(arb_question(), 1..=10),
         approvals in proptest::collection::vec(arb_approval(), 1..=10),
     ) {
@@ -178,45 +180,26 @@ proptest! {
             queue.enqueue(q.clone());
         }
 
-        // While questions exist, peek must always return a question
-        prop_assert!(queue.has_agent_questions());
+        let total = questions.len() + approvals.len();
+
+        // All items are visible
+        prop_assert_eq!(queue.items().len(), total);
+        prop_assert_eq!(queue.len(), total);
+
+        // peek returns a question (since questions sort first by kind_rank)
         let peeked = queue.peek().unwrap();
         prop_assert!(
             matches!(peeked.kind, ReviewItemKind::AgentQuestion { .. }),
-            "peek() returned an approval while questions exist: task_id='{}'",
+            "peek() should return a question (sort-first) but got approval: task_id='{}'",
             peeked.task_id
         );
 
-        // Remove all questions one by one, verifying peek stays a question
-        let question_ids: Vec<String> = {
-            let mut ids = Vec::new();
-            let mut temp_queue = queue.clone();
-            while temp_queue.has_agent_questions() {
-                let p = temp_queue.peek().unwrap();
-                prop_assert!(
-                    matches!(p.kind, ReviewItemKind::AgentQuestion { .. }),
-                    "peek() returned approval while questions still exist"
-                );
-                let id = p.id.clone();
-                ids.push(id.clone());
-                temp_queue.dequeue(&id);
-            }
-            ids
-        };
+        // question_count is informational and correct
+        prop_assert_eq!(queue.question_count(), questions.len());
 
-        // Now dequeue all questions from the real queue
-        for qid in &question_ids {
-            queue.dequeue(qid);
+        // Every item has a non-empty description
+        for item in queue.items() {
+            prop_assert!(!item.description.is_empty(), "item '{}' has empty description", item.task_id);
         }
-
-        // After all questions removed, peek must return an approval
-        prop_assert!(!queue.has_agent_questions());
-        prop_assert!(!queue.is_empty(), "Queue should still have approvals");
-        let peeked = queue.peek().unwrap();
-        prop_assert!(
-            matches!(peeked.kind, ReviewItemKind::BufferApproval { .. }),
-            "After removing all questions, peek() should return an approval but got question: task_id='{}'",
-            peeked.task_id
-        );
     }
 }
